@@ -9,7 +9,6 @@
 package com.maddyhome.idea.vim.newapi
 
 import com.intellij.openapi.application.ApplicationManager
-import com.intellij.openapi.components.Service
 import com.maddyhome.idea.vim.api.MessageType
 import com.maddyhome.idea.vim.api.VimEditor
 import com.maddyhome.idea.vim.api.VimMessagesBase
@@ -19,7 +18,6 @@ import com.maddyhome.idea.vim.helper.EngineMessageHelper
 import com.maddyhome.idea.vim.ui.ShowCmd
 import java.awt.Toolkit
 
-@Service
 internal class IjVimMessages : VimMessagesBase() {
 
   private var message: String? = null
@@ -27,10 +25,17 @@ internal class IjVimMessages : VimMessagesBase() {
   private var lastBeepTimeMillis = 0L
 
   override fun showMessage(editor: VimEditor, message: String?) {
+    injector.outputPanel.clear(editor, injector.executionContextManager.getEditorExecutionContext(editor))
     showMessageInternal(editor, message, MessageType.STANDARD)
   }
 
   override fun showErrorMessage(editor: VimEditor, message: String?) {
+    injector.outputPanel.clear(editor, injector.executionContextManager.getEditorExecutionContext(editor))
+    showMessageInternal(editor, message, MessageType.ERROR)
+    indicateError()
+  }
+
+  override fun appendErrorMessage(editor: VimEditor, message: String?) {
     showMessageInternal(editor, message, MessageType.ERROR)
     indicateError()
   }
@@ -60,7 +65,6 @@ internal class IjVimMessages : VimMessagesBase() {
   override fun getStatusBarMessage(): String? = message
 
   override fun clearStatusBarMessage() {
-    if (message.isNullOrEmpty()) return
     injector.outputPanel.getCurrentOutputPanel()?.close()
     message = null
   }

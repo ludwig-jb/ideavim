@@ -20,22 +20,19 @@ import com.intellij.openapi.actionSystem.ActionUpdateThread
 import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.actionSystem.KeyboardShortcut
-import com.intellij.openapi.components.Service
 import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.ide.CopyPasteManager
 import com.intellij.openapi.keymap.KeymapUtil
-import com.intellij.openapi.keymap.ex.KeymapManagerEx
-import com.intellij.openapi.keymap.impl.ui.KeymapPanel
 import com.intellij.openapi.options.ShowSettingsUtil
 import com.intellij.openapi.project.DumbAwareAction
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.Messages
 import com.intellij.openapi.util.SystemInfo
 import com.maddyhome.idea.vim.VimPlugin
+import com.maddyhome.idea.vim.action.editor.OpenControlCharsEditorAction
 import com.maddyhome.idea.vim.api.VimEditor
 import com.maddyhome.idea.vim.api.globalOptions
 import com.maddyhome.idea.vim.api.injector
-import com.maddyhome.idea.vim.handler.KeyMapIssue
 import com.maddyhome.idea.vim.helper.MessageHelper
 import com.maddyhome.idea.vim.icons.VimIcons
 import com.maddyhome.idea.vim.key.ShortcutOwner
@@ -60,13 +57,12 @@ import kotlin.io.path.pathString
  * This service is can be used as application level and as project level service.
  * If project is null, this means that this is an application level service and notification will be shown for all projects
  */
-@Service(Service.Level.PROJECT, Service.Level.APP)
-internal class NotificationService(private val project: Project?) {
+internal class NotificationService(private val project: Project?) : VimNotifications {
   // This constructor is used to create an applicationService
   @Suppress("unused")
   constructor() : this(null)
 
-  fun notifyAboutIdeaPut() {
+  override fun notifyAboutIdeaPut() {
     val notification = Notification(
       IDEAVIM_NOTIFICATION_ID,
       IDEAVIM_NOTIFICATION_TITLE,
@@ -91,7 +87,29 @@ internal class NotificationService(private val project: Project?) {
     notification.notify(project)
   }
 
-  fun notifyAboutIdeaJoin(editor: VimEditor) {
+  // Shown at most once per service lifetime, so repeatedly pasting a macro doesn't spam the user.
+  private var controlCharactersPasteSuggested = false
+
+  override fun notifyControlCharactersPasted() {
+    if (controlCharactersPasteSuggested) return
+    controlCharactersPasteSuggested = true
+
+    val notification = Notification(
+      IDEAVIM_NOTIFICATION_ID,
+      IDEAVIM_NOTIFICATION_TITLE,
+      "The pasted text contains control characters. Open the Control Characters Editor to view and edit them in printable form.",
+      NotificationType.INFORMATION,
+    )
+    notification.addAction(object : DumbAwareAction("Open Control Characters Editor") {
+      override fun actionPerformed(e: AnActionEvent) {
+        OpenControlCharsEditorAction().actionPerformed(e)
+        notification.expire()
+      }
+    })
+    notification.notify(project)
+  }
+
+  override fun notifyAboutIdeaJoin(editor: VimEditor) {
     val notification = Notification(
       IDEAVIM_NOTIFICATION_ID,
       IDEAVIM_NOTIFICATION_TITLE,
@@ -116,7 +134,7 @@ internal class NotificationService(private val project: Project?) {
     notification.notify(project)
   }
 
-  fun enableRepeatingMode() = Messages.showYesNoDialog(
+  override fun enableRepeatingMode() = Messages.showYesNoDialog(
     "Do you want to enable repeating keys in macOS on press and hold?\n\n" +
       "(You can do it manually by running 'defaults write -g " +
       "ApplePressAndHoldEnabled 0' in the console).",
@@ -124,7 +142,7 @@ internal class NotificationService(private val project: Project?) {
     Messages.getQuestionIcon(),
   )
 
-  fun noVimrcAsDefault() {
+  override fun noVimrcAsDefault() {
     val notification = IDEAVIM_STICKY_GROUP.createNotification(
       IDEAVIM_NOTIFICATION_TITLE,
       "The ~/.vimrc file is no longer read by default, use ~/.ideavimrc instead. You can read it from your " +
@@ -135,7 +153,7 @@ internal class NotificationService(private val project: Project?) {
     notification.notify(project)
   }
 
-  fun notifyAboutShortcutConflict(keyStroke: KeyStroke) {
+  override fun notifyAboutShortcutConflict(keyStroke: KeyStroke) {
     val conflicts = VimPlugin.getKey().savedShortcutConflicts
     val allValuesAreUndefined =
       conflicts.values.all { it is ShortcutOwnerInfo.PerMode || (it is ShortcutOwnerInfo.AllModes && it.owner == ShortcutOwner.UNDEFINED) }
@@ -168,7 +186,7 @@ internal class NotificationService(private val project: Project?) {
     notification.notify(project)
   }
 
-  fun notifySubscribedToEap() {
+  override fun notifySubscribedToEap() {
     Notification(
       IDEAVIM_NOTIFICATION_ID,
       IDEAVIM_NOTIFICATION_TITLE,
@@ -177,7 +195,7 @@ internal class NotificationService(private val project: Project?) {
     ).notify(project)
   }
 
-  fun notifyEapFinished() {
+  override fun notifyEapFinished() {
     Notification(
       IDEAVIM_NOTIFICATION_ID,
       IDEAVIM_NOTIFICATION_TITLE,
@@ -189,7 +207,7 @@ internal class NotificationService(private val project: Project?) {
   /**
    * Shows a notification that the user can reenable IdeaVim by clicking on the IdeaVim icon in the status bar.
    */
-  fun showReenableNotification(project: Project) {
+  override fun showReenableNotification(project: Project) {
     val notification = Notification(
       IDEAVIM_NOTIFICATION_ID,
       IDEAVIM_NOTIFICATION_TITLE,
@@ -208,86 +226,38 @@ internal class NotificationService(private val project: Project?) {
     notification.notify(project)
   }
 
-  fun notifyActionId(id: String?, candidates: List<String>? = null, intentionName: String?) {
+  override fun notifyActionId(id: String?, candidates: List<String>?, intentionName: String?) {
     ActionIdNotifier.notifyActionId(id, project, candidates, intentionName)
   }
 
-  fun notifyKeymapIssues(issues: ArrayList<KeyMapIssue>) {
-    val keymapManager = KeymapManagerEx.getInstanceEx()
-    val keymap = keymapManager.activeKeymap
-    val message = buildString {
-      appendLine("Current IDE keymap (${keymap.name}) has issues:<br/>")
-      issues.forEach {
-        when (it) {
-          is KeyMapIssue.AddShortcut -> {
-            appendLine("- ${it.key} key is not assigned to the ${it.action} action.<br/>")
-          }
-
-          is KeyMapIssue.RemoveShortcut -> {
-            appendLine("- ${it.shortcut} key is incorrectly assigned to the ${it.action} action.<br/>")
-          }
-        }
-      }
-    }
-    val notification = IDEAVIM_STICKY_GROUP.createNotification(
-      IDEAVIM_NOTIFICATION_TITLE,
-      message,
-      NotificationType.ERROR,
-    )
-    notification.subtitle = "IDE keymap misconfigured"
-    notification.addAction(object : DumbAwareAction("Fix Keymap") {
-      override fun actionPerformed(e: AnActionEvent) {
-        issues.forEach {
-          when (it) {
-            is KeyMapIssue.AddShortcut -> {
-              keymap.addShortcut(it.actionId, KeyboardShortcut(it.keyStroke, null))
-            }
-
-            is KeyMapIssue.RemoveShortcut -> {
-              keymap.removeShortcut(it.actionId, it.shortcut)
-            }
-          }
-        }
-        LOG.info("Shortcuts updated $issues")
-        notification.expire()
-        requiredShortcutsAssigned()
-      }
-    })
-    notification.addAction(object : DumbAwareAction("Open Keymap Settings") {
-      override fun actionPerformed(e: AnActionEvent) {
-        ShowSettingsUtil.getInstance().showSettingsDialog(e.project, KeymapPanel::class.java)
-        notification.hideBalloon()
-      }
-    })
-    notification.addAction(object : DumbAwareAction("Ignore") {
-      override fun actionPerformed(e: AnActionEvent) {
-        LOG.info("Ignored to update shortcuts $issues")
-        notification.hideBalloon()
-      }
-    })
-    notification.notify(project)
-  }
-
-  private fun requiredShortcutsAssigned() {
+  override fun notifyAboutNewVersion(version: String) {
     val notification = Notification(
       IDEAVIM_NOTIFICATION_ID,
       IDEAVIM_NOTIFICATION_TITLE,
-      "Keymap fixed",
+      "Welcome to IdeaVim $version see what's new",
       NotificationType.INFORMATION,
     )
-    notification.addAction(object : DumbAwareAction("Open Keymap Settings") {
+    notification.icon = VimIcons.IDEAVIM
+
+    notification.addAction(object : DumbAwareAction("See What's New") {
       override fun actionPerformed(e: AnActionEvent) {
-        ShowSettingsUtil.getInstance().showSettingsDialog(e.project, KeymapPanel::class.java)
-        notification.hideBalloon()
+        WhatsNewHelper.showWhatsNew(e.project ?: project, version)
       }
+
     })
+
     notification.notify(project)
   }
 
   object ActionIdNotifier {
     private var notification: Notification? = null
 
-    fun notifyActionId(id: String?, project: Project?, candidates: List<String>? = null, intentionName: String? = null) {
+    fun notifyActionId(
+      id: String?,
+      project: Project?,
+      candidates: List<String>? = null,
+      intentionName: String? = null,
+    ) {
       notification?.expire()
 
       val possibleIDs = candidates?.distinct()?.sorted()
@@ -296,6 +266,7 @@ internal class NotificationService(private val project: Project?) {
         possibleIDs.isNullOrEmpty() && !intentionName.isNullOrEmpty() -> {
           "Intention \"$intentionName\" does not have an action ID.<br><br>"
         }
+
         possibleIDs.isNullOrEmpty() -> "<i>Cannot detect action ID</i><br><br>"
         possibleIDs.size == 1 -> "Possible action ID: <code>${possibleIDs[0]}</code><br><br>"
         else -> {
@@ -351,7 +322,7 @@ internal class NotificationService(private val project: Project?) {
 
     class StopTracking : DumbAwareAction("Stop Tracking") {
       override fun actionPerformed(e: AnActionEvent) {
-        injector.globalIjOptions().trackactionids = false
+        injector.globalIjOptions().ideatrackactionids = false
         notification?.expire()
       }
     }
@@ -359,7 +330,7 @@ internal class NotificationService(private val project: Project?) {
 
   @Suppress("DialogTitleCapitalization")
   class OpenIdeaVimRcAction(private val notification: Notification?) : DumbAwareAction(
-    if (VimRcService.findIdeaVimRc() != null) "Open ~/.ideavimrc" else "Create ~/.ideavimrc",
+    openOrCreateActionText(),
   )/*, LightEditCompatible*/ {
     override fun actionPerformed(e: AnActionEvent) {
       val eventProject = e.project
@@ -373,15 +344,14 @@ internal class NotificationService(private val project: Project?) {
       }
       notification?.expire()
       createIdeaVimRcManually(
-        "Cannot create configuration file.<br/>Please create <code>~/.ideavimrc</code> manually",
+        "Cannot create configuration file.<br/>Please create <code>${VimRcService.ideaVimRcDisplayName()}</code> manually",
         eventProject,
       )
     }
 
     override fun update(e: AnActionEvent) {
       super.update(e)
-      val actionText = if (VimRcService.findIdeaVimRc() != null) "Open ~/.ideavimrc" else "Create ~/.ideavimrc"
-      e.presentation.text = actionText
+      e.presentation.text = openOrCreateActionText()
     }
 
     override fun getActionUpdateThread() = ActionUpdateThread.BGT
@@ -393,7 +363,7 @@ internal class NotificationService(private val project: Project?) {
     val appendableText: String,
     val optionName: String,
     val enableOption: () -> Unit,
-  ) : AnAction("Append to ~/.ideavimrc") {
+  ) : AnAction("Append to ${VimRcService.ideaVimRcDisplayName()}") {
     override fun actionPerformed(e: AnActionEvent) {
       val eventProject = e.project
       enableOption()
@@ -415,7 +385,7 @@ internal class NotificationService(private val project: Project?) {
       }
       notification.expire()
       createIdeaVimRcManually(
-        "Option is enabled, but the file is not modified<br/>Please modify <code>~/.ideavimrc</code> manually",
+        "Option is enabled, but the file is not modified<br/>Please modify <code>${VimRcService.ideaVimRcDisplayName()}</code> manually",
         project,
       )
     }
@@ -430,24 +400,35 @@ internal class NotificationService(private val project: Project?) {
   companion object {
     val IDEAVIM_STICKY_GROUP: NotificationGroup =
       NotificationGroupManager.getInstance().getNotificationGroup("ideavim-sticky")
-    const val IDEAVIM_NOTIFICATION_ID = "ideavim"
-    const val IDEAVIM_NOTIFICATION_TITLE = "IdeaVim"
+    const val IDEAVIM_NOTIFICATION_ID = VimNotifications.IDEAVIM_NOTIFICATION_ID
+    const val IDEAVIM_NOTIFICATION_TITLE = VimNotifications.IDEAVIM_NOTIFICATION_TITLE
     const val ideajoinExamplesUrl = "https://jb.gg/f9zji9"
 
     private val LOG = logger<NotificationService>()
 
+    private fun openOrCreateActionText(): String {
+      val verb = if (VimRcService.findIdeaVimRc() != null) "Open" else "Create"
+      return "$verb ${VimRcService.ideaVimRcDisplayName()}"
+    }
+
     private fun createIdeaVimRcManually(message: String, project: Project?) {
       val notification =
         Notification(IDEAVIM_NOTIFICATION_ID, IDEAVIM_NOTIFICATION_TITLE, message, NotificationType.WARNING)
+      // Reveal the directory the file should be created in: the parent of the configured path, or the home directory
+      val configuredDir = injector.vimrcPathService.resolveVimrcPath()?.parent
+      val (targetDir, targetName) = if (configuredDir != null) {
+        configuredDir to configuredDir.fileName?.toString().orEmpty().ifEmpty { configuredDir.toString() }
+      } else {
+        Path(System.getProperty("user.home")) to "Home"
+      }
       var actionName =
-        if (SystemInfo.isMac) "Reveal Home in Finder" else "Show Home in " + RevealFileAction.getFileManagerName()
-      if (!Path(System.getProperty("user.home")).exists()) {
+        if (SystemInfo.isMac) "Reveal $targetName in Finder" else "Show $targetName in " + RevealFileAction.getFileManagerName()
+      if (!targetDir.exists()) {
         actionName = ""
       }
       notification.addAction(object : AnAction(actionName) {
         override fun actionPerformed(e: AnActionEvent) {
-          val homeDir = Path(System.getProperty("user.home"))
-          RevealFileAction.openDirectory(homeDir.toFile())
+          RevealFileAction.openDirectory(targetDir.toFile())
           notification.expire()
         }
       })

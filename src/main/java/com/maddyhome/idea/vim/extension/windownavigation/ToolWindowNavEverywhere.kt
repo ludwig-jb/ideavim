@@ -13,6 +13,7 @@ import com.intellij.openapi.project.ProjectManager
 import com.intellij.openapi.wm.ToolWindowManager
 import com.intellij.openapi.wm.ToolWindowType
 import com.maddyhome.idea.vim.extension.VimExtension
+import com.maddyhome.idea.vim.helper.EditorHelper
 import java.awt.Component
 import java.awt.KeyboardFocusManager
 import java.beans.PropertyChangeListener
@@ -26,17 +27,20 @@ internal class ToolWindowNavEverywhere : VimExtension {
 
   override fun getName() = PLUGIN_NAME
 
+  private var registeredComponent: JComponent? = null
+
   val focusListener = PropertyChangeListener { evt ->
     val newFocusOwner = evt.newValue as? JComponent
-    val oldFocusOwner = evt.oldValue as? JComponent
     val dispatcher = service<ToolWindowNavDispatcher>()
 
-    if (newFocusOwner != null && isInsideToolWindow(newFocusOwner)) {
-      dispatcher.register(newFocusOwner)
-    }
+    // Unregister the component we registered on, even if its tool window was hidden in the meantime. Otherwise
+    // `<C-W>` stays captured there.
+    registeredComponent?.let { dispatcher.unregisterCustomShortcutSet(it) }
+    registeredComponent = null
 
-    if (oldFocusOwner != null && isInsideToolWindow(oldFocusOwner)) {
-      dispatcher.unregisterCustomShortcutSet(oldFocusOwner)
+    if (newFocusOwner != null && isInsideToolWindow(newFocusOwner) && !isPythonConsoleComponent(newFocusOwner)) {
+      dispatcher.register(newFocusOwner)
+      registeredComponent = newFocusOwner
     }
   }
 
@@ -48,7 +52,22 @@ internal class ToolWindowNavEverywhere : VimExtension {
   override fun dispose() {
     KeyboardFocusManager.getCurrentKeyboardFocusManager()
       .removePropertyChangeListener("focusOwner", focusListener)
+    // The focus listener is gone, so it can no longer unregister the shortcut from the focused component
+    registeredComponent?.let { service<ToolWindowNavDispatcher>().unregisterCustomShortcutSet(it) }
+    registeredComponent = null
     super.dispose()
+  }
+
+  private fun isPythonConsoleComponent(component: Component): Boolean {
+    for (project in ProjectManager.getInstance().openProjects) {
+      if (project.isDisposed) continue
+      val toolWindowManager = ToolWindowManager.getInstance(project)
+      val tw = toolWindowManager.getToolWindow(EditorHelper.PYTHON_CONSOLE_TOOL_WINDOW_ID) ?: continue
+      if (SwingUtilities.isDescendingFrom(component, tw.component)) {
+        return true
+      }
+    }
+    return false
   }
 
   private fun isInsideToolWindow(component: Component): Boolean {

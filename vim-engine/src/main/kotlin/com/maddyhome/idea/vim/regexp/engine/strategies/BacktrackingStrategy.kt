@@ -30,8 +30,17 @@ internal class BacktrackingStrategy : SimulationStrategy {
    */
   private val groups: VimMatchGroupCollection = VimMatchGroupCollection()
 
+  /**
+   * Snapshots of [groups] taken before each capture, used to undo the captures of a branch that is backtracked out of.
+   *
+   * Each entry is the version of [groups] before the capture, paired with the state to restore. The stack is shared
+   * with the nested simulations of assertions, so that their captures are undone too.
+   */
+  private val captureUndoStack: MutableList<Pair<Int, VimMatchGroupCollection.Snapshot>> = mutableListOf()
+
   override fun simulate(nfa: NFA, editor: VimEditor, startIndex: Int, isCaseInsensitive: Boolean): SimulationResult {
     groups.clear()
+    captureUndoStack.clear()
     if (simulate(
         editor,
         startIndex,
@@ -64,6 +73,9 @@ internal class BacktrackingStrategy : SimulationStrategy {
    * @param isCaseInsensitive Whether the simulation should ignore case
    * @param maxIndex          The maximum index of the text that the simulation is allowed to go to
    * @param possibleCursors   The cursors that are allowed to match
+   * @param targetIndex       If set, only a match that ends exactly at this index is accepted. Reaching the target
+   *                          state at any other index does not stop the simulation, which keeps looking for another
+   *                          way for the pattern to match
    *
    * @return The result of the simulation. It tells whether it was successful, and at what index it stopped.
    */
@@ -75,22 +87,29 @@ internal class BacktrackingStrategy : SimulationStrategy {
     isCaseInsensitive: Boolean,
     possibleCursors: MutableList<VimCaret>,
     maxIndex: Int = editor.text().length,
+    targetIndex: Int? = null,
   ): NFASimulationResult {
     val stack = mutableListOf<SimulationStackFrame>()
-    stack.add(SimulationStackFrame(index, state, NfaStateList.empty))
+    stack.add(SimulationStackFrame(index, state, NfaStateList.empty, groups.version))
 
     while (stack.isNotEmpty()) {
       val currFrame = stack.removeLast()
+      // Undo the captures of the branches that were explored since this frame was pushed. They did not lead to a
+      // match, so a \zs, \ze or capture group on them must not affect this branch
+      rollbackCaptures(currFrame.groupsVersion)
       if (currFrame.currentIndex > maxIndex) continue
       updateCaptureGroups(editor, currFrame.currentIndex, currFrame.currentState)
-      if (currFrame.currentState === targetState) return NFASimulationResult(true, currFrame.currentIndex)
+      if (currFrame.currentState === targetState && (targetIndex == null || currFrame.currentIndex == targetIndex)) {
+        return NFASimulationResult(true, currFrame.currentIndex)
+      }
       currFrame.currentState.assertion?.let {
         val assertionResult = handleAssertion(editor, currFrame.currentIndex, isCaseInsensitive, it, possibleCursors)
         if (assertionResult.simulationResult) stack.add(
           SimulationStackFrame(
             assertionResult.index,
             currFrame.currentState.assertion!!.jumpTo,
-            NfaStateList.empty
+            NfaStateList.empty,
+            groups.version
           )
         )
       }
@@ -109,7 +128,7 @@ internal class BacktrackingStrategy : SimulationStrategy {
             currFrame.currentState,
             currFrame.epsilonVisited
           ) else NfaStateList.empty
-        stack.add(SimulationStackFrame(nextIndex, destState, epsilonVisitedCopy))
+        stack.add(SimulationStackFrame(nextIndex, destState, epsilonVisitedCopy, groups.version))
       }
     }
     return NFASimulationResult(false, index)
@@ -163,8 +182,11 @@ internal class BacktrackingStrategy : SimulationStrategy {
     assertion: NFAAssertion,
     possibleCursors: MutableList<VimCaret>,
   ): NFASimulationResult {
+    val versionBeforeAssertion = groups.version
     val assertionResult =
       simulate(editor, currentIndex, assertion.startState, assertion.endState, isCaseInsensitive, possibleCursors)
+    // The captures of an assertion that did not match are not part of the match
+    if (!assertionResult.simulationResult) rollbackCaptures(versionBeforeAssertion)
     if (assertionResult.simulationResult != assertion.isPositive) {
       return NFASimulationResult(false, currentIndex)
     }
@@ -203,6 +225,7 @@ internal class BacktrackingStrategy : SimulationStrategy {
       // the lookbehind is allowed to look back as far as to the start of the previous line
       if (editor.text()[lookBehindStartIndex] == '\n') seenNewLine = true
 
+      val versionBeforeAttempt = groups.version
       val result = simulate(
         editor,
         lookBehindStartIndex,
@@ -210,16 +233,20 @@ internal class BacktrackingStrategy : SimulationStrategy {
         assertion.endState,
         isCaseInsensitive,
         possibleCursors,
-        maxIndex = currentIndex
+        maxIndex = currentIndex,
+        // A look behind matches only if the pattern ends exactly where the look behind started. Any other way that
+        // the pattern can match from this index is not a match of the assertion
+        targetIndex = currentIndex,
       )
       // found a match that ends before the "currentIndex"
       if (result.simulationResult && result.index == currentIndex) {
-        return if (assertion.isPositive) NFASimulationResult(
-          true,
-          currentIndex
-        )
-        else NFASimulationResult(false, currentIndex)
+        if (assertion.isPositive) return NFASimulationResult(true, currentIndex)
+        // A negative assertion that matches is not part of the match, so its captures are undone
+        rollbackCaptures(versionBeforeAttempt)
+        return NFASimulationResult(false, currentIndex)
       }
+      // This start index did not lead to an accepted match, so its captures are undone
+      rollbackCaptures(versionBeforeAttempt)
       lookBehindStartIndex--
     }
     return if (assertion.isPositive) NFASimulationResult(false, currentIndex)
@@ -234,9 +261,23 @@ internal class BacktrackingStrategy : SimulationStrategy {
    * @param state  The current state in the simulation
    */
   private fun updateCaptureGroups(editor: VimEditor, index: Int, state: NFAState) {
+    if (state.startCapture.isEmpty() && state.endCapture.isEmpty() && state.forceEndCapture.isEmpty()) return
+
+    captureUndoStack.add(groups.version to groups.createSnapshot())
     for (groupNumber in state.startCapture) groups.setGroupStart(groupNumber, index)
     for (groupNumber in state.endCapture) groups.setGroupEnd(groupNumber, index, editor.text())
     for (groupNumber in state.forceEndCapture) groups.setForceGroupEnd(groupNumber, index, editor.text())
+  }
+
+  /**
+   * Undoes every capture that was made after [groups] was at [version]
+   */
+  private fun rollbackCaptures(version: Int) {
+    var snapshot: VimMatchGroupCollection.Snapshot? = null
+    while (captureUndoStack.isNotEmpty() && captureUndoStack.last().first >= version) {
+      snapshot = captureUndoStack.removeLast().second
+    }
+    snapshot?.let { groups.restoreSnapshot(it) }
   }
 }
 
@@ -259,6 +300,12 @@ private data class SimulationStackFrame(
   val currentIndex: Int,
   val currentState: NFAState,
   val epsilonVisited: NfaStateList,
+
+  /**
+   * The version of the capture groups when this frame was pushed, used to undo the captures of the branches that
+   * were explored before this frame was popped
+   */
+  val groupsVersion: Int,
 )
 
 private class NfaStateList(

@@ -8,6 +8,7 @@
 
 package com.maddyhome.idea.vim.ui.ex
 
+import com.maddyhome.idea.vim.api.CommandLineType
 import com.maddyhome.idea.vim.api.ExecutionContext
 import com.maddyhome.idea.vim.api.VimCommandLineCaret
 import com.maddyhome.idea.vim.api.VimEditor
@@ -16,6 +17,8 @@ import com.maddyhome.idea.vim.api.VimModalInputBase
 import com.maddyhome.idea.vim.api.VimModalInputService
 import com.maddyhome.idea.vim.key.interceptors.VimInputInterceptor
 import com.maddyhome.idea.vim.newapi.ij
+import com.maddyhome.idea.vim.ui.ModalEntry
+import javax.swing.KeyStroke
 
 class ExEntryModalInputService : VimModalInputService {
   override fun getCurrentModalInput(): VimModalInput? {
@@ -32,8 +35,12 @@ class ExEntryModalInputService : VimModalInputService {
   ): VimModalInput {
     val panel = ExEntryPanel.getOrCreatePanelInstance()
     panel.inputInterceptor = inputInterceptor
-    panel.activate(editor.ij, context.ij, label, "")
+    panel.activate(editor.ij, context.ij, CommandLineType.Input, label, "")
     return WrappedAsModalInputExEntryPanel(panel)
+  }
+
+  override fun activate(editor: VimEditor, processor: (KeyStroke) -> Boolean) {
+    ModalEntry.activate(editor, processor)
   }
 }
 

@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2024 The IdeaVim authors
+ * Copyright 2003-2026 The IdeaVim authors
  *
  * Use of this source code is governed by an MIT-style
  * license that can be found in the LICENSE.txt file or at
@@ -15,8 +15,9 @@ import com.intellij.internal.statistic.eventLog.events.VarargEventId
 import com.intellij.internal.statistic.service.fus.collectors.ApplicationUsagesCollector
 import com.intellij.openapi.project.ProjectManager
 import com.intellij.openapi.wm.WindowManager
-import com.maddyhome.idea.vim.api.injector
 import com.maddyhome.idea.vim.ui.widgets.mode.ModeWidgetFactory
+import com.maddyhome.idea.vim.ui.widgets.mode.resolveBoolean
+import com.maddyhome.idea.vim.ui.widgets.mode.resolveString
 
 class WidgetState : ApplicationUsagesCollector() {
   override fun getGroup(): EventLogGroup = GROUP
@@ -43,10 +44,10 @@ class WidgetState : ApplicationUsagesCollector() {
   }
 
   private fun getModeWidgetTheme(postfix: String): String {
-    if (injector.variableService.getGlobalVariableValue("widget_mode_is_full_customization$postfix")?.toVimNumber()?.booleanValue == true) {
+    if (resolveBoolean("widget_mode_is_full_customization$postfix")) {
       return "ADVANCED CUSTOMIZATION"
     }
-    val themeString = injector.variableService.getGlobalVariableValue("widget_mode_theme$postfix")?.toVimString()?.value
+    val themeString = resolveString("widget_mode_theme$postfix")
     return if (themeString?.lowercase() == "colorless") {
       "COLORLESS"
     } else {

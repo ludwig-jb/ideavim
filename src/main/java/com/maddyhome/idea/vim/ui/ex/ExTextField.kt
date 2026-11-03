@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2023 The IdeaVim authors
+ * Copyright 2003-2026 The IdeaVim authors
  *
  * Use of this source code is governed by an MIT-style
  * license that can be found in the LICENSE.txt file or at
@@ -8,6 +8,7 @@
 package com.maddyhome.idea.vim.ui.ex
 
 import com.intellij.openapi.diagnostic.Logger
+import com.intellij.openapi.diagnostic.debug
 import com.intellij.ui.paint.PaintUtil
 import com.intellij.util.ui.JBUI
 import com.maddyhome.idea.vim.KeyHandler
@@ -16,6 +17,7 @@ import com.maddyhome.idea.vim.api.VimCommandLineCaret
 import com.maddyhome.idea.vim.api.injector
 import com.maddyhome.idea.vim.helper.EngineStringHelper.isPrintableCharacter
 import com.maddyhome.idea.vim.helper.selectEditorFont
+import com.maddyhome.idea.vim.listener.ModelessSelection
 import com.maddyhome.idea.vim.newapi.IjEditorExecutionContext
 import com.maddyhome.idea.vim.options.helpers.GuiCursorAttributes
 import com.maddyhome.idea.vim.options.helpers.GuiCursorMode
@@ -186,14 +188,14 @@ class ExTextField internal constructor(private val myParentPanel: ExEntryPanel) 
    * @param stroke  The potentially mapped keystroke
    */
   fun handleKey(stroke: KeyStroke) {
-    if (logger.isDebugEnabled) logger.debug("stroke=$stroke")
+    logger.debug { "stroke=$stroke" }
 
     // Typically, we would let the super class handle the keystroke. It would use any registered keybindings to convert
     // it to an action handler, or use the default handler (we don't actually have any keybindings). The default action
     // handler adds all non-control characters to the text field. We want to add all characters, so if we have an
     // actual character, just add it. Anything else, we'll pass to the super class like before (even though it's unclear
     // what it will do with the keystroke)
-    if (stroke.keyChar != KeyEvent.CHAR_UNDEFINED) {
+    if (stroke.keyChar != KeyEvent.CHAR_UNDEFINED && !isKeyCharEnterOrEscape(stroke.keyChar)) {
       replaceSelection(stroke.keyChar.toString())
     } else {
       val event = KeyEvent(
@@ -209,7 +211,7 @@ class ExTextField internal constructor(private val myParentPanel: ExEntryPanel) 
   }
 
   override fun processKeyEvent(e: KeyEvent) {
-    if (logger.isDebugEnabled) logger.debug("key=$e")
+    logger.debug { "key=$e" }
 
     // The user has pressed or typed a key. The text field is first notified of a KEY_PRESSED event. If it's a simple
     // text character, it will be translated to a KEY_TYPED event with a keyChar, and we'll be notified again. We'll
@@ -227,12 +229,12 @@ class ExTextField internal constructor(private val myParentPanel: ExEntryPanel) 
     // handle them separately, as key presses, but not as typed characters.
     if (isAllowedPressedEvent(e) || isAllowedTypedEvent(e)) {
       val editor = myParentPanel.editor
+      // Keys typed here bypass VimTypedActionHandler and VimShortcutKeyAction, so this is where a modeless selection in
+      // the owning editor has to be dropped. Without it, `:d` after a mouse drag would act on the dragged range
+      myParentPanel.ijEditor?.let { ModelessSelection.clearIfOwned(it) }
       val keyHandler = KeyHandler.getInstance()
       val keyStroke = KeyStroke.getKeyStrokeForEvent(e)
-      keyHandler.handleKey(
-        editor, keyStroke, IjEditorExecutionContext(myParentPanel.context!!),
-        keyHandler.keyHandlerState
-      )
+      keyHandler.handleUserKey(editor, keyStroke, IjEditorExecutionContext(myParentPanel.context!!))
       e.consume()
     } else {
       super.processKeyEvent(e)
@@ -334,7 +336,8 @@ class ExTextField internal constructor(private val myParentPanel: ExEntryPanel) 
       // See VIM-2562
 
       mode = attributes.type
-      thickness = if (mode == GuiCursorType.BLOCK) 100 else attributes.thickness
+      // A null type means 'guicursor' is empty. The command line has no IDE-native caret, so fall back to a block
+      thickness = if (mode == GuiCursorType.BLOCK || mode == null) 100 else attributes.thickness
     }
 
     override fun focusGained(e: FocusEvent?) {
@@ -482,7 +485,12 @@ class ExTextField internal constructor(private val myParentPanel: ExEntryPanel) 
      * width of the rendered character representation (e.g., `^M`)
      */
     @Suppress("RemoveRedundantQualifierName")
-    private fun getCaretWidth(fm: FontMetrics, dotX: kotlin.Double, widthPercentage: Int, coerceCharacterWidth: Boolean): kotlin.Double {
+    private fun getCaretWidth(
+      fm: FontMetrics,
+      dotX: kotlin.Double,
+      widthPercentage: Int,
+      coerceCharacterWidth: Boolean,
+    ): kotlin.Double {
       val width: kotlin.Double
       val r = modelToView(dot + 1)
       if (r != null && !coerceCharacterWidth) {
@@ -536,7 +544,10 @@ class ExTextField internal constructor(private val myParentPanel: ExEntryPanel) 
     val defaultStyle = (document as StyledDocument).getStyle(StyleContext.DEFAULT_STYLE)
     StyleConstants.setForeground(defaultStyle, foreground)
 
-    addCaretListener { _: CaretEvent? -> resetCaret() }
+    addCaretListener { _: CaretEvent? ->
+      resetCaret()
+      myParentPanel.noteCmdlineCaretMove(text.length)
+    }
   }
 
   companion object {

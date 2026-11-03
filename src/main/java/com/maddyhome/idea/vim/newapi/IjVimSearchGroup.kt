@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2023 The IdeaVim authors
+ * Copyright 2003-2026 The IdeaVim authors
  *
  * Use of this source code is governed by an MIT-style
  * license that can be found in the LICENSE.txt file or at
@@ -27,12 +27,13 @@ import com.maddyhome.idea.vim.common.Direction
 import com.maddyhome.idea.vim.common.Direction.Companion.fromInt
 import com.maddyhome.idea.vim.common.TextRange
 import com.maddyhome.idea.vim.diagnostic.vimLogger
+import com.maddyhome.idea.vim.group.XMLGroup
 import com.maddyhome.idea.vim.helper.addSubstitutionConfirmationHighlight
-import com.maddyhome.idea.vim.helper.highlightSearchResults
-import com.maddyhome.idea.vim.helper.shouldIgnoreCase
+import com.maddyhome.idea.vim.helper.clearCurrentSearchMatchHighlight
+import com.maddyhome.idea.vim.helper.updateSearchCount
 import com.maddyhome.idea.vim.helper.updateSearchHighlights
-import com.maddyhome.idea.vim.helper.vimIncsearchCurrentMatchOffset
-import com.maddyhome.idea.vim.helper.vimLastHighlighters
+import com.maddyhome.idea.vim.helper.vimIncsearchCurrentMatch
+import com.maddyhome.idea.vim.helper.vimSearchHighlights
 import com.maddyhome.idea.vim.options.GlobalOptionChangeListener
 import org.jdom.Element
 import org.jetbrains.annotations.Contract
@@ -42,7 +43,7 @@ import org.jetbrains.annotations.TestOnly
   name = "VimSearchSettings",
   storages = [Storage(value = "\$APP_CONFIG$/vim_settings_local.xml", roamingType = RoamingType.DISABLED)]
 )
-open class IjVimSearchGroup : VimSearchGroupBase(), PersistentStateComponent<Element> {
+open class IjVimSearchGroup : VimSearchGroupBase(), PersistentStateComponent<Element>, VimSearchGroupLegacyLoader {
   companion object {
     private val logger by lazy { vimLogger<IjVimSearchGroup>() }
   }
@@ -66,23 +67,12 @@ open class IjVimSearchGroup : VimSearchGroupBase(), PersistentStateComponent<Ele
 
   private var showSearchHighlight: Boolean = injector.globalOptions().hlsearch
 
-  override fun highlightSearchLines(
-    editor: VimEditor,
-    startLine: Int,
-    endLine: Int,
-  ) {
-    val pattern = getLastUsedPattern()
-    if (pattern != null) {
-      val results = injector.searchHelper.findAll(
-        editor, pattern, startLine, endLine,
-        shouldIgnoreCase(pattern, lastIgnoreSmartCase)
-      )
-      highlightSearchResults(editor.ij, pattern, results, -1)
-    }
-  }
-
   override fun updateSearchHighlights(force: Boolean) {
     updateSearchHighlights(getLastUsedPattern(), lastIgnoreSmartCase, showSearchHighlight, force)
+  }
+
+  override fun updateSearchCount(matchOffset: Int) {
+    updateSearchCount(getLastUsedPattern(), lastIgnoreSmartCase, matchOffset)
   }
 
   override fun resetIncsearchHighlights() {
@@ -95,7 +85,7 @@ open class IjVimSearchGroup : VimSearchGroupBase(), PersistentStateComponent<Ele
     endOffset: Int,
   ): SearchHighlight {
 
-    val ijEditor = (editor as IjVimEditor).editor
+    val ijEditor = editor.ij
     val highlighter = addSubstitutionConfirmationHighlight(
       ijEditor,
       startOffset,
@@ -116,20 +106,14 @@ open class IjVimSearchGroup : VimSearchGroupBase(), PersistentStateComponent<Ele
     }
     for (vimEditor in vimEditors) {
       val editor = vimEditor.ij
-      if (editor.vimLastHighlighters != null) {
+      if (editor.vimSearchHighlights.hasMatches()) {
         return true
       }
     }
     return false
   }
 
-  override fun getCurrentIncsearchResultRange(editor: VimEditor): TextRange? {
-    val ijEditor = editor.ij
-    val incsearchHighlighters = ijEditor.vimLastHighlighters ?: return null
-    val currentOffset = ijEditor.vimIncsearchCurrentMatchOffset ?: return null
-    val currentHighlighter = incsearchHighlighters.find { it.startOffset == currentOffset }
-    return currentHighlighter?.textRange?.vim
-  }
+  override fun getCurrentIncsearchResultRange(editor: VimEditor): TextRange? = editor.ij.vimIncsearchCurrentMatch
 
   override fun setShouldShowSearchHighlights() {
     showSearchHighlight = injector.globalOptions().hlsearch
@@ -140,7 +124,7 @@ open class IjVimSearchGroup : VimSearchGroupBase(), PersistentStateComponent<Ele
     updateSearchHighlights(false)
   }
 
-  fun saveData(element: Element) {
+  override fun saveData(element: Element) {
     logger.debug("saveData")
     val search = Element("search")
 
@@ -161,11 +145,11 @@ open class IjVimSearchGroup : VimSearchGroupBase(), PersistentStateComponent<Ele
 
   private fun addOptionalTextElement(element: Element, name: String, text: String?) {
     if (text != null) {
-      element.addContent(VimPlugin.getXML().setSafeXmlText(Element(name), text))
+      element.addContent(XMLGroup.getInstance().setSafeXmlText(Element(name), text))
     }
   }
 
-  fun readData(element: Element) {
+  override fun readData(element: Element) {
     logger.debug("readData")
     val search = element.getChild("search") ?: return
 
@@ -188,24 +172,23 @@ open class IjVimSearchGroup : VimSearchGroupBase(), PersistentStateComponent<Ele
       lastDirection = Direction.FORWARDS
     }
 
-    val show = search.getChild("show-last")
-    val disableHighlight = injector.globalOptions().viminfo.contains("h")
-    showSearchHighlight = !disableHighlight && show.text.toBoolean()
+    val show = search.getChild("show-last")?.text?.toBoolean() ?: false
+    showSearchHighlight = show && !injector.globalOptions().viminfo.contains("h")
     if (logger.isDebug()) {
-      logger.debug("show=" + show + "(" + show.text + ")")
+      logger.debug("show=$show")
       logger.debug("showSearchHighlight=$showSearchHighlight")
     }
   }
 
   private fun getSafeChildText(element: Element, name: String): String? {
     val child = element.getChild(name)
-    return if (child != null) VimPlugin.getXML().getSafeXmlText(child) else null
+    return if (child != null) XMLGroup.getInstance().getSafeXmlText(child) else null
   }
 
   private fun getSafeChildText(element: Element, name: String, defaultValue: String): String {
     val child = element.getChild(name)
     if (child != null) {
-      val value = VimPlugin.getXML().getSafeXmlText(child)
+      val value = XMLGroup.getInstance().getSafeXmlText(child)
       return value ?: defaultValue
     }
     return defaultValue
@@ -248,7 +231,7 @@ open class IjVimSearchGroup : VimSearchGroupBase(), PersistentStateComponent<Ele
 
 
   /**
-   * Removes and adds highlights for current search pattern when the document is edited
+   * Rebuilds the search highlights of the changed document, since the edit may have created or destroyed matches
    */
   class DocumentSearchListener @Contract(pure = true) private constructor() : DocumentListener {
     override fun documentChanged(event: DocumentEvent) {
@@ -256,48 +239,15 @@ open class IjVimSearchGroup : VimSearchGroupBase(), PersistentStateComponent<Ele
       // Note that the change may have come from a remote guest in Code With Me scenarios (in which case
       // ClientId.current will be a guest ID), but we don't care - we still need to add/remove highlights for the
       // changed text. Make sure we only update local editors, though.
-      val document = event.document
-      for (vimEditor in injector.editorGroup.getEditors(IjVimDocument(document))) {
-        val editor = (vimEditor as IjVimEditor).editor
-        var existingHighlighters = editor.vimLastHighlighters ?: continue
+      for (vimEditor in injector.editorGroup.getEditors(IjVimDocument(event.document))) {
+        val editor = vimEditor.ij
+        if (!editor.vimSearchHighlights.isActive) continue
 
-        if (logger.isDebug()) {
-          logger.debug("hls=$existingHighlighters")
-          logger.debug("event=$event")
-        }
+        editor.vimSearchHighlights.refreshAfterDocumentChange()
 
-        // We can only re-highlight whole lines, so clear any highlights in the affected lines.
-        // If we're deleting lines, this will clear + re-highlight the new current line, which hasn't been modified.
-        // However, we still want to re-highlight this line in case any highlights cross the line boundaries.
-        // If we're adding lines, this will clear + re-highlight all new lines.
-        val startPosition = editor.offsetToLogicalPosition(event.offset)
-        val endPosition = editor.offsetToLogicalPosition(event.offset + event.newLength)
-        val startLineOffset = document.getLineStartOffset(startPosition.line)
-        val endLineOffset = document.getLineEndOffset(endPosition.line)
-
-        // Remove any highlights that have already been deleted, and remove + clear those that intersect with the change
-        val iter = existingHighlighters.iterator()
-        while (iter.hasNext()) {
-          val highlighter = iter.next()
-          if (!highlighter.isValid) {
-            iter.remove()
-          } else if (highlighter.textRange.intersects(startLineOffset, endLineOffset)) {
-            iter.remove()
-            editor.markupModel.removeHighlighter(highlighter)
-          }
-        }
-
-        (injector.searchGroup as VimSearchGroupBase).highlightSearchLines(
-          editor.vim,
-          startPosition.line,
-          endPosition.line
-        )
-
-        if (logger.isDebug()) {
-          existingHighlighters = editor.vimLastHighlighters!!
-          logger.debug("sl=" + startPosition.line + ", el=" + endPosition.line)
-          logger.debug("hls=$existingHighlighters")
-        }
+        // The rebuilt highlights are all normal matches. An edit never makes a match current - only an in-progress
+        // 'incsearch' has one, and this puts its highlight back if the rebuild removed it
+        clearCurrentSearchMatchHighlight(editor)
       }
     }
 

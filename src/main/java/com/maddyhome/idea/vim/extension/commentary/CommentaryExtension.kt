@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2023 The IdeaVim authors
+ * Copyright 2003-2026 The IdeaVim authors
  *
  * Use of this source code is governed by an MIT-style
  * license that can be found in the LICENSE.txt file or at
@@ -7,22 +7,13 @@
  */
 package com.maddyhome.idea.vim.extension.commentary
 
-import com.intellij.codeInsight.actions.AsyncActionExecutionService
-import com.intellij.openapi.actionSystem.IdeActions
-import com.intellij.openapi.editor.Editor
-import com.intellij.openapi.project.Project
-import com.intellij.openapi.util.Ref
-import com.intellij.psi.PsiComment
-import com.intellij.psi.PsiElement
-import com.intellij.psi.PsiFile
-import com.intellij.psi.PsiWhiteSpace
-import com.intellij.psi.util.PsiTreeUtil
+import com.intellij.openapi.editor.impl.editorId
+import com.intellij.vim.api.VimInitApi
 import com.maddyhome.idea.vim.KeyHandler
+import com.maddyhome.idea.vim.VimPlugin
 import com.maddyhome.idea.vim.api.ExecutionContext
 import com.maddyhome.idea.vim.api.ImmutableVimCaret
 import com.maddyhome.idea.vim.api.VimEditor
-import com.maddyhome.idea.vim.api.getLineEndOffset
-import com.maddyhome.idea.vim.api.globalOptions
 import com.maddyhome.idea.vim.api.injector
 import com.maddyhome.idea.vim.command.MappingMode
 import com.maddyhome.idea.vim.command.OperatorArguments
@@ -35,18 +26,15 @@ import com.maddyhome.idea.vim.extension.ExtensionHandler
 import com.maddyhome.idea.vim.extension.VimExtension
 import com.maddyhome.idea.vim.extension.VimExtensionFacade
 import com.maddyhome.idea.vim.extension.VimExtensionFacade.addCommand
-import com.maddyhome.idea.vim.extension.VimExtensionFacade.executeNormalWithoutMapping
 import com.maddyhome.idea.vim.extension.VimExtensionFacade.putExtensionHandlerMapping
 import com.maddyhome.idea.vim.extension.VimExtensionFacade.putKeyMapping
 import com.maddyhome.idea.vim.extension.VimExtensionFacade.putKeyMappingIfMissing
 import com.maddyhome.idea.vim.extension.exportOperatorFunction
+import com.maddyhome.idea.vim.group.comment.CommentaryRemoteApi
+import com.maddyhome.idea.vim.group.rpc
 import com.maddyhome.idea.vim.handler.TextObjectActionHandler
-import com.maddyhome.idea.vim.helper.PsiHelper
 import com.maddyhome.idea.vim.key.OperatorFunction
-import com.maddyhome.idea.vim.newapi.IjVimEditor
 import com.maddyhome.idea.vim.newapi.ij
-import com.maddyhome.idea.vim.newapi.vim
-import com.maddyhome.idea.vim.state.mode.Mode
 import com.maddyhome.idea.vim.state.mode.SelectionType
 
 internal class CommentaryExtension : VimExtension {
@@ -59,60 +47,36 @@ internal class CommentaryExtension : VimExtension {
       selectionType: SelectionType,
       resetCaret: Boolean = true,
     ): Boolean {
-      val mode = editor.mode
-      if (mode !is Mode.VISUAL) {
-        editor.ij.selectionModel.setSelection(range.startOffset, range.endOffset)
-      }
+      val ijEditor = editor.ij
+      val document = ijEditor.document
 
-      // Treat block- and character-wise selections as block comments. Fall back if the first action isn't available
-      val actions = if (selectionType === SelectionType.LINE_WISE) {
-        listOf(IdeActions.ACTION_COMMENT_LINE, IdeActions.ACTION_COMMENT_BLOCK)
+      val editorId = ijEditor.editorId()
+      val caretOffset = if (resetCaret) range.startOffset else -1
+      val blockCommentEnabled = areBlockCommentsEnabled()
+      if (selectionType === SelectionType.LINE_WISE || !blockCommentEnabled) {
+        val startLine = document.getLineNumber(range.startOffset)
+        var endLine = document.getLineNumber(range.endOffset)
+        // Adjust endLine if the range ends at the start of a line (don't include that line)
+        if (endLine > startLine && document.getLineStartOffset(endLine) == range.endOffset) {
+          endLine--
+        }
+        val finalEndLine = endLine
+        rpc(ijEditor.project) {
+          CommentaryRemoteApi.getInstance().toggleLineComment(editorId, startLine, finalEndLine, caretOffset)
+        }
       } else {
-        listOf(IdeActions.ACTION_COMMENT_BLOCK, IdeActions.ACTION_COMMENT_LINE)
+        rpc(ijEditor.project) {
+          CommentaryRemoteApi.getInstance()
+            .toggleBlockComment(editorId, range.startOffset, range.endOffset, caretOffset)
+        }
       }
-
-      val project = editor.ij.project!!
-      val callback = { afterCommenting(mode, editor, resetCaret, range) }
-      return actions.any { executeActionWithCallbackOnSuccess(editor, it, project, context, callback) }
+      return true
     }
 
-    private fun executeActionWithCallbackOnSuccess(
-      editor: VimEditor,
-      action: String,
-      project: Project,
-      context: ExecutionContext,
-      callback: () -> Unit,
-    ): Boolean {
-      val res = Ref.create<Boolean>(false)
-      AsyncActionExecutionService.getInstance(project).withExecutionAfterAction(
-        action,
-        { res.set(injector.actionExecutor.executeAction(editor, name = action, context = context)) },
-        { if (res.get()) callback() })
-      return res.get()
-    }
-
-    private fun afterCommenting(
-      mode: Mode,
-      editor: VimEditor,
-      resetCaret: Boolean,
-      range: TextRange,
-    ) {
-      // Remove the selection, if we added it
-      if (mode !is Mode.VISUAL) {
-        editor.removeSelection()
-      }
-
-      // Put the caret back at the start of the range, as though it was moved by the operator's motion argument.
-      // This is what Vim does. If IntelliJ is configured to add comments at the start of the line, this might put
-      // the caret in the "wrong" place. E.g. gc_ should put the caret on the first non-whitespace character. This
-      // is calculated by the motion, saved in the marks, and then we insert the comment. If it's inserted at the
-      // first non-whitespace character, then the caret is in the right place. If it's inserted at the first column,
-      // then the caret is now in a bit of a weird place. We can't detect this scenario, so we just have to accept
-      // the difference
-      // TODO: If we don't move the caret to the start offset, we should maintain the current logical position
-      if (resetCaret) {
-        editor.primaryCaret().moveToOffset(range.startOffset)
-      }
+    private fun areBlockCommentsEnabled(): Boolean {
+      val value =
+        VimPlugin.getVariableService().getGlobalVariableValue("commentary_block_comments")?.toVimNumber()?.booleanValue
+      return value == null || value
     }
   }
 
@@ -122,10 +86,22 @@ internal class CommentaryExtension : VimExtension {
 
   override fun getName() = "commentary"
 
-  override fun init() {
+  override fun init(initApi: VimInitApi) {
     val plugCommentaryKeys = injector.parser.parseKeys("<Plug>Commentary")
     val plugCommentaryLineKeys = injector.parser.parseKeys("<Plug>CommentaryLine")
-    putExtensionHandlerMapping(MappingMode.NX, plugCommentaryKeys, owner, CommentaryOperatorHandler(), false)
+
+    // <Plug>Commentary in Normal and Visual mode: set up operator pending motion
+    initApi.mappings {
+      nnoremap("<Plug>Commentary") {
+        commands().setOperatorFunction(OPERATOR_FUNC)
+        normal("g@")
+      }
+      xnoremap("<Plug>Commentary") {
+        commands().setOperatorFunction(OPERATOR_FUNC)
+        normal("g@")
+      }
+    }
+
     putExtensionHandlerMapping(MappingMode.O, plugCommentaryKeys, owner, CommentaryMappingHandler(), false)
     putKeyMappingIfMissing(MappingMode.N, plugCommentaryLineKeys, owner, injector.parser.parseKeys("gc_"), true)
 
@@ -148,28 +124,13 @@ internal class CommentaryExtension : VimExtension {
     addCommand("Commentary", CommentaryCommandAliasHandler())
 
     VimExtensionFacade.exportOperatorFunction(OPERATOR_FUNC, CommentaryOperatorFunction())
- }
+  }
 
   private class CommentaryOperatorFunction : OperatorFunction {
     // todo make it multicaret
     override fun apply(editor: VimEditor, context: ExecutionContext, selectionType: SelectionType?): Boolean {
       val range = injector.markService.getChangeMarks(editor.primaryCaret()) ?: return false
       return Util.doCommentary(editor, context, range, selectionType ?: SelectionType.CHARACTER_WISE, true)
-    }
-  }
-
-  /**
-   * Sets up the operator, pending a motion
-   *
-   * E.g. handles the `gc` in `gc_`, by setting the operator function, then invoking `g@` to receive the `_` motion to
-   * invoke the operator. This object is both the mapping handler and the operator function.
-   */
-  private class CommentaryOperatorHandler : ExtensionHandler {
-    override val isRepeatable = true
-
-    override fun execute(editor: VimEditor, context: ExecutionContext, operatorArguments: OperatorArguments) {
-      injector.globalOptions().operatorfunc = OPERATOR_FUNC
-      executeNormalWithoutMapping(injector.parser.parseKeys("g@"), editor.ij)
     }
   }
 
@@ -185,7 +146,8 @@ internal class CommentaryExtension : VimExtension {
   /**
    * The text object handler that provides the motion in e.g. `dgc`
    *
-   * This object is both the `<Plug>Commentary` mapping handler and the text object handler
+   * Delegates to [VimPsiService.getCommentBlockRange][com.maddyhome.idea.vim.api.VimPsiService.getCommentBlockRange]
+   * which uses PSI on the backend to detect contiguous comment lines.
    */
   private object CommentaryTextObjectMotionHandler : TextObjectActionHandler() {
     override val visualType: TextObjectVisualType = TextObjectVisualType.LINE_WISE
@@ -197,44 +159,8 @@ internal class CommentaryExtension : VimExtension {
       count: Int,
       rawCount: Int,
     ): TextRange? {
-      val nativeEditor = (editor as IjVimEditor).editor
-      val file = PsiHelper.getFile(nativeEditor) ?: return null
-      val lastLine = editor.lineCount()
-
-      var startLine = caret.getBufferPosition().line
-      while (startLine > 0 && isCommentLine(file, nativeEditor, startLine - 1)) startLine--
-      var endLine = caret.getBufferPosition().line - 1
-      while (endLine < lastLine && isCommentLine(file, nativeEditor, endLine + 1)) endLine++
-
-      if (startLine <= endLine) {
-        val startOffset = editor.getLineStartOffset(startLine)
-        val endOffset = editor.getLineStartOffset(endLine + 1)
-        return TextRange(startOffset, endOffset)
-      }
-
-      return null
+      return injector.psiService.getCommentBlockRange(editor, caret.getBufferPosition().line)
     }
-
-    // Check all leaf nodes in the given line are whitespace, comments, or are owned by comments
-    private fun isCommentLine(file: PsiFile, editor: Editor, logicalLine: Int): Boolean {
-      val startOffset = editor.vim.getLineStartOffset(logicalLine)
-      val endOffset = editor.vim.getLineEndOffset(logicalLine, true)
-      val startElement = file.findElementAt(startOffset) ?: return false
-      var next: PsiElement? = startElement
-      var hasComment = false
-      while (next != null && next.textRange.startOffset <= endOffset) {
-        when {
-          next is PsiWhiteSpace -> {} // Skip whitespace elementl
-          isComment(next) -> hasComment = true // Mark when we find a comment
-          else -> return false // Non-comment content found, exit early
-        }
-        next = PsiTreeUtil.nextLeaf(next, true)
-      }
-      return hasComment
-    }
-
-    private fun isComment(element: PsiElement) =
-      PsiTreeUtil.getParentOfType(element, PsiComment::class.java, false) != null
   }
 
   /**

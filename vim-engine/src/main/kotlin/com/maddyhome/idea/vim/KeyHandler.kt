@@ -7,8 +7,10 @@
  */
 package com.maddyhome.idea.vim
 
+import com.maddyhome.idea.vim.action.change.VimRedoBuffer
 import com.maddyhome.idea.vim.api.ExecutionContext
 import com.maddyhome.idea.vim.api.VimEditor
+import com.maddyhome.idea.vim.api.getLineEndOffset
 import com.maddyhome.idea.vim.api.globalOptions
 import com.maddyhome.idea.vim.api.injector
 import com.maddyhome.idea.vim.command.Command
@@ -20,6 +22,7 @@ import com.maddyhome.idea.vim.diagnostic.trace
 import com.maddyhome.idea.vim.diagnostic.vimLogger
 import com.maddyhome.idea.vim.impl.state.toMappingMode
 import com.maddyhome.idea.vim.key.KeyConsumer
+import com.maddyhome.idea.vim.key.KeySource
 import com.maddyhome.idea.vim.key.KeyStack
 import com.maddyhome.idea.vim.key.consumers.CharArgumentConsumer
 import com.maddyhome.idea.vim.key.consumers.CommandCountConsumer
@@ -27,6 +30,8 @@ import com.maddyhome.idea.vim.key.consumers.CommandKeyConsumer
 import com.maddyhome.idea.vim.key.consumers.DeleteCommandCountConsumer
 import com.maddyhome.idea.vim.key.consumers.DigraphConsumer
 import com.maddyhome.idea.vim.key.consumers.EditorResetConsumer
+import com.maddyhome.idea.vim.key.consumers.ForcedMotionConsumer
+import com.maddyhome.idea.vim.key.consumers.LangMapConsumer
 import com.maddyhome.idea.vim.key.consumers.ModalInputConsumer
 import com.maddyhome.idea.vim.key.consumers.ModeInputConsumer
 import com.maddyhome.idea.vim.key.consumers.SelectRegisterConsumer
@@ -48,19 +53,24 @@ import javax.swing.KeyStroke
 class KeyHandler {
   private val keyConsumers: List<KeyConsumer> = listOf(
     ModalInputConsumer(), // Must be first
+    LangMapConsumer(),    // Must be before MappingProcessor
     MappingProcessor,     // Must be as early in pipeline as possible
     CommandCountConsumer(),
     DeleteCommandCountConsumer(),
     EditorResetConsumer(),
-    StartSelectRegisterConsumer(),  // Must be before command consumer, so " isn't treated as a command char
+    StartSelectRegisterConsumer(),  // Must be before command key consumer, so " isn't treated as a command char
     SelectRegisterConsumer(),
-    DigraphConsumer(),    // Must be before command key consumer so {char}<BS>{char} works.
-                          // Would be a problem if a command prefix requires a DIGRAPH arg (no such command exists)
-    CommandKeyConsumer(), // Must be before argument consumers, to handle c_CTRL-R prefix
+    ForcedMotionConsumer(),
+    DigraphConsumer(),    // Must be before command key consumer, to process {char}<BS>{char}
+    // Must be before char argument consumer, to convert and repost digraph/literal key sequences
+    // and non-digraph/literal sequences fall through as char arguments
+    CommandKeyConsumer(), // Must be before argument consumers, because c_CTRL-R is both a command prefix and a command
+    // expecting a character-based argument
     CharArgumentConsumer(),
     ModeInputConsumer()   // Must be last to accept the keystroke as typed input
   )
   private var handleKeyRecursionCount = 0
+  internal var maxMapDepthReached = false
 
   private var commandListener: ConcurrentLinkedDeque<() -> Unit> = ConcurrentLinkedDeque()
 
@@ -96,36 +106,58 @@ class KeyHandler {
   var lastUsedEditorInfo: LastUsedEditorInfo = LastUsedEditorInfo(-1, false)
 
   /**
-   * This is the main key handler for the Vim plugin. Every keystroke not handled directly by Idea is sent here for
-   * processing.
+   * Main entry point to process every keystroke for Vim functionality
    *
-   * @param editor  The editor the key was typed into
-   * @param key     The keystroke typed by the user
-   * @param context The data context
-   */
-  fun handleKey(editor: VimEditor, key: KeyStroke, context: ExecutionContext, keyState: KeyHandlerState) {
-    commandListener.forEach { it() }
-    handleKey(editor, key, context, allowKeyMappings = true, keyState)
-  }
-
-  /**
-   * Handling input keys with additional parameters
+   * The key handler will process every keystroke according to current mode and state of e.g. command builder, mapping
+   * and digraphs. The keystroke will potentially be mapped and used as part of a Vim motion or operator, or inserted
+   * directly into the editor or current command line/search entry. The source of the keystroke is important to decide
+   * if the key should be mapped, or if `'langmap'` should be applied.
    *
-   * @param allowKeyMappings If we allow key mappings or not
+   * @param editor    The editor the key was typed into
+   * @param key       The keystroke typed by the user
+   * @param keySource Where did the keystroke come from? E.g. typed, result of a map or non-recursive map, etc.
+   * @param context   The data context
+   * @param keyState  Various state for managing the keystroke, such as command builder, mapping and digraph state
    */
   fun handleKey(
     editor: VimEditor,
     key: KeyStroke,
+    keySource: KeySource,
     context: ExecutionContext,
-    allowKeyMappings: Boolean,
     keyState: KeyHandlerState,
   ) {
-    val result = processKey(key, editor, allowKeyMappings, KeyProcessResult.SynchronousKeyProcessBuilder(keyState))
+    if (keySource == KeySource.TYPED) {
+      commandListener.forEach { it() }
+    }
+    val result = processKey(key, editor, keySource, KeyProcessResult.SynchronousKeyProcessBuilder(keyState))
     if (result is KeyProcessResult.Executable) {
       result.execute(editor, context)
     }
   }
 
+  /**
+   * Entry point for a key the user typed, as opposed to a key IdeaVim feeds to itself
+   *
+   * Reports the key to [com.maddyhome.idea.vim.common.VimKeyTypedListener]s and handles it as [KeySource.TYPED]. The
+   * source alone can't tell the two apart, because `.` repeat and replayed mapping prefixes are [KeySource.TYPED] too.
+   */
+  fun handleUserKey(editor: VimEditor, key: KeyStroke, context: ExecutionContext) {
+    injector.listenersNotifier.notifyKeyTyped(editor, key)
+    handleKey(editor, key, KeySource.TYPED, context, keyHandlerState)
+  }
+
+  // Deprecated. Has external usages
+  @Deprecated(
+    "Use handleKey(editor, key, keySource, context, keyState)",
+    replaceWith = ReplaceWith("handleKey(editor, key, KeySource.TYPED, context, keyState)")
+  )
+  @ApiStatus.ScheduledForRemoval
+  fun handleKey(editor: VimEditor, key: KeyStroke, context: ExecutionContext, keyState: KeyHandlerState) {
+    handleKey(editor, key, KeySource.TYPED, context, keyState)
+  }
+
+  // Deprecated. Has external usages
+  @Suppress("unused")
   @Deprecated(
     "Use `handleKey(editor, key, context, allowKeyMappings, keyState)` instead.",
     replaceWith = ReplaceWith("handleKey(editor, key, context, allowKeyMappings, keyState)")
@@ -139,7 +171,8 @@ class KeyHandler {
     mappingCompleted: Boolean,
     keyState: KeyHandlerState,
   ) {
-    handleKey(editor, key, context, allowKeyMappings, keyState)
+    val keySource = if (allowKeyMappings) KeySource.TYPED else KeySource.MAPPED_NON_RECURSIVE
+    handleKey(editor, key, keySource, context, keyState)
   }
 
   /**
@@ -152,21 +185,23 @@ class KeyHandler {
   private fun processKey(
     key: KeyStroke,
     editor: VimEditor,
-    allowKeyMappings: Boolean,
+    keySource: KeySource,
     keyProcessResultBuilder: KeyProcessResult.KeyProcessResultBuilder,
   ): KeyProcessResult {
     synchronized(lock) {
       logger.trace {
         """
         ------- Key Handler -------
-        Start key processing. allowKeyMappings: $allowKeyMappings
+        Start key processing. source: $keySource
         Key: $key
+        Mode: ${editor.mode}
+        State: ${keyProcessResultBuilder.state}
       """.trimIndent()
       }
-      logger.trace { keyProcessResultBuilder.state.toString() }
-      logger.trace { "Mode = ${editor.mode}" }
+
       val maxMapDepth = injector.globalOptions().maxmapdepth
-      if (handleKeyRecursionCount >= maxMapDepth) {
+      if (handleKeyRecursionCount >= maxMapDepth && keySource != KeySource.LANG_MAP) {
+        maxMapDepthReached = true
         keyProcessResultBuilder.addExecutionStep { _, lambdaEditor, _ ->
           logger.warn("Key handling, maximum recursion of the key received. maxdepth=$maxMapDepth")
           injector.messages.showErrorMessage(lambdaEditor, injector.messages.message("E223"))
@@ -175,16 +210,27 @@ class KeyHandler {
       }
 
       injector.messages.clearError()
+      if (handleKeyRecursionCount == 0) {
+        maxMapDepthReached = false
+      }
       // We only record unmapped keystrokes. If we've recursed to handle mapping, don't record anything.
       val shouldRecord = handleKeyRecursionCount == 0 && injector.registerGroup.isRecording
 
-      handleKeyRecursionCount++
+      // The redo buffer records the same keys, but always - whether they are a change is not known yet
+      val shouldRecordForRedo = handleKeyRecursionCount == 0
+
+      // Langmap mapping does not affect recursion depth. However, we can still hit infinite recursion with 'langremap',
+      // which applies 'langmap' to the output of a mapping, because the output of 'langmap' can be mapped again,
+      // recursively.
+      // E.g. `nmap b a`, `set langmap=ax`, `nmap x b`: 'b' -> 'a' (nmap) -> 'x' (langmap) -> 'b' (nmap) -> ...
+      if (keySource != KeySource.LANG_MAP) {
+        handleKeyRecursionCount++
+      }
+
       try {
-        val isProcessed = keyConsumers.any {
-          // These two lines are specifically formatted to allow setting a breakpoint on the consumeKey line :)
-          it.isApplicable(key, editor, allowKeyMappings, keyProcessResultBuilder)
-            && it.consumeKey(key, editor, allowKeyMappings, keyProcessResultBuilder)
-        }
+        // Before the consumers run, so that they can mark the count and register keys
+        if (shouldRecordForRedo) VimRedoBuffer.recordKey(key)
+        val isProcessed = processConsumer(key, editor, keySource, keyProcessResultBuilder)
         if (isProcessed) {
           logger.trace { "Key was successfully caught by consumer" }
           keyProcessResultBuilder.addExecutionStep { lambdaKeyState, lambdaEditor, lambdaContext ->
@@ -194,14 +240,44 @@ class KeyHandler {
           // Key wasn't processed by any of the consumers, so we reset our key state
           onUnknownKey(editor, keyProcessResultBuilder.state)
           updateState(keyProcessResultBuilder.state)
-          return KeyProcessResult.Unknown.apply {
-            handleKeyRecursionCount-- // because onFinish will now be executed for unknown
+          if (keySource != KeySource.LANG_MAP) {
+            handleKeyRecursionCount-- // because onFinish will not be executed for unknown
           }
+          return KeyProcessResult.Unknown
         }
       } finally {
-        keyProcessResultBuilder.onFinish = { handleKeyRecursionCount-- }
+        if (keySource != KeySource.LANG_MAP) {
+          keyProcessResultBuilder.onFinish = { handleKeyRecursionCount-- }
+        }
       }
       return keyProcessResultBuilder.build()
+    }
+  }
+
+  private fun processConsumer(
+    key: KeyStroke,
+    editor: VimEditor,
+    keySource: KeySource,
+    keyProcessResultBuilder: KeyProcessResult.KeyProcessResultBuilder,
+  ): Boolean {
+    keyConsumers.forEach {
+      if (!it.isApplicable(key, editor, keySource, keyProcessResultBuilder)) return@forEach
+      // This line is separated so a breakpoint can be set on consumeKey :)
+      val consumed = it.consumeKey(key, editor, keySource, keyProcessResultBuilder)
+      if (consumed) return true
+    }
+    return false
+  }
+
+  /**
+   * Use this to execute key handling without recording them in macro
+   */
+  fun withoutRecording(unit: () -> Unit) {
+    handleKeyRecursionCount++
+    try {
+      unit()
+    } finally {
+      handleKeyRecursionCount--
     }
   }
 
@@ -218,6 +294,7 @@ class KeyHandler {
     if (commandBuilder.isReady) {
       logger.trace("Ready command builder. Execute command.")
       executeCommand(editor, context, injector.vimState, keyState)
+      VimRedoBuffer.commandFinished(editor)
     }
 
     // Don't record the keystroke that stops the recording (unmapped this is `q`)
@@ -233,6 +310,7 @@ class KeyHandler {
   }
 
   private fun onUnknownKey(editor: VimEditor, keyState: KeyHandlerState) {
+    VimRedoBuffer.commandAborted(editor)
     editor.resetOpPending()
     editor.isReplaceCharacter = false
     // Note that this will also reset the CommandBuilder to NEW_COMMAND
@@ -254,6 +332,18 @@ class KeyHandler {
     val command = keyState.commandBuilder.buildCommand()
     val operatorArguments = OperatorArguments(command.rawCount, editorState.mode)
 
+    //true if goes form insert to OpPending
+    val isSingleCommandFromInsert = when (val m = editor.mode) {
+      is Mode.NORMAL -> m.isInsertPending || m.isReplacePending
+      is Mode.OP_PENDING -> {
+        val returnTo = m.returnTo
+        returnTo is Mode.INSERT || returnTo is Mode.REPLACE ||
+          (returnTo is Mode.NORMAL && (returnTo.isInsertPending || returnTo.isReplacePending))
+      }
+
+      else -> false
+    }
+
     // If we were in "operator pending" mode, reset back to normal mode.
     // But opening command line should not reset operator pending mode (e.g. `d/foo`)
     if (!command.flags.contains(CommandFlags.FLAG_START_EX)) {
@@ -272,10 +362,17 @@ class KeyHandler {
       }
     }
 
-    val action: Runnable = ActionRunner(editor, context, command, keyState, operatorArguments)
+    val action: Runnable =
+      ActionRunner(editor, context, command, keyState, operatorArguments, isSingleCommandFromInsert)
     val cmdAction = command.action
     val name = cmdAction.id
-    injector.actionExecutor.executeCommand(editor, action, name, action)
+    if (cmdAction.executesNestedCommands) {
+      // Macro-like actions must not hold an open command while replaying keystrokes, otherwise a replayed `u` can't
+      // undo an earlier change made by the same macro. See [EditorActionHandlerBase.executesNestedCommands].
+      action.run()
+    } else {
+      injector.actionExecutor.executeCommand(editor, action, name, action)
+    }
   }
 
   /**
@@ -349,6 +446,7 @@ class KeyHandler {
     val cmd: Command,
     val keyState: KeyHandlerState,
     val operatorArguments: OperatorArguments,
+    val isSingleCommandFromInsert: Boolean = false,
   ) : Runnable {
     override fun run() {
       val editorState = injector.vimState
@@ -358,6 +456,11 @@ class KeyHandler {
         injector.registerGroup.selectRegister(register)
       }
       injector.actionExecutor.executeVimAction(editor, cmd.action, context, operatorArguments)
+
+      if (isSingleCommandFromInsert && editorState.mode is Mode.INSERT) {
+        restoreCursorAfterInsertNormal(editor, editorState)
+      }
+
       if (editorState.mode is Mode.INSERT || editorState.mode is Mode.REPLACE) {
         injector.changeGroup.processCommand(editor, cmd)
       }
@@ -374,9 +477,22 @@ class KeyHandler {
       // "select register"
       if (editorState.mode is Mode.NORMAL && !cmd.flags.contains(CommandFlags.FLAG_EXPECT_MORE)) {
         editor.mode = editorState.mode.returnTo
+        if (isSingleCommandFromInsert) {
+          restoreCursorAfterInsertNormal(editor, editorState)
+        }
       }
 
       instance.reset(keyState, editorState.mode)
+    }
+
+    private fun restoreCursorAfterInsertNormal(editor: VimEditor, editorState: VimStateMachine) {
+      for (caret in editor.nativeCarets()) {
+        if (editorState.deletedToEndOfLine) {
+          val line = caret.getBufferPosition().line
+          caret.moveToOffset(editor.getLineEndOffset(line, true))
+        }
+      }
+      editorState.deletedToEndOfLine = false
     }
   }
 

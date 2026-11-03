@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2023 The IdeaVim authors
+ * Copyright 2003-2026 The IdeaVim authors
  *
  * Use of this source code is governed by an MIT-style
  * license that can be found in the LICENSE.txt file or at
@@ -43,6 +43,11 @@ interface VimChangeGroup {
   fun initInsert(editor: VimEditor, context: ExecutionContext, mode: Mode)
 
   /**
+   * Enter Replace mode, setting up the replace mask so that `<BS>` can restore the overwritten characters.
+   */
+  fun changeReplace(editor: VimEditor, context: ExecutionContext)
+
+  /**
    * Enter Insert mode for block selection.
    *
    * Given a [TextRange] representing a block selection, position the primary caret either at the start column of the
@@ -59,7 +64,6 @@ interface VimChangeGroup {
 
   fun processEscape(editor: VimEditor, context: ExecutionContext?)
 
-  fun processEnter(editor: VimEditor, caret: VimCaret, context: ExecutionContext)
   fun processEnter(editor: VimEditor, context: ExecutionContext)
   fun processBackspace(editor: VimEditor, context: ExecutionContext)
 
@@ -105,6 +109,7 @@ interface VimChangeGroup {
     key: KeyStroke,
     processResultBuilder: KeyProcessResult.KeyProcessResultBuilder,
   ): Boolean
+
   fun deleteLine(
     editor: VimEditor,
     context: ExecutionContext,
@@ -212,6 +217,16 @@ interface VimChangeGroup {
 
   fun reformatCodeSelection(editor: VimEditor, caret: VimCaret, range: VimSelection)
 
+  fun reformatCodeMotionPreserveCursor(
+    editor: VimEditor,
+    caret: VimCaret,
+    context: ExecutionContext,
+    argument: Argument,
+    operatorArguments: OperatorArguments,
+  ): Boolean
+
+  fun reformatCodeSelectionPreserveCursor(editor: VimEditor, caret: VimCaret, range: VimSelection)
+
   fun autoIndentMotion(
     editor: VimEditor,
     caret: VimCaret,
@@ -220,7 +235,12 @@ interface VimChangeGroup {
     operatorArguments: OperatorArguments,
   )
 
-  fun autoIndentRange(editor: VimEditor, caret: VimCaret, context: ExecutionContext, range: TextRange)
+  fun autoIndentRange(
+    editor: VimEditor,
+    context: ExecutionContext,
+    ranges: List<TextRange>,
+    carets: List<VimCaret> = emptyList(),
+  )
 
   fun indentLines(
     editor: VimEditor,

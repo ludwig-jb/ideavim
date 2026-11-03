@@ -25,8 +25,12 @@ class IjOutputPanelService : VimOutputPanelServiceBase() {
     return activeOutputPanel?.get()?.takeIf { (it as OutputPanel).active }
   }
 
+  override fun getActiveOutputPanelHeight(): Int? {
+    return (getCurrentOutputPanel() as? OutputPanel)?.height
+  }
+
   override fun create(editor: VimEditor, context: ExecutionContext): VimOutputPanel {
-    val panel = OutputPanel.getInstance(editor.ij)
+    val panel = OutputPanel.createInstance(editor.ij)
     activeOutputPanel = WeakReference(panel)
     return panel
   }

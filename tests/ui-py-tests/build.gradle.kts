@@ -4,7 +4,7 @@ plugins {
 }
 
 repositories {
-  mavenCentral()
+  maven { url = uri("https://cache-redirector.jetbrains.com/repo.maven.apache.org/maven2") }
   maven { url = uri("https://cache-redirector.jetbrains.com/intellij-dependencies") }
 }
 

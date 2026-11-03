@@ -8,6 +8,7 @@
 
 package com.maddyhome.idea.vim.command
 
+import com.maddyhome.idea.vim.api.CommandLineType
 import com.maddyhome.idea.vim.handler.EditorActionHandlerBase
 import com.maddyhome.idea.vim.handler.ExternalActionHandler
 import com.maddyhome.idea.vim.handler.MotionActionHandler
@@ -26,8 +27,20 @@ sealed class Argument {
   /** A simple character argument */
   class Character(val character: Char) : Argument()
 
-  /** An argument representing the user's input from the Ex command line, typically a search string */
-  class ExString(val label: Char, val string: String, val processing: ((String) -> Unit)?) : Argument()
+  /**
+   * An argument representing the user's input from the Ex command line, typically a search string
+   *
+   * [caretOffset] is the position of the command line caret in [string] when the command line was closed. [type] is the
+   * kind of command line. [label] is only the first character of its prompt.
+   */
+  class ExString(
+    val label: Char,
+    val string: String,
+    val incSearchOffset: Int,
+    val processing: ((String) -> Unit)?,
+    val caretOffset: Int = string.length,
+    val type: CommandLineType = CommandLineType.fromLabel(label.toString()),
+  ) : Argument()
 
   /**
    * Represents an argument that is a motion. Used by operator commands
@@ -46,21 +59,73 @@ sealed class Argument {
    *
    * @see Command
    */
-  class Motion private constructor(val motion: EditorActionHandlerBase, val argument: Argument? = null) : Argument() {
-    constructor(motion: MotionActionHandler, argument: Argument?) : this(motion as EditorActionHandlerBase, argument)
-    constructor(motion: TextObjectActionHandler) : this(motion as EditorActionHandlerBase)
-    constructor(motion: ExternalActionHandler) : this(motion as EditorActionHandlerBase)
+  class Motion private constructor(
+    val motion: EditorActionHandlerBase,
+    val argument: Argument? = null,
+    /**
+     * A forced motion type entered with the `v`/`V`/`CTRL-V` modifier between an operator and its motion
+     * (`:help o_v`). `v` forces [SelectionType.CHARACTER_WISE], `V` forces [SelectionType.LINE_WISE] and `CTRL-V`
+     * forces [SelectionType.BLOCK_WISE]. `null` means no forcing was requested.
+     */
+    val forcedMotion: SelectionType? = null,
+  ) : Argument() {
+    constructor(motion: MotionActionHandler, argument: Argument?, forcedMotion: SelectionType? = null)
+      : this(motion as EditorActionHandlerBase, argument, forcedMotion)
 
-    fun getMotionType() = if (isLinewiseMotion()) SelectionType.LINE_WISE else SelectionType.CHARACTER_WISE
+    constructor(motion: TextObjectActionHandler, forcedMotion: SelectionType? = null)
+      : this(motion as EditorActionHandlerBase, forcedMotion = forcedMotion)
 
-    fun isLinewiseMotion(): Boolean = when (motion) {
-      is TextObjectActionHandler -> motion.visualType == TextObjectVisualType.LINE_WISE
-      is MotionActionHandler -> motion.motionType == MotionType.LINE_WISE
-      is ExternalActionHandler -> motion.isLinewiseMotion
-      else -> error("Command is not a motion: $motion")
+    constructor(motion: ExternalActionHandler, forcedMotion: SelectionType? = null)
+      : this(motion as EditorActionHandlerBase, forcedMotion = forcedMotion)
+
+    fun getMotionType(): SelectionType = when (forcedMotion) {
+      null -> if (isLinewiseMotion()) SelectionType.LINE_WISE else SelectionType.CHARACTER_WISE
+      else -> forcedMotion
     }
 
-    fun withArgument(argument: Argument) = Motion(motion, argument)
+    fun isLinewiseMotion(): Boolean {
+      // A forced motion modifier (:help o_v / o_V) overrides the motion's own declared type.
+      forcedMotion?.let { return it == SelectionType.LINE_WISE }
+      return when (motion) {
+        is TextObjectActionHandler -> motion.visualType == TextObjectVisualType.LINE_WISE
+        is MotionActionHandler -> motion.motionType == MotionType.LINE_WISE
+        is ExternalActionHandler -> motion.isLinewiseMotion
+        else -> error("Command is not a motion: $motion")
+      }
+    }
+
+    /**
+     * The effective [MotionType] used to decide inclusive/exclusive behaviour, honouring a forced motion modifier
+     * (`:help o_v`).
+     *
+     * `V` forces linewise. `v` forces characterwise and *toggles* the motion's inclusiveness: an inclusive motion
+     * becomes exclusive and vice versa, while a linewise motion becomes exclusive characterwise (matching Vim's
+     * "makes dvj work nice" behaviour). `CTRL-V` (blockwise) keeps the motion's own inclusiveness - the block's right
+     * column is handled by [com.maddyhome.idea.vim.group.visual.VimBlockSelection]. Without a forced modifier, the
+     * motion's own declared type is used.
+     *
+     * Returns `null` for motions that have no inclusive/exclusive concept and aren't forced (e.g. plain text objects).
+     */
+    fun getEffectiveMotionType(): MotionType? {
+      val declared = (motion as? MotionActionHandler)?.motionType
+      if (notForcedMotion()) {
+        return declared
+      }
+
+      if (forcedMotion == SelectionType.LINE_WISE) return MotionType.LINE_WISE
+
+      return when (declared) {
+        MotionType.INCLUSIVE -> MotionType.EXCLUSIVE
+        MotionType.LINE_WISE -> MotionType.EXCLUSIVE
+        else -> MotionType.INCLUSIVE // EXCLUSIVE, or a text object with no declared type
+      }
+    }
+
+    private fun notForcedMotion(): Boolean {
+      return forcedMotion == null || forcedMotion == SelectionType.BLOCK_WISE
+    }
+
+    fun withArgument(argument: Argument) = Motion(motion, argument, forcedMotion)
   }
 
   /**
@@ -76,16 +141,41 @@ sealed class Argument {
      */
     MOTION,
 
-    /** A character argument, such as the character to move to with the `f` command. */
-    CHARACTER,
+    /**
+     * A character argument, which is the name of a register
+     *
+     * The character will be mapped by `'langmap'`, from the user's input language to an ASCII value.
+     */
+    REGISTER,
 
     /**
-     * Used to represent an expected argument type rather than an actual argument type
+     * A character argument, which is the name of a mark
      *
-     * When building a command, an operator can say that it expects a digraph or literal argument, in which case the key
-     * handler will allow `<C-K>`, `<C-V>` and `<C-Q>`, and start the digraph state machine. The finished digraph is
-     * converted into a character, and a character argument is added to the operator action.
+     * The character will be mapped by `'langmap'`, from the user's input language to an ASCII value.
      */
-    DIGRAPH
+    MARK,
+
+    /**
+     * A character argument, such as the character to move to with the `f` command.
+     *
+     * The character is processed in the user's input language. As such, it can also be a digraph or literal value,
+     * which means the handler will allow `<C-K>`, `<C-V>` and `<C-Q>` to start the digraph/literal state machine.
+     * The final character will not be mapped by `'langmap'`.
+     */
+    CHARACTER;
+
+    companion object {
+      /**
+       * Backwards-compatible alias for [CHARACTER].
+       *
+       * Returns the [CHARACTER] constant so that Java code comparing with `== Argument.Type.DIGRAPH` continues to work
+       * after the `DIGRAPH` enum value was merged into `CHARACTER`.
+       *
+       * Note: this does NOT work as a `case` label in a Java `switch` statement, which requires a true enum constant.
+       */
+      @JvmField
+      @Deprecated("Use CHARACTER instead", ReplaceWith("CHARACTER"))
+      val DIGRAPH: Type = CHARACTER
+    }
   }
 }

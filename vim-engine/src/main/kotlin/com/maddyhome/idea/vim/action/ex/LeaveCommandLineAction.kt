@@ -19,10 +19,13 @@ import com.maddyhome.idea.vim.command.CommandFlags
 import com.maddyhome.idea.vim.command.OperatorArguments
 import com.maddyhome.idea.vim.handler.VimActionHandler
 import com.maddyhome.idea.vim.helper.enumSetOf
-import com.maddyhome.idea.vim.history.VimHistory
 import java.util.*
 
-@CommandOrMotion(keys = ["<Esc>", "<C-[>", "<C-C>"], modes = [Mode.CMD_LINE])
+@CommandOrMotion(
+  keys = ["<Esc>", "<C-[>", "<C-C>"],
+  modes = [Mode.CMD_LINE],
+  description = "Abandon the command line without executing it and return to the previous mode."
+)
 class LeaveCommandLineAction : VimActionHandler.SingleExecution() {
   override val flags: EnumSet<CommandFlags> = enumSetOf(CommandFlags.FLAG_END_EX)
   override val type: Command.Type = Command.Type.MODE_CHANGE
@@ -34,8 +37,7 @@ class LeaveCommandLineAction : VimActionHandler.SingleExecution() {
     operatorArguments: OperatorArguments,
   ): Boolean {
     val argument = cmd.argument as? Argument.ExString ?: return true
-    val historyType = VimHistory.Type.getTypeByLabel(argument.label.toString())
-    injector.historyGroup.addEntry(historyType, argument.string)
+    injector.historyGroup.addEntry(argument.type.historyType, argument.string)
     return true
   }
 }

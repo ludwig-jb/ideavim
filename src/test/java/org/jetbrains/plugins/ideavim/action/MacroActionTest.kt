@@ -58,17 +58,21 @@ class MacroActionTest : VimTestCase() {
   @Test
   @TestWithoutNeovim(reason = SkipNeovimReason.ACTION_COMMAND)
   fun testMacroWithIdeAction() {
-    configureByText("""One
+    configureByText(
+      """One
       |Two
       |Three
-      |Four""".trimMargin())
+      |Four""".trimMargin()
+    )
     enterCommand("map j <Action>(EditorDown)")
     typeText(injector.parser.parseKeys("qa" + "j" + "q"))
     typeText(injector.parser.parseKeys("@a"))
-    assertState("""One
+    assertState(
+      """One
       |Two
       |${c}Three
-      |Four""".trimMargin())
+      |Four""".trimMargin()
+    )
   }
 
   @Test
@@ -327,8 +331,8 @@ class MacroActionTest : VimTestCase() {
       undoCount++
     }
     assertState(initialText)
-    // Verify that multiple undos were needed (one for each macro execution)
-    assertTrue(undoCount == 2, "Expected 2 undos for 2 macro executions, but needed $undoCount")
+    // Each replayed keystroke is its own undoable change, as in Vim: 1 for the recorded `dw` plus 3 for `3@a`.
+    assertTrue(undoCount == 4, "Expected 4 undos (recording + 3 macro executions), but needed $undoCount")
   }
 
   @Test
@@ -477,7 +481,8 @@ class MacroActionTest : VimTestCase() {
     configureByText(initialText)
     typeText(injector.parser.parseKeys("qa" + "w" + "dw" + "q"))
     typeText(injector.parser.parseKeys("@a"))
-    assertState("start en${c}d")
+    // `w` moves to the last character of the file, and `dw` there deletes it (:help word, nv_wordcmd)
+    assertState("start e${c}n")
     // Verify that undo can restore both text and cursor position
     var undoCount = 0
     while (fixture.editor.document.text != "start middle end" && undoCount < 10) {
@@ -485,5 +490,58 @@ class MacroActionTest : VimTestCase() {
       undoCount++
     }
     assertState("start ${c}middle end")
+  }
+
+  @TestWithoutNeovim(SkipNeovimReason.DIFFERENT)
+  @Test
+  fun `test recorded macro with Enter replays correctly`() {
+    configureByText("${c}1\n2\n3\n4")
+    // The Enter is recorded as VK_ENTER and replayed from the raw keystrokes, so the ":d" command
+    // executes on each replay regardless of how the register text would serialize.
+    typeText("qa", ":d<CR>", "q")
+    assertState("${c}2\n3\n4")
+    typeText("@a")
+    assertState("${c}3\n4")
+  }
+
+  @TestWithoutNeovim(SkipNeovimReason.DIFFERENT)
+  @Test
+  fun `test putting a recorded macro with Enter inserts a line break`() {
+    configureByText("${c}lorem")
+    // Record "iX<CR>Y<Esc>".
+    typeText("qa", "iX<CR>Y<Esc>", "q")
+
+    // Putting the macro register inserts its stored text. The Enter is stored as a line feed
+    // (0x0A), since IntelliJ Documents reject a lone carriage return, so the put stays safe.
+    setText("")
+    typeText("\"ap")
+    assertState("iX\nY" + '\u001B')
+  }
+
+  @Test
+  fun `test macro from register built with CR replays as Enter`() {
+    configureByText("${c}lorem")
+    // `\<CR>` is a carriage return (0x0D), which replays as Enter, just like a recorded Enter does
+    enterCommand("""let @q = "iX\<CR>Y\<Esc>"""")
+    typeText("@q")
+    assertState("X\n${c}Ylorem")
+  }
+
+  @Test
+  fun `should not record y twice when followed by motion`() {
+    configureByText("${c}Spider man")
+    enterCommand("map ys :echo 'hi'<CR>")
+    typeText("qa", "y")
+    Thread.sleep(2000)
+    typeText("w", "q")
+    assertRegister('a', "yw")
+  }
+
+  @Test
+  fun `should execute undo in macro`() {
+    configureByText("${c}Spongebob Squarepants")
+    typeText("qa", "dwu", "q")
+    typeText("@a")
+    assertState("Spongebob Squarepants")
   }
 }

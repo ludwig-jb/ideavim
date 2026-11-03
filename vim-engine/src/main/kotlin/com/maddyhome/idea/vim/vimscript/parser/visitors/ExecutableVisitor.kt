@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2024 The IdeaVim authors
+ * Copyright 2003-2026 The IdeaVim authors
  *
  * Use of this source code is governed by an MIT-style
  * license that can be found in the LICENSE.txt file or at
@@ -8,9 +8,14 @@
 
 package com.maddyhome.idea.vim.vimscript.parser.visitors
 
+import com.maddyhome.idea.vim.ex.ranges.Range
 import com.maddyhome.idea.vim.parser.generated.VimscriptBaseVisitor
 import com.maddyhome.idea.vim.parser.generated.VimscriptParser
 import com.maddyhome.idea.vim.vimscript.model.Executable
+import com.maddyhome.idea.vim.vimscript.model.commands.AutoCmdCommand
+import com.maddyhome.idea.vim.vimscript.model.commands.Command
+import com.maddyhome.idea.vim.vimscript.model.commands.CommandModifier
+import com.maddyhome.idea.vim.vimscript.model.commands.FunctionCommand
 import com.maddyhome.idea.vim.vimscript.model.expressions.Expression
 import com.maddyhome.idea.vim.vimscript.model.expressions.IndexedExpression
 import com.maddyhome.idea.vim.vimscript.model.expressions.Scope
@@ -63,8 +68,28 @@ object ExecutableVisitor : VimscriptBaseVisitor<Executable>() {
       ctx.functionDefinition() != null -> visitFunctionDefinition(ctx.functionDefinition())
       ctx.throwStatement() != null -> visitThrowStatement(ctx.throwStatement())
       ctx.tryStatement() != null -> visitTryStatement(ctx.tryStatement())
+      ctx.autoCmd() != null -> visitAutoCmd(ctx.autoCmd())
       else -> null
     }
+  }
+
+  override fun visitAutoCmd(ctx: VimscriptParser.AutoCmdContext): Command {
+    val range = Range()
+
+    val modifier = if (ctx.bang != null) CommandModifier.BANG else CommandModifier.NONE
+    val argument = buildString {
+      ctx.auEvents()?.let { append(it.text) }
+      ctx.auPattern()?.let { append(" "); append(it.text) }
+      ctx.auCommand()?.let { append(" "); append(it.text) }
+    }
+
+    val eventNames = ctx.auEvents()?.auEventName()?.map { it.text } ?: emptyList()
+    val pattern = ctx.auPattern()?.text
+    val commandText = ctx.auCommand()?.text?.trim()
+
+    val command = AutoCmdCommand(range, modifier, argument, eventNames, pattern, commandText)
+    command.rangeInScript = ctx.getTextRange()
+    return command
   }
 
   override fun visitWhileLoop(ctx: VimscriptParser.WhileLoopContext): Executable {
@@ -90,6 +115,16 @@ object ExecutableVisitor : VimscriptBaseVisitor<Executable>() {
   }
 
   override fun visitFunctionDefinition(ctx: VimscriptParser.FunctionDefinitionContext): Executable {
+    if (ctx.ENDFUNCTION() == null) {
+      // Vim reads lines into the function's body until it finds `:endfunction`. If it reaches the end of the input
+      // without finding it, it reports an error and doesn't define the function. The grammar allows a definition to
+      // end at EOF so that we can parse this, and we report the error as part of the `:function` command. The body
+      // has been parsed, but is discarded
+      val command = FunctionCommand(Range(), CommandModifier.NONE, missingEndFunction = true)
+      command.rangeInScript = ctx.getTextRange()
+      return command
+    }
+
     val functionScope = if (ctx.functionScope() != null) Scope.getByValue(ctx.functionScope().text) else null
     val args = ctx.argumentsDeclaration().variableName().map { it.text }
     val defaultArgs = ctx.argumentsDeclaration().defaultValue()
@@ -102,7 +137,10 @@ object ExecutableVisitor : VimscriptBaseVisitor<Executable>() {
       flags.add(FunctionFlag.getByName(flag.text))
     }
     val definition = if (ctx.functionName() != null) {
-      val functionName = ctx.functionName().text
+      // Preserve the autoload namespace prefix (e.g. `foo#bar#`) so the function is stored under its
+      // full name rather than just the last segment.
+      val autoloadPrefix = ctx.anyCaseNameWithDigitsAndUnderscores().joinToString(separator = "") { "${it.text}#" }
+      val functionName = autoloadPrefix + ctx.functionName().text
       FunctionDeclaration(
         functionScope,
         functionName,

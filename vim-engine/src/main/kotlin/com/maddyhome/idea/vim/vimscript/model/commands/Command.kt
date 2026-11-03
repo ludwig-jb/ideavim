@@ -23,6 +23,7 @@ import com.maddyhome.idea.vim.ex.ranges.Range
 import com.maddyhome.idea.vim.helper.StrictMode
 import com.maddyhome.idea.vim.state.mode.inNormalMode
 import com.maddyhome.idea.vim.state.mode.isBlock
+import com.maddyhome.idea.vim.vimscript.model.CommandLineVimLContext
 import com.maddyhome.idea.vim.vimscript.model.Executable
 import com.maddyhome.idea.vim.vimscript.model.ExecutionResult
 import com.maddyhome.idea.vim.vimscript.model.VimLContext
@@ -44,6 +45,9 @@ sealed class Command(
   protected abstract val argFlags: CommandHandlerFlags
 
   protected var defaultRange: String = "."
+  
+  /** The rest of the command line, set by the parser. See CommandVisitor.splitOffNextCommand */
+  var nextCommand: String = ""
 
   private var nextArgumentTokenOffset = 0
   private val logger = vimLogger<Command>()
@@ -71,7 +75,9 @@ sealed class Command(
   override fun execute(editor: VimEditor, context: ExecutionContext): ExecutionResult {
     validate(editor)
 
-    StrictMode.assert(editor.inNormalMode, "Command execution should only occur in normal mode")
+    if (!this::vimContext.isInitialized || vimContext.getFirstParentContext() is CommandLineVimLContext) {
+      StrictMode.assert(editor.inNormalMode, "Command execution should only occur in normal mode")
+    }
 
     // We are currently in Normal mode, but might still have a visual or visual block selection and/or multiple carets.
     // Vim clears Visual mode before entering Command-line, but we can't do that because some of our commands can handle
@@ -103,8 +109,21 @@ sealed class Command(
     }
 
     val operatorArguments = OperatorArguments(0, editor.mode)
-
-    return runCommand(editor, context, operatorArguments)
+    
+    val result = runCommand(editor, context, operatorArguments)
+    
+    // Like Vim, a failure abandons the rest of the command line
+    if (result is ExecutionResult.Success && nextCommand.isNotEmpty()) {
+      return injector.vimscriptExecutor.execute(
+        nextCommand,
+        editor,
+        context,
+        skipHistory = true,
+        indicateErrors = true,
+        if (this::vimContext.isInitialized) vimContext else null,
+      )
+    }
+    return result
   }
 
   private fun runCommand(

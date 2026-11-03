@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2023 The IdeaVim authors
+ * Copyright 2003-2026 The IdeaVim authors
  *
  * Use of this source code is governed by an MIT-style
  * license that can be found in the LICENSE.txt file or at
@@ -235,14 +235,6 @@ class MotionSentenceActionTest : VimTestCase() {
 
   // ============== Edge Cases (from MotionOuterSentenceActionTest) ==============
 
-  @VimBehaviorDiffers(
-    originalVimAfter = """
-        Lorem ipsum dolor sit amet,
-        consectetur adipiscing elit
-        Sed in orci mauris.
-        $c
-    """,
-  )
   @Test
   fun `test indent outer sentence on empty last line`() {
     doTest(
@@ -270,6 +262,8 @@ class MotionSentenceActionTest : VimTestCase() {
         Sed in orci mauris.
         $c
     """,
+    description = "Vim has no empty last line, so `as` there selects nothing and the buffer is left alone. " +
+      "IdeaVim selects the whole file instead, and the delete is promoted to linewise",
   )
   @Test
   fun `test delete outer sentence on empty last line`() {
@@ -281,7 +275,7 @@ class MotionSentenceActionTest : VimTestCase() {
         Sed in orci mauris.
         $c
       """.trimIndent(),
-      "\n",
+      "",
       Mode.NORMAL(),
     )
   }

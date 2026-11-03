@@ -8,6 +8,15 @@ Every effort is made to make these options compatible with Vim behaviour.
 However, some differences are inevitable.
 
 ```
+'autoindent'    'ai'    Copy indent from current line when starting a new line
+        On by default, unlike Vim, matching Neovim. Only the copying is
+        controlled: the indent the IDE works out from the code is the
+        counterpart of 'indentexpr' and stays either way, so 'noautoindent'
+        gives column 0 only in a file the IDE has no formatter for.
+        Unlike Vim, a line opened by 'o', 'O' or Enter keeps its indent when
+        you leave Insert mode without typing. 'cc' and 'S' clear it, unless
+        "Keep indents on empty lines" (Editor | Code Style) is on.
+
 'clipboard'     'cb'    Defines clipboard behavior
         A comma-separated list of words to control clipboard behaviour:
            unnamed      The clipboard register '*' is used instead of the
@@ -17,6 +26,10 @@ However, some differences are inevitable.
            ideaput      Uses the IDEs own paste implementation for put
                         operations rather than simply inserting the text
 
+'cmdheight'     'ch'    Number of screen lines to use for the output of the
+                        command-line. A larger value helps avoiding hit-enter
+                        prompts.
+        
 'digraph'       'dg'    Enable using <BS> to enter digraphs in Insert mode
 'gdefault'      'gd'    The ":substitute" flag 'g' is by default
 'guicursor'     'gcr'   Controls the shape of the cursor for different modes
@@ -47,8 +60,47 @@ However, some differences are inevitable.
         Special keys in this context are the cursor keys, <End>, <Home>,
         <PageUp> and <PageDown>.
 
+'langmap'       'lmap'  Enter Vim commands from a different language keyboard.
+        List of character pairs that map from a user's entered language to
+        plain ASCII. Used to enter standard ASCII-based Vim commands from the
+        user's preferred language keyboard. When in Normal or Visual mode, or
+        when entering the name of a register or mark, the typed key is mapped
+        by 'langmap'. When typing in Insert or Replace mode, or entering a
+        character to search in `f{char}`, the character is accepted as typed.
+        See the Vim docs for more infomration and an example for entering Vim
+        commands from a Greek keyboard. Dvorak examples are available 
+        elsewhere.
+
+'langnoremap'   'lnr'   See 'langremap'
+'langremap'     'lrm'   Apply 'langmap' to characters resulting from a mapping.
 'matchpairs'    'mps'   Pairs of characters that "%" can match
 'maxmapdepth'   'mmd'   Maximum depth of mappings
+'messagesopt'   'mopt'  Option settings for outputting messages.
+        (default "hit-enter,history:500,wait:10000",
+                 "hit-enter,history:500" for Vim)
+        
+        It can consist of the following items. Items must be separated by 
+        a comma.
+           hit-enter    Use a |hit-enter| prompt when the message is longer
+                        than 'cmdheight' size. In IdeaVim, if a message is
+                        shorter than 'cmdheight' in lines, it is displayed in
+                        a semi-persistent popup without the hit-enter prompt.
+                        This popup can be dismissed by redrawing the screen,
+                        either explicitly with CTRL-L or implicitly by
+                        scrolling the screen. See also "wait:{n}".
+
+           wait:{n}     Instead of using a |hit-enter| prompt, simply wait for
+                        {n} milliseconds so that the user has a chance to read
+                        the message.  The maximum value of {n} is 10000.  Use
+                        0 to disable the wait (but then the user may miss an
+                        important message).
+                        Unlike Vim, this item is NOT ignored when "hit-enter"
+                        is present.  It is used to delay hiding the semi-
+                        persistent message area popup used when the message is
+                        less than 'cmdheight' lines.
+
+           history:{n}  This item is currently not supported and is ignored.
+
 'more'          'more'  When on, listings pause when the whole screen is filled
 'nrformats'     'nf'    Number formats recognized for CTRL-A command
 'operatorfunc'  'opfunc'    Name of a function to call with the g@ operator
@@ -165,8 +217,11 @@ The local Vim option can always be reset to the global IDE setting value by rese
 ## IdeaVim only options
 
 These options are IdeaVim only, and not supported by Vim.
-They control integration with the host IDE.
+They control integration with the host IDE, and are prefixed with "idea" to distinguish them from Vim's own options.
 Unless otherwise stated, these options do not have abbreviations.
+
+Some of these options were introduced without the "idea" prefix and have since been renamed.
+The old name is deprecated, but still accepted by `:set` and by the `&{option}` expression, so existing `~/.ideavimrc` files keep working.
 
 ```
 'ideacopypreprocess'    boolean (default off)
@@ -187,9 +242,67 @@ Unless otherwise stated, these options do not have abbreviations.
         string literals or if statements. See the wiki for more examples. Not
         all languages support smart join functionality.
 
+'ideaeditor'            string  (default "python,debug")
+                        global
+        Comma-separated list of non-file editors that IdeaVim is active in, in
+        addition to the regular editors it always supports:
+           python       The Python console tool window. The console still
+                        intercepts Enter (execute) and the horizontal arrow
+                        keys (caret movement within the input line) as normal;
+                        Up/Down navigate command history from any Vim mode.
+           debug        The console of a run or debug configuration, e.g. the
+                        console of a debugged Spring Boot application. It is
+                        focused in Normal mode, so the first <Esc> leaves
+                        Insert or Visual mode and the next one defocuses the
+                        tool window.
+           main         Tabs in the main editor area that are not backed by
+                        a regular file, e.g. editors opened by third-party
+                        plugins for in-memory or decrypted content. Not
+                        enabled by default. Enable with
+                        `:set ideaeditor+=main`.
+           chat         The prompt input of AI chats: JetBrains AI Assistant
+                        (including Junie in AI Assistant) and AIR. The input
+                        is focused in Insert mode, so <Enter> still sends the
+                        message; in Normal mode <Enter> is a Vim motion. Chat
+                        answers are not affected. Not enabled by default.
+                        Enable with `:set ideaeditor+=chat`.
+
+        Remove a value to revert that editor to its native behaviour with no
+        Vim keybindings. The change takes effect immediately for all open
+        console and chat input windows.
+
+        This option replaces 'ideapythonconsole', which has been removed.
+
+'idealookupkeys'        string  (default "<Tab>,<Down>,<Up>,<Enter>,
+                                        <Left>,<Right>,<C-Down>,<C-Up>,
+                                        <PageUp>,<PageDown>, <C-J>,<C-Q>")
+                        global
+        Comma-separated list of keys that should be processed by the IDE while
+        a code completion lookup popup is active. For example, <Tab> and
+        <Enter> are used by the IDE to complete the lookup and insert text,
+        but <C-W> should be passed IdeaVim to continue editing the text.
+
+        This option was previously called 'lookupkeys'. The old name is
+        deprecated, but still accepted.
+
 'ideamarks'             boolean (default on)
                         global
         Maps Vim's global marks to IDE bookmarks.
+
+'ideaoutsideeditor'     boolean (default on)
+                        global
+        When on, Normal mode mappings to IDE actions keep working when no
+        file is open, e.g. `map <leader>sf <Action>(GotoFile)` pressed while
+        the Project tool window has the focus and every editor tab is closed.
+
+        Only user mappings whose right-hand side consists of <Action>(...)
+        sequences take part, since there is no editor for anything else to
+        act on. Text fields, such as Search Everywhere, and modal dialogs are
+        not affected, and keys that do not start such a mapping are left to
+        the IDE. <Esc> cancels a partially typed mapping.
+
+        Turn the option off to leave all keys typed outside an editor to the
+        IDE. The change takes effect immediately.
 
 'idearefactormode'      string  (default "select")
                         global or local to buffer
@@ -202,6 +315,14 @@ Unless otherwise stated, these options do not have abbreviations.
         This option is only used when the refactoring is started in Normal,
         Insert or Replace mode. Visual or Select modes are not changed.
 
+'ideascrollcursor'      boolean (default off)
+                        global
+        When on, scrolling with the mouse wheel or by dragging the scrollbar
+        moves the cursor along with the text, so it stays on screen, like in
+        Vim. The cursor is kept 'scrolloff' lines away from the edge of the
+        window. When off, IntelliJ's default behaviour is kept and the cursor
+        stays where it is, even if it scrolls out of view.
+
 'ideastatusicon'        string  (default "enabled")
                         global
         This option controls the behaviour and appearance of the IdeaVim icon
@@ -209,6 +330,15 @@ Unless otherwise stated, these options do not have abbreviations.
            enabled      Show the icon in the status bar
            gray         Show the gray version of the icon
            disabled     Hide the icon
+
+'ideatrackactionids'    boolean (default off)
+                        global
+        When on, IdeaVim will try to track the current IDE action and display
+        the action name in a notification. This action ID can then be used in
+        a mapping to the action in the form <Action>(...).
+
+        This option was previously called 'trackactionids'. The old name is
+        deprecated, but still accepted.
 
 'ideavimsupport'        string  (default "dialog")
                         global
@@ -220,31 +350,7 @@ Unless otherwise stated, these options do not have abbreviations.
         The IDE's editor component can be used in many places, such as VCS
         commit tool window, or inside dialogs, and even as single line fields.
 
-'ideawrite'             string  (default "all")
-                        global
-        This option defines the behaviour of the :w command:
-           file         Save the current file only
-           all          The :w command works like :wa and invokes the Save All
-                        IDE action. This allows options such as "Prettier on
-                        save" or "ESlint on save" to work with the :w command,
-                        but means all files are saved.
-
-'lookupkeys'            string  (default "<Tab>,<Down>,<Up>,<Enter>,
-                                          <Left>,<Right>,<C-Down>,<C-Up>,
-                                          <PageUp>,<PageDown>, <C-J>,<C-Q>")
-                        global
-        Comma-separated list of keys that should be processed by the IDE while
-        a code completion lookup popup is active. For example, <Tab> and
-        <Enter> are used by the IDE to complete the lookup and insert text,
-        but <C-W> should be passed IdeaVim to continue editing the text.
-
-'trackactionids'        boolean (default off)
-                        global
-        When on, IdeaVim will try to track the current IDE action and display
-        the action name in a notification. This action ID can then be used in
-        a mapping to the action in the form <Action>(...).
-
-'visualdelay'           number  (default 100)
+'ideavisualdelay'       number  (default 100)
                         global
         This option specifies the delay, in milliseconds before converting an
         IDE selection into Visual mode.
@@ -259,4 +365,38 @@ Unless otherwise stated, these options do not have abbreviations.
         be ignored and the current Vim mode maintained.
 
         It is not expected that this value will need to be changed.
+
+        This option was previously called 'visualdelay'. The old name is
+        deprecated, but still accepted.
+
+'ideawindowjumps'       boolean (default off)
+                        global
+        When on, each window (split) has its own jump list, as in Vim. When
+        off, a single jump list is shared by every window and tab of the
+        project.
+
+        Vim scopes the jump list to a window, and a new split starts with a
+        copy of the list of the window it was split from. IdeaVim's default is
+        one list per project, which is the behaviour IdeaVim has always had.
+
+        The jump list is what `:jumps`, CTRL-O and CTRL-I work with. The IDE's
+        own Back and Forward navigation is separate, and stays project wide
+        whatever this option is set to.
+
+        Only one list per project is saved between sessions, because window
+        ids do not survive a restart. The list of the most recently used
+        window is the one saved, and a window that has no list of its own -
+        after a restart, or when it is the first window - starts from it.
+
+        This option was previously called 'windowjumps'. The old name is
+        deprecated, but still accepted.
+
+'ideawrite'             string  (default "all")
+                        global
+        This option defines the behaviour of the :w command:
+           file         Save the current file only
+           all          The :w command works like :wa and invokes the Save All
+                        IDE action. This allows options such as "Prettier on
+                        save" or "ESlint on save" to work with the :w command,
+                        but means all files are saved.
 ```

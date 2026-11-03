@@ -17,6 +17,7 @@ import com.maddyhome.idea.vim.api.VimEditor
 import com.maddyhome.idea.vim.api.getText
 import com.maddyhome.idea.vim.api.injector
 import com.maddyhome.idea.vim.command.Argument
+import com.maddyhome.idea.vim.key.KeySource
 import com.maddyhome.idea.vim.state.KeyHandlerState
 import java.awt.event.KeyEvent
 import javax.swing.KeyStroke
@@ -56,10 +57,10 @@ open class InsertCommandLineTextActionBase(private val insertLiterally: Boolean)
       if (shouldInsertLiterally(key)) {
         // Reuse existing mechanisms to insert a control character literally by passing <C-V> first
         injector.parser.parseKeys("<C-V>").forEach {
-          keyHandler.handleKey(editor, it, context, keyHandler.keyHandlerState)
+          keyHandler.handleKey(editor, it, KeySource.SYNTHETIC_TYPED_NOT_MAPPED, context, keyHandler.keyHandlerState)
         }
       }
-      keyHandler.handleKey(editor, key, context, allowKeyMappings = false, keyHandler.keyHandlerState)
+      keyHandler.handleKey(editor, key, KeySource.SYNTHETIC_TYPED_NOT_MAPPED, context, keyHandler.keyHandlerState)
     }
   }
 
@@ -99,7 +100,7 @@ open class InsertCommandLineTextActionBase(private val insertLiterally: Boolean)
 }
 
 open class InsertRegisterActionBase(insertLiterally: Boolean) : InsertCommandLineTextActionBase(insertLiterally) {
-  override val argumentType = Argument.Type.CHARACTER
+  override val argumentType = Argument.Type.REGISTER
 
   override fun execute(
     commandLine: VimCommandLine,
@@ -124,13 +125,25 @@ open class InsertRegisterActionBase(insertLiterally: Boolean) : InsertCommandLin
   }
 }
 
-@CommandOrMotion(keys = ["<C-R>"], modes = [Mode.CMD_LINE])
+@CommandOrMotion(
+  keys = ["<C-R>"],
+  modes = [Mode.CMD_LINE],
+  description = "In Command-line mode, insert the contents of {register} as if typed."
+)
 class InsertRegisterAction : InsertRegisterActionBase(insertLiterally = false)
 
-@CommandOrMotion(keys = ["<C-R><C-R>", "<C-R><C-O>"], modes = [Mode.CMD_LINE])
+@CommandOrMotion(
+  keys = ["<C-R><C-R>", "<C-R><C-O>"],
+  modes = [Mode.CMD_LINE],
+  description = "In Command-line mode, insert the contents of {register} literally, without interpreting special characters."
+)
 class InsertRegisterLiterallyAction : InsertRegisterActionBase(insertLiterally = true)
 
-@CommandOrMotion(keys = ["<C-R><C-L>"], modes = [Mode.CMD_LINE])
+@CommandOrMotion(
+  keys = ["<C-R><C-L>"],
+  modes = [Mode.CMD_LINE],
+  description = "In Command-line mode, insert the text of the current line in the editor."
+)
 class InsertCurrentLineAction : InsertCommandLineTextActionBase(insertLiterally = false) {
   override fun getText(commandLine: VimCommandLine): String {
     val offset = getStartOffset(commandLine.editor)
@@ -139,7 +152,11 @@ class InsertCurrentLineAction : InsertCommandLineTextActionBase(insertLiterally 
   }
 }
 
-@CommandOrMotion(keys = ["<C-R><C-R><C-L>", "<C-R><C-O><C-L>"], modes = [Mode.CMD_LINE])
+@CommandOrMotion(
+  keys = ["<C-R><C-R><C-L>", "<C-R><C-O><C-L>"],
+  modes = [Mode.CMD_LINE],
+  description = "In Command-line mode, insert the text of the current line in the editor literally."
+)
 class InsertCurrentLineLiterallyAction : InsertCommandLineTextActionBase(insertLiterally = true) {
   override fun getText(commandLine: VimCommandLine): String {
     val offset = getStartOffset(commandLine.editor)
@@ -167,26 +184,38 @@ open class InsertWordUnderCaretActionBase(private val isBigWord: Boolean, insert
  * A word cannot contain control characters, so it can only be inserted literally, as plain text. Any matching prefix in
  * the command line is maintained, and the remaining text is inserted after the prefix. The prefix must be a valid word.
  */
-@CommandOrMotion(keys = ["<C-R><C-W>", "<C-R><C-R><C-W>", "<C-R><C-O><C-W>"], modes = [Mode.CMD_LINE])
+@CommandOrMotion(
+  keys = ["<C-R><C-W>", "<C-R><C-R><C-W>", "<C-R><C-O><C-W>"],
+  modes = [Mode.CMD_LINE],
+  description = "In Command-line mode, insert the word under the cursor in the editor, skipping any part of it already typed."
+)
 class InsertWordUnderCaretAction : InsertWordUnderCaretActionBase(isBigWord = false, insertLiterally = true) {
   override fun insertText(commandLine: VimCommandLine, offset: Int, text: String) {
     val editor = commandLine.editor
 
     // Get the word under the caret on the command line, so we can avoid duplicating a prefix.
     // To match Vim behaviour, we get word, not WORD
-    val offset = injector.searchHelper.findNextWord(commandLine.text, editor, commandLine.caret.offset, -1, bigWord = false)
-    val prefix = commandLine.text.substring(offset, commandLine.caret.offset)
+    val wordStart = injector.searchHelper.findNextWord(commandLine.text, editor, offset, -1, bigWord = false)
+    val prefix = commandLine.text.substring(wordStart, offset)
     if (prefix.isNotEmpty() && text.startsWith(prefix, ignoreCase = true)) {
-      commandLine.insertText(commandLine.caret.offset, text.substring(prefix.length))
+      commandLine.insertText(offset, text.substring(prefix.length))
     }
     else {
-      commandLine.insertText(commandLine.caret.offset, text)
+      commandLine.insertText(offset, text)
     }
   }
 }
 
-@CommandOrMotion(keys = ["<C-R><C-A>"], modes = [Mode.CMD_LINE])
+@CommandOrMotion(
+  keys = ["<C-R><C-A>"],
+  modes = [Mode.CMD_LINE],
+  description = "In Command-line mode, insert the WORD under the cursor in the editor."
+)
 class InsertBigWordUnderCaretAction : InsertWordUnderCaretActionBase(isBigWord = true, insertLiterally = false)
 
-@CommandOrMotion(keys = ["<C-R><C-R><C-A>", "<C-R><C-O><C-A>"], modes = [Mode.CMD_LINE])
+@CommandOrMotion(
+  keys = ["<C-R><C-R><C-A>", "<C-R><C-O><C-A>"],
+  modes = [Mode.CMD_LINE],
+  description = "In Command-line mode, insert the WORD under the cursor in the editor literally."
+)
 class InsertBigWordUnderCaretLiterallyAction : InsertWordUnderCaretActionBase(isBigWord = true, insertLiterally = true)

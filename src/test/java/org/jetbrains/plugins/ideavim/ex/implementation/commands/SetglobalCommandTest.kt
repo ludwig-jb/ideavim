@@ -430,42 +430,7 @@ class SetglobalCommandTest : VimTestCase() {
   @Test
   fun `test show all global option values`() {
     setOsSpecificOptionsToSafeValues()
-    val expected = """
-    |--- Global option values ---
-    |noargtextobj        noideajoin            scroll=0          notextobj-indent
-    |nobomb                ideamarks           scrolljump=1        textwidth=0
-    |nobreakindent         ideawrite=all       scrolloff=0         timeout
-    |  colorcolumn=      noignorecase          selectmode=         timeoutlen=1000
-    |nocommentary        noincsearch           shellcmdflag=-x   notrackactionids
-    |nocursorline        nolist                shellxescape=@      undolevels=1000
-    |nodigraph           nomatchit             shellxquote={     noVimEverywhere
-    |noexchange            maxmapdepth=20      showcmd             virtualedit=
-    |  fileencoding=     nomini-ai             showmode          novisualbell
-    |  fileformat=unix     more                sidescroll=0        visualdelay=100
-    |  foldlevel=999     nomultiple-cursors    sidescrolloff=0     whichwrap=b,s
-    |nogdefault          noNERDTree          nosmartcase           wrap
-    |nohighlightedyank     nrformats=hex     nosneak               wrapscan
-    |  history=50        nonumber              startofline
-    |nohlsearch            operatorfunc=     nosurround
-    |  ide=IntelliJ IDEA norelativenumber    notextobj-entire
-    |  clipboard=ideaput,autoselect
-    |  guicursor=n-v-c:block-Cursor/lCursor,ve:ver35-Cursor,o:hor50-Cursor,i-ci:ver25-Cursor/lCursor,r-cr:hor20-Cursor/lCursor,sm:block-Cursor-blinkwait175-blinkoff150-blinkon175
-    |noideacopypreprocess
-    |  idearefactormode=select
-    |  ideastatusicon=enabled
-    |  ideavimsupport=dialog
-    |  isfname=@,48-57,/,\,.,-,_,+,,,#,$,%,{,},[,],:,@-@,!,~,=
-    |  iskeyword=@,48-57,_
-    |  keymodel=continueselect,stopselect
-    |  lookupkeys=<Tab>,<Down>,<Up>,<Enter>,<Left>,<Right>,<C-Down>,<C-Up>,<PageUp>,<PageDown>,<C-J>,<C-Q>
-    |  matchpairs=(:),{:},[:]
-    |noReplaceWithRegister
-    |  selection=inclusive
-    |  shell=/dummy/path/to/bash
-    |novim-paragraph-motion
-    |  viminfo='100,<50,s10,h
-    """.trimMargin()
-    assertCommandOutput("setglobal all", expected)
+    assertAllOptionsShown("setglobal all", header = "--- Global option values ---", singleColumn = false)
   }
 
   @Test
@@ -504,87 +469,7 @@ class SetglobalCommandTest : VimTestCase() {
   @Test
   fun `test show all global option values in single column`() {
     setOsSpecificOptionsToSafeValues()
-    val expected = """
-    |--- Global option values ---
-    |noargtextobj
-    |nobomb
-    |nobreakindent
-    |  clipboard=ideaput,autoselect
-    |  colorcolumn=
-    |nocommentary
-    |nocursorline
-    |nodigraph
-    |noexchange
-    |  fileencoding=
-    |  fileformat=unix
-    |  foldlevel=999
-    |nogdefault
-    |  guicursor=n-v-c:block-Cursor/lCursor,ve:ver35-Cursor,o:hor50-Cursor,i-ci:ver25-Cursor/lCursor,r-cr:hor20-Cursor/lCursor,sm:block-Cursor-blinkwait175-blinkoff150-blinkon175
-    |nohighlightedyank
-    |  history=50
-    |nohlsearch
-    |  ide=IntelliJ IDEA
-    |noideacopypreprocess
-    |noideajoin
-    |  ideamarks
-    |  idearefactormode=select
-    |  ideastatusicon=enabled
-    |  ideavimsupport=dialog
-    |  ideawrite=all
-    |noignorecase
-    |noincsearch
-    |  isfname=@,48-57,/,\,.,-,_,+,,,#,$,%,{,},[,],:,@-@,!,~,=
-    |  iskeyword=@,48-57,_
-    |  keymodel=continueselect,stopselect
-    |nolist
-    |  lookupkeys=<Tab>,<Down>,<Up>,<Enter>,<Left>,<Right>,<C-Down>,<C-Up>,<PageUp>,<PageDown>,<C-J>,<C-Q>
-    |nomatchit
-    |  matchpairs=(:),{:},[:]
-    |  maxmapdepth=20
-    |nomini-ai
-    |  more
-    |nomultiple-cursors
-    |noNERDTree
-    |  nrformats=hex
-    |nonumber
-    |  operatorfunc=
-    |norelativenumber
-    |noReplaceWithRegister
-    |  scroll=0
-    |  scrolljump=1
-    |  scrolloff=0
-    |  selection=inclusive
-    |  selectmode=
-    |  shell=/dummy/path/to/bash
-    |  shellcmdflag=-x
-    |  shellxescape=@
-    |  shellxquote={
-    |  showcmd
-    |  showmode
-    |  sidescroll=0
-    |  sidescrolloff=0
-    |nosmartcase
-    |nosneak
-    |  startofline
-    |nosurround
-    |notextobj-entire
-    |notextobj-indent
-    |  textwidth=0
-    |  timeout
-    |  timeoutlen=1000
-    |notrackactionids
-    |  undolevels=1000
-    |novim-paragraph-motion
-    |noVimEverywhere
-    |  viminfo='100,<50,s10,h
-    |  virtualedit=
-    |novisualbell
-    |  visualdelay=100
-    |  whichwrap=b,s
-    |  wrap
-    |  wrapscan
-    """.trimMargin()
-    assertCommandOutput("setglobal! all", expected)
+    assertAllOptionsShown("setglobal! all", header = "--- Global option values ---", singleColumn = true)
   }
 
   @Test

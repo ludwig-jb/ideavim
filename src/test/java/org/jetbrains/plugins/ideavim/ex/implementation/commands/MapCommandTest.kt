@@ -16,6 +16,7 @@ import com.maddyhome.idea.vim.api.keys
 import com.maddyhome.idea.vim.command.MappingMode
 import com.maddyhome.idea.vim.history.VimHistory
 import com.maddyhome.idea.vim.state.mode.Mode
+import com.maddyhome.idea.vim.state.mode.SelectionType
 import org.jetbrains.plugins.ideavim.ExceptionHandler
 import org.jetbrains.plugins.ideavim.OnlyThrowLoggedErrorProcessor
 import org.jetbrains.plugins.ideavim.SkipNeovimReason
@@ -327,6 +328,44 @@ class MapCommandTest : VimTestCase() {
     )
   }
 
+  @TestWithoutNeovim(reason = SkipNeovimReason.SELECT_MODE)
+  @Test
+  fun `test mapping for Visual mode is executed in Select mode as if Visual mode was used`() {
+    // See `:help Select-mode-mapping`. A mapping defined for Visual mode (`:map`, `:vmap`) also applies in Select
+    // mode, but its right-hand side is executed as if Visual mode was used. Select mode is restored afterwards.
+    // The right-hand side must NOT be treated as printable characters replacing the selection.
+    configureByText("Lorem ${c}ipsum dolor ipsum amet")
+    enterCommand("noremap j nzz")
+    enterSearch("ipsum")  // Set the last search pattern, so `n` has something to jump to
+    typeText("0w")
+
+    typeText("ve", "<C-G>")
+    assertState("Lorem ${s}ipsum$se$c dolor ipsum amet")
+    assertMode(Mode.SELECT(SelectionType.CHARACTER_WISE))
+
+    // `n` is executed as a Visual mode motion, extending the selection to the start of the next match. `zz` scrolls.
+    // Select mode is restored afterwards.
+    typeText("j")
+    assertState("Lorem ${s}ipsum dolor i$se${c}psum amet")
+    assertMode(Mode.SELECT(SelectionType.CHARACTER_WISE))
+  }
+
+  @TestWithoutNeovim(reason = SkipNeovimReason.SELECT_MODE)
+  @Test
+  fun `test mapping that ends the selection in Select mode returns to Normal mode`() {
+    // The right-hand side is executed as a Visual mode command, so `d` deletes the selection. Because the selection is
+    // gone, Select mode is not restored. See `:help Select-mode-mapping`
+    configureByText("Lorem ${c}ipsum dolor ipsum amet")
+    enterCommand("noremap j d")
+
+    typeText("ve", "<C-G>")
+    assertMode(Mode.SELECT(SelectionType.CHARACTER_WISE))
+
+    typeText("j")
+    assertState("Lorem $c dolor ipsum amet")
+    assertMode(Mode.NORMAL())
+  }
+
   @Test
   fun `test output of map shows correct modes after unmapping from vmap and map`() {
     configureByText("\n")
@@ -375,6 +414,14 @@ class MapCommandTest : VimTestCase() {
   }
 
   @Test
+  fun `test map reports when no existing mappings match prefix`() {
+    configureByText("\n")
+    enterCommand("map quux bar")
+    enterCommand("map fop bop")
+    assertCommandOutput("map foo", "No mapping found")
+  }
+
+  @Test
   fun `test map outputs mappings that are a prefix to arg and that have arg as a prefix`() {
     configureByText("\n")
     // Vim matches mappings that are a prefix to arg (e.g. mapping "f" matches arg "foo"),
@@ -386,6 +433,37 @@ class MapCommandTest : VimTestCase() {
       """
         |   f             bar
         |   food          baz
+      """.trimMargin()
+    )
+  }
+
+  @Test
+  fun `test map outputs prefix and exact match mappings`() {
+    configureByText("\n")
+    enterCommand("map f bar")
+    enterCommand("map foo quux")
+    enterCommand("map food baz")
+    assertCommandOutput("map foo",
+      """
+        |   f             bar
+        |   foo           quux
+        |   food          baz
+      """.trimMargin()
+    )
+  }
+
+  @Test
+  fun `test map outputs prefix and exact match mappings when only used in single mode`() {
+    configureByText("\n")
+    // The implementation takes a simpler path if asking for the maps for a single mode. Verify this path too
+    enterCommand("nmap f bar")
+    enterCommand("nmap foo quux")
+    enterCommand("nmap food baz")
+    assertCommandOutput("nmap foo",
+      """
+        |n  f             bar
+        |n  foo           quux
+        |n  food          baz
       """.trimMargin()
     )
   }
@@ -1157,6 +1235,34 @@ class MapCommandTest : VimTestCase() {
     )
   }
 
+  @TestWithoutNeovim(reason = SkipNeovimReason.ACTION_COMMAND)
+  @Test
+  fun `test count is applied to action mapping`() {
+    configureByText(
+      """
+     ${c}line0
+     line1
+     line2
+     line3
+     line4
+     line5
+    """.trimIndent()
+    )
+    enterCommand("map gj :action EditorCloneCaretBelow<CR>")
+    typeText("5gj")
+    // The count should run the cloning action 5 times, leaving 5 cloned carets plus the original.
+    assertState(
+      """
+     ${c}line0
+     ${c}line1
+     ${c}line2
+     ${c}line3
+     ${c}line4
+     ${c}line5
+    """.trimIndent()
+    )
+  }
+
   @TestFor(issues = ["VIM-2929"])
   @TestWithoutNeovim(reason = SkipNeovimReason.ACTION_COMMAND)
   @Test
@@ -1200,7 +1306,7 @@ class MapCommandTest : VimTestCase() {
     )
     enterCommand("map k :echo 4<CR> \\| :echo 42<CR>")
     typeText("k")
-    assertEquals("4\n42", injector.outputPanel.getCurrentOutputPanel()!!.text)
+    assertExOutput("4\n42")
   }
 
   @Test
@@ -1298,5 +1404,68 @@ class MapCommandTest : VimTestCase() {
     ) {
       enterCommand("imap <S-Tab> hello")
     }
+  }
+
+  @TestFor(issues = ["VIM-4349"])
+  @Test
+  fun `test map Alt+quote does not take Alt+Right`() {
+    configureByText("${c}foo bar\n")
+    enterCommand("nmap <A-'> w")
+    assertPluginError(false)
+
+    typeText("<A-Right>")
+    assertOffset(0)
+    typeText("<A-'>")
+    assertOffset(4)
+    assertCommandOutput("nmap", "n  <A-'>         w")
+  }
+
+  @TestFor(issues = ["VIM-4349"])
+  @Test
+  fun `test map Alt+backquote does not take keypad 0`() {
+    configureByText("${c}foo bar\n")
+    enterCommand("nmap <A-`> w")
+    assertPluginError(false)
+
+    typeText("<A-k0>")
+    assertOffset(0)
+    typeText("<A-`>")
+    assertOffset(4)
+  }
+
+  @TestFor(issues = ["VIM-4349"])
+  @TestWithoutNeovim(SkipNeovimReason.DIFFERENT, "Vim maps <A-%>, IdeaVim has no key code for it")
+  @Test
+  fun `test map of shifted punctuation with modifier reports error`() {
+    configureByText("${c}foo bar\n")
+    enterCommand("nmap <A-%> w")
+
+    assertPluginError(true)
+    assertPluginErrorMessage("Cannot map <A-%>: no key types this character, map the key itself, e.g. <A-S-5> instead of <A-%>")
+    assertCommandOutput("nmap", "No mapping found")
+    typeText("<A-Left>")
+    assertOffset(0)
+  }
+
+  @TestFor(issues = ["VIM-4349"])
+  @Test
+  fun `test map of shifted punctuation by its key`() {
+    configureByText("${c}foo bar\n")
+    enterCommand("nmap <A-S-5> w")
+    assertPluginError(false)
+
+    typeText("<A-S-5>")
+    assertOffset(4)
+  }
+
+  @TestFor(issues = ["VIM-4349"])
+  @Test
+  fun `test map of control character with caret`() {
+    configureByText("${c}foo bar\n")
+    enterCommand("nmap <C-^> w")
+    assertPluginError(false)
+
+    typeText("<C-^>")
+    assertOffset(4)
   }
 }

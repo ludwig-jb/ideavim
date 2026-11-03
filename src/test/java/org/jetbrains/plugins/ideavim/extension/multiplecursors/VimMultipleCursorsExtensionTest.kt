@@ -41,7 +41,7 @@ class VimMultipleCursorsExtensionTest : VimTestCase() {
     """.trimMargin()
     configureByText(before)
 
-    typeText(injector.parser.parseKeys("g<A-n>" + "<A-n>".repeat(before.count { it == '\n' } - 1)))
+    typeText(injector.parser.parseKeys("g<C-n>" + "<C-n>".repeat(before.count { it == '\n' } - 1)))
 
     val after = """${s}Int$se
       |Integer
@@ -63,7 +63,7 @@ class VimMultipleCursorsExtensionTest : VimTestCase() {
     """.trimMargin()
     configureByText(before)
 
-    typeText(injector.parser.parseKeys("g<A-n>".repeat(3)))
+    typeText(injector.parser.parseKeys("g<C-n>".repeat(3)))
 
     val after = """${s}qwe$se
       |asd${s}qwe${se}asd
@@ -84,7 +84,7 @@ class VimMultipleCursorsExtensionTest : VimTestCase() {
     """.trimMargin()
     configureByText(before)
 
-    typeText(injector.parser.parseKeys("<A-n>".repeat(4)))
+    typeText(injector.parser.parseKeys("<C-n>".repeat(4)))
 
     val after = """${s}qwe$se
       |asd
@@ -106,7 +106,7 @@ class VimMultipleCursorsExtensionTest : VimTestCase() {
     """.trimMargin()
     configureByText(before)
 
-    typeText(injector.parser.parseKeys("<A-n>"))
+    typeText(injector.parser.parseKeys("<C-n>"))
     assertState(before)
   }
 
@@ -194,7 +194,7 @@ class VimMultipleCursorsExtensionTest : VimTestCase() {
       editor.vim.mode = Mode.VISUAL(SelectionType.CHARACTER_WISE)
     }
 
-    typeText(injector.parser.parseKeys("<A-p>"))
+    typeText(injector.parser.parseKeys("<C-p>"))
 
     val after = """qwe
       |dsgkldfjs ldfl gkjsdsl kj
@@ -212,7 +212,7 @@ class VimMultipleCursorsExtensionTest : VimTestCase() {
     """.trimMargin()
     configureByText(before)
 
-    typeText(injector.parser.parseKeys("g<A-n>" + "<A-n>".repeat(2) + "<A-p>"))
+    typeText(injector.parser.parseKeys("g<C-n>" + "<C-n>".repeat(2) + "<C-p>"))
 
     val after = """${s}Int$se
       |kek${s}Int${se}eger
@@ -231,11 +231,11 @@ class VimMultipleCursorsExtensionTest : VimTestCase() {
     """.trimMargin()
     configureByText(before)
 
-    typeText(injector.parser.parseKeys("<A-n>".repeat(3)))
+    typeText(injector.parser.parseKeys("<C-n>".repeat(3)))
     assertMode(Mode.VISUAL(SelectionType.CHARACTER_WISE))
-    typeText(injector.parser.parseKeys("<A-p>".repeat(3)))
+    typeText(injector.parser.parseKeys("<C-p>".repeat(3)))
     assertMode(Mode.NORMAL())
-    typeText(injector.parser.parseKeys("<A-n>".repeat(2)))
+    typeText(injector.parser.parseKeys("<C-n>".repeat(2)))
 
     val after = """${s}qwe$se
       |asd
@@ -256,7 +256,7 @@ class VimMultipleCursorsExtensionTest : VimTestCase() {
     """.trimMargin()
     configureByText(before)
 
-    typeText(injector.parser.parseKeys("g<A-n>" + "<A-x>" + "<A-n>".repeat(2)))
+    typeText(injector.parser.parseKeys("g<C-n>" + "<C-x>" + "<C-n>".repeat(2)))
 
     val after = """qwe
       |asd${s}qwe${se}asd
@@ -279,7 +279,7 @@ class VimMultipleCursorsExtensionTest : VimTestCase() {
       editor.vim.mode = Mode.VISUAL(SelectionType.CHARACTER_WISE)
     }
 
-    typeText(injector.parser.parseKeys("<A-x>"))
+    typeText(injector.parser.parseKeys("<C-x>"))
     assertMode(Mode.VISUAL(SelectionType.CHARACTER_WISE))
     assertState(before)
   }
@@ -292,7 +292,7 @@ class VimMultipleCursorsExtensionTest : VimTestCase() {
     """.trimMargin()
     configureByText(before)
 
-    typeText(injector.parser.parseKeys("vjl" + "<A-n>"))
+    typeText(injector.parser.parseKeys("vjl" + "<C-n>"))
     val after = """jdfsg sdf${c}dfkgjhfkgkldfjsg
                         |dfkjghdfs${c}gs
                         |dflsgsdfgh
@@ -317,7 +317,7 @@ fun getCellType(${c}pos: VisualPosition): CellType {
     configureByText(before)
 
     typeText(commandToKeys("set ignorecase"))
-    typeText(injector.parser.parseKeys("g<A-n><A-n><A-n>"))
+    typeText(injector.parser.parseKeys("g<C-n><C-n><C-n>"))
     val after = """@TestWithoutNeovim(reason = SkipNeovimReason.PLUGIN)
 fun getCellType(${s}pos$se: VisualPosition): CellType {
     if (${s}pos$se in snakeCells) {
@@ -342,7 +342,7 @@ fun getCellType(${s}pos$se: VisualPosition): CellType {
   ...all it was settled on some sodden sand
   ...all by the torrent of a mountain pass
     """.trimIndent().dotToTab()
-    val keys = listOf("vll", "<A-N>", "<A-N>")
+    val keys = listOf("vll", "<C-N>", "<C-N>")
     val after = """
   I found it in a legendary land
   ...${s}al${c}l$se rocks and lavender and tufted grass,
@@ -358,9 +358,21 @@ fun getCellType(${s}pos$se: VisualPosition): CellType {
     configureByText(before)
 
     typeText(commandToKeys("set ignorecase"))
-    typeText(injector.parser.parseKeys("<A-n><A-n><A-n><A-n>"))
+    typeText(injector.parser.parseKeys("<C-n><C-n><C-n><C-n>"))
     val after = """test ${s}Test$se tEst TeSt tEST ${s}Test$se test ${s}Test$se test"""
     assertState(after)
+  }
+
+  @Test
+  fun `test pattern is case sensitive regardless of VM_case_setting`() {
+    // g:VM_case_setting belongs to the visual-multi extension, which shares the implementation with this one
+    val before = "${c}foo Foo foo"
+    configureByText(before)
+    enterCommand("let g:VM_case_setting = 'ignore'")
+
+    typeText(injector.parser.parseKeys("<C-n><C-n>"))
+
+    assertState("${s}foo$se Foo ${s}foo$se")
   }
 
   @Test
@@ -371,7 +383,7 @@ fun getCellType(${s}pos$se: VisualPosition): CellType {
       editor.vim.mode = Mode.VISUAL(SelectionType.CHARACTER_WISE)
     }
 
-    typeText(injector.parser.parseKeys("<A-n><A-n>"))
+    typeText(injector.parser.parseKeys("<C-n><C-n>"))
     val after = "test ${s}t.*st$se toast tallest ${s}t.*st$se"
     assertState(after)
   }
@@ -384,7 +396,7 @@ fun getCellType(${s}pos$se: VisualPosition): CellType {
       editor.vim.mode = Mode.VISUAL(SelectionType.CHARACTER_WISE)
     }
 
-    typeText(injector.parser.parseKeys("<A-n>"))
+    typeText(injector.parser.parseKeys("<C-n>"))
     val after = "Fields${s}\\IntegerField$se('ID') ssssIntegerField Fields${s}\\IntegerField$se('ENTITY_ID')"
     assertState(after)
   }
@@ -397,7 +409,7 @@ fun getCellType(${s}pos$se: VisualPosition): CellType {
       editor.vim.mode = Mode.VISUAL(SelectionType.CHARACTER_WISE)
     }
 
-    typeText(injector.parser.parseKeys("<A-n>"))
+    typeText(injector.parser.parseKeys("<C-n>"))
     val after = "test ${s}\\\\hello$se world ${s}\\\\hello$se again"
     assertState(after)
   }
@@ -410,7 +422,7 @@ fun getCellType(${s}pos$se: VisualPosition): CellType {
       editor.vim.mode = Mode.VISUAL(SelectionType.CHARACTER_WISE)
     }
 
-    typeText(injector.parser.parseKeys("<A-n>"))
+    typeText(injector.parser.parseKeys("<C-n>"))
     val after = "path${s}test\\$se file path ${s}test\\$se dir"
     assertState(after)
   }
@@ -443,7 +455,7 @@ fun getCellType(${s}pos$se: VisualPosition): CellType {
       ${c}Sed in orci mauris.
       Cras id tellus in ex imperdiet egestas. 
     """.trimIndent()
-    doTest("Vjj<A-n>", before, after)
+    doTest("Vjj<C-n>", before, after)
   }
 
   @Test
@@ -460,7 +472,7 @@ fun getCellType(${s}pos$se: VisualPosition): CellType {
       ${c}Sed in orci mauris.
       ${c}Cras id tellus in ex imperdiet egestas. 
     """.trimIndent()
-    doTest("Vjjj<A-n>", before, after)
+    doTest("Vjjj<C-n>", before, after)
   }
 
   @Test
@@ -478,7 +490,7 @@ fun getCellType(${s}pos$se: VisualPosition): CellType {
       ${c}Sed in orci mauris.
       Cras id tellus in ex imperdiet egestas.
     """.trimIndent()
-    doTest("Vkk<A-n>", before, after)
+    doTest("Vkk<C-n>", before, after)
   }
 
   @Test
@@ -496,7 +508,7 @@ fun getCellType(${s}pos$se: VisualPosition): CellType {
       ${c}Sed in orci mauris.
       ${c}Cras id tellus in ex imperdiet egestas.
     """.trimIndent()
-    doTest("Vkk<A-n>", before, after)
+    doTest("Vkk<C-n>", before, after)
   }
 
   @Test
@@ -520,7 +532,7 @@ fun getCellType(${s}pos$se: VisualPosition): CellType {
       ${c}Sed in orci mauris.
       ${c}Cras id tellus in ex imperdiet egestas.
     """.trimIndent()
-    doTest("Vkkk<A-n>", before, after)
+    doTest("Vkkk<C-n>", before, after)
   }
 
   @Test
@@ -544,6 +556,365 @@ fun getCellType(${s}pos$se: VisualPosition): CellType {
       Sed in orci mauris.
       Cras id tellus in ex imperdiet egestas.
     """.trimIndent()
-    doTest("Vjjj<A-n>", before, after)
+    doTest("Vjjj<C-n>", before, after)
+  }
+
+  // Default key mappings. These match the original terryma/vim-multiple-cursors plugin.
+
+  @Test
+  fun `test ctrl-n default mapping starts and adds next whole occurrence`() {
+    val before = """q${c}we
+      |asd
+      |qwe
+      |asd
+      |qwe
+    """.trimMargin()
+    configureByText(before)
+
+    typeText(injector.parser.parseKeys("<C-n><C-n>"))
+
+    val after = """${s}qwe$se
+      |asd
+      |${s}qwe$se
+      |asd
+      |qwe
+    """.trimMargin()
+    assertState(after)
+  }
+
+  @Test
+  fun `test g ctrl-n default mapping adds next occurrence without word boundaries`() {
+    val before = """q${c}we
+      |asdqweasd
+      |qwe
+      |asd
+    """.trimMargin()
+    configureByText(before)
+
+    typeText(injector.parser.parseKeys("g<C-n>".repeat(3)))
+
+    val after = """${s}qwe$se
+      |asd${s}qwe${se}asd
+      |${s}qwe$se
+      |asd
+    """.trimMargin()
+    assertState(after)
+  }
+
+  @Test
+  fun `test alt-n default mapping selects all whole occurrences`() {
+    val before = """qwe
+      |asd
+      |q${c}we
+      |asd
+      |qwe
+    """.trimMargin()
+    configureByText(before)
+
+    typeText(injector.parser.parseKeys("<A-n>"))
+
+    val after = """${s}qwe$se
+      |asd
+      |${s}qwe$se
+      |asd
+      |${s}qwe$se
+    """.trimMargin()
+    assertState(after)
+  }
+
+  @Test
+  fun `test g alt-n default mapping selects all occurrences without word boundaries`() {
+    val before = """Int
+      |Integer
+      |I${c}nt
+      |Integer
+      |Integer
+      |Int
+      |Intger
+    """.trimMargin()
+    configureByText(before)
+
+    typeText(injector.parser.parseKeys("g<A-n>"))
+
+    val after = """${s}Int$se
+      |${s}Int${se}eger
+      |${s}Int$se
+      |${s}Int${se}eger
+      |${s}Int${se}eger
+      |${s}Int$se
+      |${s}Int${se}ger
+    """.trimMargin()
+    assertState(after)
+  }
+
+  @Test
+  fun `test ctrl-p default mapping removes occurrence`() {
+    val before = """q${c}we
+      |asd
+      |qwe
+      |asd
+      |qwe
+    """.trimMargin()
+    configureByText(before)
+
+    // Add three cursors, then remove the last one
+    typeText(injector.parser.parseKeys("<C-n>".repeat(3) + "<C-p>"))
+
+    val after = """${s}qwe$se
+      |asd
+      |${s}qwe$se
+      |asd
+      |qwe
+    """.trimMargin()
+    assertState(after)
+  }
+
+  @Test
+  fun `test ctrl-x default mapping skips occurrence`() {
+    val before = """q${c}we
+      |asd
+      |qwe
+      |asd
+      |qwe
+    """.trimMargin()
+    configureByText(before)
+
+    // Select the first occurrence, skip it to the second, then add the third
+    typeText(injector.parser.parseKeys("<C-n>" + "<C-x>" + "<C-n>"))
+
+    val after = """qwe
+      |asd
+      |${s}qwe$se
+      |asd
+      |${s}qwe$se
+    """.trimMargin()
+    assertState(after)
+  }
+
+  // g:multi_cursor_use_default_mapping
+
+  /**
+   * Re-runs the extension's [init] with `g:multi_cursor_use_default_mapping = 0` so that the default key mappings are
+   * not created. Toggling the option off and on again is what causes `init()` to re-read the variable.
+   */
+  private fun disableDefaultMappings() {
+    enterCommand("set nomultiple-cursors")
+    enterCommand("let g:multi_cursor_use_default_mapping = 0")
+    enterCommand("set multiple-cursors")
+  }
+
+  @Test
+  fun `test default mappings are not created when multi_cursor_use_default_mapping is zero`() {
+    val before = """q${c}we
+      |asd
+      |qwe
+    """.trimMargin()
+    configureByText(before)
+    disableDefaultMappings()
+
+    // Without the default mapping, <C-n> must not start a multiple-cursors session (which would enter Visual mode)
+    typeText(injector.parser.parseKeys("<C-n>"))
+    assertMode(Mode.NORMAL())
+
+    // The same applies to the select-all mapping
+    typeText(injector.parser.parseKeys("<A-n>"))
+    assertMode(Mode.NORMAL())
+  }
+
+  @Test
+  fun `test plug mappings still available when default mappings disabled`() {
+    val before = """qwe
+      |asd
+      |q${c}we
+      |asd
+      |qwe
+    """.trimMargin()
+    configureByText(before)
+    disableDefaultMappings()
+
+    // The <Plug> mappings are always registered, so the user can still bind them manually
+    typeText(injector.parser.parseKeys("<Plug>AllWholeOccurrences"))
+
+    val after = """${s}qwe$se
+      |asd
+      |${s}qwe$se
+      |asd
+      |${s}qwe$se
+    """.trimMargin()
+    assertState(after)
+  }
+
+  @Test
+  fun `test can restore old alt based mappings when default mappings disabled`() {
+    val before = """q${c}we
+      |asd
+      |qwe
+      |asd
+      |qwe
+    """.trimMargin()
+    configureByText(before)
+    disableDefaultMappings()
+
+    // Map the alt-based keys back to the "next" behaviour, as they were before the defaults changed
+    enterCommand("nmap <A-n> <Plug>NextWholeOccurrence")
+    enterCommand("xmap <A-n> <Plug>NextWholeOccurrence")
+
+    typeText(injector.parser.parseKeys("<A-n><A-n>"))
+    assertMode(Mode.VISUAL(SelectionType.CHARACTER_WISE))
+
+    val after = """${s}qwe$se
+      |asd
+      |${s}qwe$se
+      |asd
+      |qwe
+    """.trimMargin()
+    assertState(after)
+  }
+
+  // Visual `I` and `A` are special in vim-multiple-cursors: they insert at the start or append after each selection,
+  // not at the start or end of the line as in plain Vim. Ported from spec/multiple_cursors_spec.rb (VIM-2374)
+  @Test
+  fun `test I inserts at start of each selection`() {
+    configureByText(
+      """${c}hello world jan
+      |hello world feb
+      |hello world mar
+      """.trimMargin(),
+    )
+
+    typeText(injector.parser.parseKeys("w<C-n><C-n><C-n>" + "Ibefore<Esc>"))
+
+    assertState(
+      """hello befor${c}eworld jan
+      |hello befor${c}eworld feb
+      |hello befor${c}eworld mar
+      """.trimMargin(),
+    )
+  }
+
+  @Test
+  fun `test A appends after each selection`() {
+    configureByText(
+      """${c}hello world jan
+      |hello world feb
+      |hello world mar
+      """.trimMargin(),
+    )
+
+    typeText(injector.parser.parseKeys("w<C-n><C-n><C-n>" + "Aafter<Esc>"))
+
+    assertState(
+      """hello worldafte${c}r jan
+      |hello worldafte${c}r feb
+      |hello worldafte${c}r mar
+      """.trimMargin(),
+    )
+  }
+
+  @Test
+  fun `test I inserts at start of each resized selection`() {
+    configureByText(
+      """${c}hello world jan
+      |hello world feb
+      |hello world mar
+      """.trimMargin(),
+    )
+
+    typeText(injector.parser.parseKeys("w<C-n><C-n><C-n>hhh" + "Ibefore<Esc>"))
+
+    assertState(
+      """hello befor${c}eworld jan
+      |hello befor${c}eworld feb
+      |hello befor${c}eworld mar
+      """.trimMargin(),
+    )
+  }
+
+  @Test
+  fun `test A appends after each resized selection`() {
+    configureByText(
+      """${c}hello world jan
+      |hello world feb
+      |hello world mar
+      """.trimMargin(),
+    )
+
+    typeText(injector.parser.parseKeys("w<C-n><C-n><C-n>hhh" + "Abefore<Esc>"))
+
+    assertState(
+      """hello wobefor${c}erld jan
+      |hello wobefor${c}erld feb
+      |hello wobefor${c}erld mar
+      """.trimMargin(),
+    )
+  }
+
+  @Test
+  fun `test I inserts at start of each not whole word selection`() {
+    configureByText(
+      """hello hi${c}bye world
+      |hello hibye world
+      |hello hibye world
+      """.trimMargin(),
+    )
+
+    typeText(injector.parser.parseKeys("ve" + "g<C-n>".repeat(2)))
+    typeText(injector.parser.parseKeys("Ibefore<Esc>"))
+
+    assertState(
+      """hello hibefor${c}ebye world
+      |hello hibefor${c}ebye world
+      |hello hibefor${c}ebye world
+      """.trimMargin(),
+    )
+  }
+
+  @Test
+  fun `test I inserts at start of each selection on the same line`() {
+    configureByText("foo ${c}qwe bar qwe")
+
+    typeText(injector.parser.parseKeys("<C-n><C-n>" + "Ix<Esc>"))
+
+    assertState("foo ${c}xqwe bar ${c}xqwe")
+  }
+
+  @Test
+  fun `test I inserts at start of a single selection`() {
+    configureByText("foo ${c}qwe bar")
+
+    typeText(injector.parser.parseKeys("<C-n>" + "Ix<Esc>"))
+
+    assertState("foo ${c}xqwe bar")
+  }
+
+  @Test
+  fun `test I without multiple cursors keeps Vim meaning`() {
+    configureByText("foo ${c}qwe bar")
+
+    typeText(injector.parser.parseKeys("vl" + "Ix<Esc>"))
+
+    assertState("${c}xfoo qwe bar")
+  }
+
+  @Test
+  fun `test A without multiple cursors keeps Vim meaning`() {
+    configureByText("foo ${c}qwe bar")
+
+    typeText(injector.parser.parseKeys("vl" + "Ax<Esc>"))
+
+    assertState("foo qwe bar${c}x")
+  }
+
+  @Test
+  fun `test I does not override user mapping`() {
+    configureByText("foo ${c}qwe bar")
+    enterCommand("set nomultiple-cursors")
+    enterCommand("xmap I <Esc>")
+    enterCommand("set multiple-cursors")
+
+    typeText(injector.parser.parseKeys("<C-n>" + "I"))
+
+    assertState("foo qw${c}e bar")
+    assertMode(Mode.NORMAL())
   }
 }

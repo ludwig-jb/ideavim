@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2024 The IdeaVim authors
+ * Copyright 2003-2026 The IdeaVim authors
  *
  * Use of this source code is governed by an MIT-style
  * license that can be found in the LICENSE.txt file or at
@@ -78,6 +78,7 @@ class UiTests {
         }
       }
       waitFor(Duration.ofMinutes(1)) { editor.findAllText("One").isNotEmpty() }
+      testVisualSort(editor)
       testSelectTextWithDelay(editor)
       testExtendSelection(editor)
       testLargerDragSelection(editor)
@@ -99,6 +100,8 @@ class UiTests {
       testMilticaretEnterInSelectMode(editor)
       reenableIdeaVim(editor)
       reenablingIdeaVimKeepsMappings(editor)
+      testEchoFromCommandLineWindow()
+      testVisualSurroundTagWithEnter(editor)
 
       createFile("MyTest.java", this@uiTest)
       val javaEditor = editor("MyTest.java") {
@@ -391,6 +394,100 @@ class UiTests {
       editor.text,
     )
 
+    vimExit()
+  }
+
+  // VIM-2200
+  private fun IdeaFrame.testEchoFromCommandLineWindow() {
+    println("Run testEchoFromCommandLineWindow...")
+
+    keyboard {
+      escape()
+      enterText(":echo 'from cmdwin'")
+      hotKey(KeyEvent.VK_CONTROL, KeyEvent.VK_F)
+    }
+    val cmdwin = editor("[Command Line]")
+    waitFor { cmdwin.text.endsWith("echo 'from cmdwin'") }
+
+    keyboard { enter() }
+
+    // The platform reports the selection changes from closing the cmdwin after the command has already shown its
+    // output. Their redraw used to close that output right away, so check that it's still there a moment later
+    waitFor { isOutputShown("from cmdwin") }
+    Thread.sleep(1000)
+    assertTrue(isOutputShown("from cmdwin"))
+
+    keyboard { escape() }
+    waitFor { !isOutputShown("from cmdwin") }
+    vimExit()
+  }
+
+  // VIM-2796
+  private fun IdeaFrame.testVisualSurroundTagWithEnter(editor: Editor) {
+    println("Run testVisualSurroundTagWithEnter...")
+
+    editor.injectText("<div><p>content</p></div>")
+
+    keyboard {
+      escape()
+      enterText(":set surround")
+      enter()
+      enterText("gg0f>;l")
+      enterText("vt<")
+      enterText("St")
+      enterText("i")
+      enter()
+    }
+
+    assertEquals("<div><p><i>content</i></p></div>", editor.text)
+
+    keyboard {
+      escape()
+      enterText(":set nosurround")
+      enter()
+    }
+    editor.injectText(testTextForEditor)
+    vimExit()
+  }
+
+  private fun IdeaFrame.isOutputShown(text: String): Boolean =
+    findAll<ComponentFixture>(
+      byXpath("//div[@class='OutputPanel']//div[@class='JTextPane' and @visible_text='$text']"),
+    ).isNotEmpty()
+
+  // VIM-4172
+  private fun IdeaFrame.testVisualSort(editor: Editor) {
+    println("Run testVisualSort...")
+
+    editor.injectText(
+      """
+                |cherry
+                |banana
+                |apple
+                |date
+      """.trimMargin(),
+    )
+
+    keyboard {
+      escape()
+      enterText("gg")
+      enterText("Vjj")
+      enterText(":")
+      enterText("sort")
+      enter()
+    }
+
+    assertEquals(
+      """
+      apple
+      banana
+      cherry
+      date
+      """.trimIndent(),
+      editor.text,
+    )
+
+    editor.injectText(testTextForEditor)
     vimExit()
   }
 

@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2023 The IdeaVim authors
+ * Copyright 2003-2026 The IdeaVim authors
  *
  * Use of this source code is governed by an MIT-style
  * license that can be found in the LICENSE.txt file or at
@@ -21,12 +21,19 @@ import com.maddyhome.idea.vim.state.mode.selectionType
 
 fun VimEditor.exitVisualMode() {
   val selectionType = mode.selectionType ?: SelectionType.CHARACTER_WISE
-  SelectionVimListenerSuppressor.lock().use {
+  SelectionVimListenerSuppressor.lock {
+    val clearAllSelections = { nativeCarets().forEach(VimCaret::removeSelection) }
     if (inBlockSelection) {
-      removeSecondaryCarets()
-    }
-    injector.application.runWriteAction {
-      nativeCarets().forEach(VimCaret::removeSelection)
+      // removeSecondaryCarets() fires N-1 caretRemoved events. In split mode those events drive
+      // PatchEngineEditorSynchronizer, which walks all carets and ships an RD-protocol message
+      // per event — O(N²) per exit. Run inside the all-carets-action lifecycle so the
+      // synchronizer batches the deletions into a single end-of-op snapshot.
+      runAsAllCaretsAction {
+        removeSecondaryCarets()
+        clearAllSelections()
+      }
+    } else {
+      clearAllSelections()
     }
   }
   if (inVisualMode || inCommandLineModeWithVisual) {

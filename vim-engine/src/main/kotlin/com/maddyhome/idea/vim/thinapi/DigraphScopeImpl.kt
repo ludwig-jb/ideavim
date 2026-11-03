@@ -12,15 +12,17 @@ import com.intellij.vim.api.scopes.DigraphScope
 import com.maddyhome.idea.vim.api.VimEditor
 import com.maddyhome.idea.vim.api.injector
 
-object DigraphScopeImpl : DigraphScope {
+class DigraphScopeImpl(
+  private val projectId: String?,
+) : DigraphScope {
   private val vimEditor: VimEditor
-    get() = injector.editorGroup.getFocusedEditor()!!
+    get() = projectId?.let { injector.editorGroup.getSelectedEditor(it) } ?: injector.fallbackWindow
 
-  override fun getCharacter(ch1: Char, ch2: Char): Int {
+  override suspend fun getCharacter(ch1: Char, ch2: Char): Int {
     return injector.digraphGroup.getCharacterForDigraph(ch1, ch2)
   }
 
-  override fun add(ch1: Char, ch2: Char, codepoint: Int) {
+  override suspend fun add(ch1: Char, ch2: Char, codepoint: Int) {
     val args = "$ch1$ch2 $codepoint"
     injector.digraphGroup.parseCommandLine(vimEditor, args)
   }

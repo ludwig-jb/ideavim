@@ -326,7 +326,7 @@ class NormalCommandTest : VimTestCase() {
   }
 
   @Test
-  fun `test normal command delete and undo with oldundo`() {
+  fun `test normal command delete and undo with ideaoldundo`() {
     configureByText(
       """
       |Line 1
@@ -336,7 +336,7 @@ class NormalCommandTest : VimTestCase() {
     )
 
     try {
-      enterCommand("set oldundo")
+      enterCommand("set ideaoldundo")
       enterCommand("normal x")
       assertState(
         """
@@ -355,12 +355,12 @@ class NormalCommandTest : VimTestCase() {
       """.trimMargin()
       )
     } finally {
-      enterCommand("set nooldundo")
+      enterCommand("set noideaoldundo")
     }
   }
 
   @Test
-  fun `test normal command with range and undo with oldundo`() {
+  fun `test normal command with range and undo with ideaoldundo`() {
     configureByText(
       """
       |First ${c}line
@@ -371,7 +371,7 @@ class NormalCommandTest : VimTestCase() {
     )
 
     try {
-      enterCommand("set oldundo")
+      enterCommand("set ideaoldundo")
       enterCommand("2,3normal A!")
       assertState(
         """
@@ -392,12 +392,12 @@ class NormalCommandTest : VimTestCase() {
       """.trimMargin()
       )
     } finally {
-      enterCommand("set nooldundo")
+      enterCommand("set noideaoldundo")
     }
   }
 
   @Test
-  fun `test normal command insert and undo with oldundo`() {
+  fun `test normal command insert and undo with ideaoldundo`() {
     configureByText(
       """
       |${c}Hello world
@@ -405,7 +405,7 @@ class NormalCommandTest : VimTestCase() {
     )
 
     try {
-      enterCommand("set oldundo")
+      enterCommand("set ideaoldundo")
       enterCommand("normal iTest ")
       assertState(
         """
@@ -420,12 +420,12 @@ class NormalCommandTest : VimTestCase() {
       """.trimMargin()
       )
     } finally {
-      enterCommand("set nooldundo")
+      enterCommand("set noideaoldundo")
     }
   }
 
   @Test
-  fun `test normal command complex operation and undo with oldundo`() {
+  fun `test normal command complex operation and undo with ideaoldundo`() {
     configureByText(
       """
       |Line ${c}1
@@ -435,7 +435,7 @@ class NormalCommandTest : VimTestCase() {
     )
 
     try {
-      enterCommand("set oldundo")
+      enterCommand("set ideaoldundo")
       enterCommand("normal ddp")
       assertState(
         """
@@ -454,7 +454,156 @@ class NormalCommandTest : VimTestCase() {
       """.trimMargin()
       )
     } finally {
-      enterCommand("set nooldundo")
+      enterCommand("set noideaoldundo")
     }
+  }
+
+  @Test
+  fun `test literal Esc typed with CTRL-V exits Insert mode`() {
+    configureByText("123${c}456")
+    typeText(":normal iFoo<C-V><Esc>x<CR>")
+    assertState("123Fo${c}456")
+  }
+
+  @Test
+  fun `test Esc in execute string exits Insert mode`() {
+    configureByText("123${c}456")
+    enterCommand("""exe "normal! iFoo\<Esc>x"""")
+    assertState("123Fo${c}456")
+  }
+
+  @Test
+  fun `test Esc as backslash-e in execute string exits Insert mode`() {
+    configureByText("123${c}456")
+    enterCommand("""exe "normal! iFoo\ex"""")
+    assertState("123Fo${c}456")
+  }
+
+  @Test
+  fun `test CTRL-A in execute string increments number`() {
+    configureByText("x ${c}41 y")
+    enterCommand("""exe "normal! \<C-A>"""")
+    assertState("x 4${c}2 y")
+  }
+
+  @Test
+  fun `test literal CR typed with CTRL-V inserts new line`() {
+    configureByText("${c}123456")
+    typeText(":normal iX<C-V><CR>Y<CR>")
+    assertState(
+      """
+      |X
+      |${c}Y123456
+      """.trimMargin()
+    )
+  }
+
+  @Test
+  fun `test CR as backslash-r in execute string inserts new line`() {
+    configureByText("${c}123456")
+    enterCommand("""exe "normal! iX\rY"""")
+    assertState(
+      """
+      |X
+      |${c}Y123456
+      """.trimMargin()
+    )
+  }
+
+  @Test
+  fun `test CR as octal escape in execute string inserts new line`() {
+    configureByText("${c}123456")
+    enterCommand("""exe "normal! iX\015Y"""")
+    assertState(
+      """
+      |X
+      |${c}Y123456
+      """.trimMargin()
+    )
+  }
+
+  @Test
+  fun `test CTRL-M in execute string inserts new line`() {
+    configureByText("${c}123456")
+    enterCommand("""exe "normal! iX\<C-M>Y"""")
+    assertState(
+      """
+      |X
+      |${c}Y123456
+      """.trimMargin()
+    )
+  }
+
+  @Test
+  fun `test CTRL-J in execute string inserts new line`() {
+    configureByText("${c}123456")
+    enterCommand("""exe "normal! iX\<C-J>Y"""")
+    assertState(
+      """
+      |X
+      |${c}Y123456
+      """.trimMargin()
+    )
+  }
+
+  @Test
+  fun `test CR as key notation in execute string inserts new line`() {
+    configureByText("${c}123456")
+    enterCommand("""exe "normal! iX\<CR>Y"""")
+    assertState(
+      """
+      |X
+      |${c}Y123456
+      """.trimMargin()
+    )
+  }
+
+  @Test
+  fun `test NL as backslash-n in execute string inserts new line`() {
+    configureByText("${c}123456")
+    enterCommand("""exe "normal! iX\nY"""")
+    assertState(
+      """
+      |X
+      |${c}Y123456
+      """.trimMargin()
+    )
+  }
+
+  @Test
+  fun `test NL as key notation in execute string inserts new line`() {
+    configureByText("${c}123456")
+    enterCommand("""exe "normal! iX\<NL>Y"""")
+    assertState(
+      """
+      |X
+      |${c}Y123456
+      """.trimMargin()
+    )
+  }
+
+  @Test
+  fun `test trailing NL in execute string is part of the argument`() {
+    configureByText("${c}123456")
+    enterCommand("""exe "normal! iX\n"""")
+    assertState(
+      """
+      |X
+      |${c}123456
+      """.trimMargin()
+    )
+  }
+
+  @Test
+  fun `test multiple NL in execute string`() {
+    configureByText("${c}123456")
+    enterCommand("""exe "normal! iA\nB\nC"""")
+    assertState(
+      """
+      |A
+      |B
+      |${c}C123456
+      """.trimMargin()
+    )
   }
 }

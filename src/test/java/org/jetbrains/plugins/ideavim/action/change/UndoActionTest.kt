@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2023 The IdeaVim authors
+ * Copyright 2003-2026 The IdeaVim authors
  *
  * Use of this source code is governed by an MIT-style
  * license that can be found in the LICENSE.txt file or at
@@ -40,7 +40,7 @@ class UndoActionTest : VimTestCase() {
   @Test
   @TestFor(issues = ["VIM-696"])
   fun `test undo after selection`() {
-    if (!optionsIjNoEditor().oldundo) {
+    if (!optionsIjNoEditor().ideaoldundo) {
       val keys = listOf("dwv3eld", "u")
       val before = """
                 Lorem Ipsum
@@ -62,6 +62,34 @@ class UndoActionTest : VimTestCase() {
       ApplicationManager.getApplication().runReadAction {
         kotlin.test.assertFalse(hasSelection())
       }
+    }
+  }
+
+  @Test
+  fun `test undo after visual block mode delete clears leftover native carets`() {
+    configureByText(
+      """
+      ${c}1. Item
+      2. Item
+      3. Item
+      """.trimIndent()
+    )
+
+    typeText("<C-V>jjllx")
+
+    typeText("u")
+    assertState(
+      """
+      ${c}1. Item
+      2. Item
+      3. Item
+      """.trimIndent()
+    )
+
+    assertMode(Mode.NORMAL())
+    ApplicationManager.getApplication().runReadAction {
+      kotlin.test.assertFalse(hasSelection())
+      kotlin.test.assertEquals(1, fixture.editor.caretModel.allCarets.size)
     }
   }
 
@@ -93,7 +121,7 @@ class UndoActionTest : VimTestCase() {
   @Test
   @TestFor(issues = ["VIM-308"])
   fun `test cursor movements do not require additional undo`() {
-    if (!optionsIjNoEditor().oldundo) {
+    if (!optionsIjNoEditor().ideaoldundo) {
       val keys = listOf("a1<Esc>ea2<Esc>ea3<Esc>", "uu")
       val before = """
                 Lorem Ipsum
@@ -121,7 +149,7 @@ class UndoActionTest : VimTestCase() {
   @Test
   @TestFor(issues = ["VIM-547"])
   fun `test typed text requires one undo`() {
-    assumeTrue(!injector.globalIjOptions().oldundo)
+    assumeTrue(!injector.globalIjOptions().ideaoldundo)
     configureByText("Lorem ipsu${c}m")
     typeText("a dolor sit amet,<CR>consectetur adipiscing elit<Esc>")
     assertState("Lorem ipsum dolor sit amet,\nconsectetur adipiscing elit")
@@ -132,7 +160,7 @@ class UndoActionTest : VimTestCase() {
   @Test
   @TestFor(issues = ["VIM-547"])
   fun `test breaking insert sequence`() {
-    assumeTrue(!injector.globalIjOptions().oldundo)
+    assumeTrue(!injector.globalIjOptions().ideaoldundo)
     configureByText("Lorem ipsu${c}m")
     typeText("a dolor sit amet,<CR>consectetur <C-G>uadipiscing elit<Esc>")
     assertState("Lorem ipsum dolor sit amet,\nconsectetur adipiscing elit")
@@ -143,7 +171,7 @@ class UndoActionTest : VimTestCase() {
   @Test
   @TestFor(issues = ["VIM-547"])
   fun `test moving caret breaks insert sequence`() {
-    assumeTrue(!injector.globalIjOptions().oldundo)
+    assumeTrue(!injector.globalIjOptions().ideaoldundo)
     configureByText("Lorem ipsu${c}m")
     typeText("a dolor sit amet,<CR>consectetur  <Left>adipiscing elit<Esc>")
     assertState("Lorem ipsum dolor sit amet,\nconsectetur adipiscing elit ")

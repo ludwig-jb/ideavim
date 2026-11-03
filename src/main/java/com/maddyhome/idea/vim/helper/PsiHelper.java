@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2023 The IdeaVim authors
+ * Copyright 2003-2026 The IdeaVim authors
  *
  * Use of this source code is governed by an MIT-style
  * license that can be found in the LICENSE.txt file or at
@@ -10,8 +10,8 @@ package com.maddyhome.idea.vim.helper;
 
 import com.intellij.ide.structureView.StructureViewBuilder;
 import com.intellij.ide.structureView.StructureViewModel;
+import com.intellij.ide.structureView.StructureViewTreeElement;
 import com.intellij.ide.structureView.TreeBasedStructureViewBuilder;
-import com.intellij.ide.structureView.impl.common.PsiTreeElementBase;
 import com.intellij.ide.util.treeView.smartTree.TreeElement;
 import com.intellij.lang.LanguageStructureViewBuilder;
 import com.intellij.openapi.editor.Editor;
@@ -42,7 +42,8 @@ public class PsiHelper {
     if (file == null) {
       return -1;
     }
-    StructureViewBuilder structureViewBuilder = LanguageStructureViewBuilder.getInstance().getStructureViewBuilder(file);
+    StructureViewBuilder structureViewBuilder =
+      LanguageStructureViewBuilder.getInstance().getStructureViewBuilder(file);
     if (!(structureViewBuilder instanceof TreeBasedStructureViewBuilder builder)) return -1;
     StructureViewModel model = builder.createStructureViewModel(editor);
 
@@ -81,9 +82,10 @@ public class PsiHelper {
   private static void addNavigationElements(@NotNull TreeElement root,
                                             @NotNull List<Integer> navigationOffsets,
                                             boolean start) {
-    if (root instanceof PsiTreeElementBase) {
-      PsiElement element = ((PsiTreeElementBase<?>)root).getValue();
+    if (root instanceof StructureViewTreeElement &&
+        ((StructureViewTreeElement)root).getValue() instanceof PsiElement element) {
       int offset;
+      if (element.getTextRange() == null) return;
       if (start) {
         offset = element.getTextRange().getStartOffset();
         if (element.getLanguage().getID().equals("JAVA")) {

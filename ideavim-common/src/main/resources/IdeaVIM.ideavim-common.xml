@@ -1,0 +1,44 @@
+<!--
+  ~ Copyright 2003-2026 The IdeaVim authors
+  ~
+  ~ Use of this source code is governed by an MIT-style
+  ~ license that can be found in the LICENSE.txt file or at
+  ~ https://opensource.org/licenses/MIT.
+  -->
+
+<idea-plugin>
+  <!-- Shared code loaded in ALL product modes (monolith, client, backend). -->
+
+  <!-- No dependency on intellij.platform.rpc here: it doesn't exist in 2025.3, and an unresolved dependency of this
+       embedded module disables the whole plugin. IdeaVIM.ideavim-rpc (optional) carries it instead. -->
+  <extensionPoints>
+    <extensionPoint interface="com.maddyhome.idea.vim.group.rpc.VimRemoteApiResolver" dynamic="true"
+                    name="remoteApiResolver"/>
+    <!-- In both modes: in split mode, diff tabs live on the backend -->
+    <extensionPoint interface="com.maddyhome.idea.vim.group.diff.DiffTabFilesProvider" dynamic="true"
+                    name="internal.diffTabFiles"/>
+    <extensionPoint interface="com.maddyhome.idea.vim.ide.ChatInputProvider" dynamic="true"
+                    name="chatInputProvider"/>
+  </extensionPoints>
+
+  <extensions defaultExtensionNs="com.intellij">
+    <!-- Services that must be available in ALL product modes (used by both frontend and backend).
+         Frontend-only services are registered in ideavim-frontend.xml.
+         Backend-only services are registered in ideavim-backend.xml. -->
+    <!-- Platform-managed coroutine scope for split-mode RPC clients -->
+    <applicationService serviceImplementation="com.maddyhome.idea.vim.group.CoroutineScopeProvider"/>
+
+    <!-- Services needed by BOTH frontend and backend (implementation classes in common module) -->
+    <applicationService serviceImplementation="com.maddyhome.idea.vim.group.IjVimSystemInfoService"
+                        serviceInterface="com.maddyhome.idea.vim.api.SystemInfoService"/>
+
+    <!-- Action ID completion in the ideavimrc file. Registered here, because in split mode the completion
+         runs on the backend, while in monolith everything runs in one process. -->
+    <completion.contributor language="any" order="first"
+                            implementationClass="com.maddyhome.idea.vim.completion.IdeaVimRcCompletionContributor"/>
+    <typedHandler implementation="com.maddyhome.idea.vim.completion.IdeaVimRcTypedHandler"/>
+
+  </extensions>
+
+
+</idea-plugin>

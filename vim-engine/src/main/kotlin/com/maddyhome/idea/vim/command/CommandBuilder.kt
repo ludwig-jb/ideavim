@@ -21,6 +21,7 @@ import com.maddyhome.idea.vim.handler.TextObjectActionHandler
 import com.maddyhome.idea.vim.helper.StrictMode
 import com.maddyhome.idea.vim.helper.noneOfEnum
 import com.maddyhome.idea.vim.key.KeyStrokeTrie
+import com.maddyhome.idea.vim.state.mode.SelectionType
 import org.jetbrains.annotations.TestOnly
 import javax.swing.KeyStroke
 
@@ -38,7 +39,15 @@ class CommandBuilder private constructor(
   private var selectedRegister: Char? = null
   private var action: EditorActionHandlerBase? = null
   private var argument: Argument? = null
-  private var fallbackArgumentType: Argument.Type? = null
+
+  /**
+   * A forced motion type entered with `v`/`V`/`CTRL-V` between an operator and its motion (`:help o_v`).
+   *
+   * It is set while the operator is pending (before the motion is entered) and is baked into the motion
+   * [Argument.Motion] when the motion action is added, where it overrides the motion's declared type. It is cleared
+   * when the command is reset.
+   */
+  var forcedMotion: SelectionType? = null
 
   private val motionArgument
     get() = argument as? Argument.Motion
@@ -55,11 +64,11 @@ class CommandBuilder private constructor(
   /** Returns true if the command builder is clean and ready to start building */
   val isEmpty
     get() = commandState == CurrentCommandState.NEW_COMMAND
+      && !isRegisterPending
       && selectedRegister == null
       && counts.size == 1 && counts[0] == 0
       && action == null
       && argument == null
-      && fallbackArgumentType == null
 
   /** Returns true if the command is ready to be built and executed */
   val isReady
@@ -111,8 +120,7 @@ class CommandBuilder private constructor(
    * For digraph arguments, this can fall back to [Argument.Type.CHARACTER] if there isn't a digraph match.
    */
   val expectedArgumentType: Argument.Type?
-    get() = fallbackArgumentType
-      ?: motionArgument?.let { return it.motion.argumentType }
+    get() = motionArgument?.let { return it.motion.argumentType }
       ?: action?.argumentType
 
   /**
@@ -125,17 +133,11 @@ class CommandBuilder private constructor(
   val isAwaitingArgument: Boolean
     get() = expectedArgumentType != null && (motionArgument?.let { it.argument == null } ?: (argument == null))
 
-  fun fallbackToCharacterArgument() {
-    logger.trace("fallbackToCharacterArgument is executed")
-    // Finished handling DIGRAPH. We either succeeded, in which case handle the converted character, or failed to parse,
-    // in which case try to handle input as a character argument.
-    assert(expectedArgumentType == Argument.Type.DIGRAPH) { "Cannot move state from $expectedArgumentType to CHARACTER" }
-    fallbackArgumentType = Argument.Type.CHARACTER
-  }
-
-  fun isAwaitingCharOrDigraphArgument(): Boolean {
-    val awaiting = expectedArgumentType == Argument.Type.CHARACTER || expectedArgumentType == Argument.Type.DIGRAPH
-    logger.debug { "Awaiting char or digraph: $awaiting" }
+  fun isAwaitingCharacterBasedArgument(): Boolean {
+    val awaiting = expectedArgumentType == Argument.Type.CHARACTER
+      || expectedArgumentType == Argument.Type.REGISTER
+      || expectedArgumentType == Argument.Type.MARK
+    logger.debug { "Awaiting character based argument: $awaiting" }
     return awaiting
   }
 
@@ -143,8 +145,7 @@ class CommandBuilder private constructor(
     get() {
       return commandState == CurrentCommandState.NEW_COMMAND
         && !isRegisterPending
-        && expectedArgumentType != Argument.Type.CHARACTER
-        && expectedArgumentType != Argument.Type.DIGRAPH
+        && !isAwaitingCharacterBasedArgument()
         && commandKeyStrokes.isEmpty()
     }
 
@@ -175,16 +176,29 @@ class CommandBuilder private constructor(
   var isRegisterPending: Boolean = false
     private set
 
+  /**
+   * Start waiting for a register name after typing `"` while entering a command. E.g. `"a2dw`
+   *
+   * This action is modifying an in-progress command by selecting a register. It should not be confused with
+   * `<C-R>{register}` which is a command that accepts a register name as an argument, and then inserts the contents of
+   * the register.
+   */
   fun startWaitingForRegister(key: KeyStroke) {
     isRegisterPending = true
     addTypedKeyStroke(key)
   }
 
+  /**
+   * Select a named register while entering a command. E.g. `"a2dw`
+   *
+   * This action is modifying an in-progress command by selecting a register. It should not be confused with
+   * `<C-R>{register}` which is a command that accepts a register name as an argument, and then inserts the contents of
+   * the register.
+   */
   fun selectRegister(register: Char) {
     logger.trace { "Selected register '$register'" }
     selectedRegister = register
     isRegisterPending = false
-    fallbackArgumentType = null
     counts.add(0)
   }
 
@@ -222,9 +236,9 @@ class CommandBuilder private constructor(
       else -> {
         StrictMode.assert(argument == null, "Command builder already has an action and a fully populated argument")
         argument = when (action) {
-          is MotionActionHandler -> Argument.Motion(action, null)
-          is TextObjectActionHandler -> Argument.Motion(action)
-          is ExternalActionHandler -> Argument.Motion(action)
+          is MotionActionHandler -> Argument.Motion(action, null, forcedMotion)
+          is TextObjectActionHandler -> Argument.Motion(action, forcedMotion)
+          is ExternalActionHandler -> Argument.Motion(action, forcedMotion)
           else -> throw RuntimeException("Unexpected action type: $action")
         }
       }
@@ -232,7 +246,6 @@ class CommandBuilder private constructor(
 
     // Push a new count component, so we get an extra count for e.g. an operator's motion
     counts.add(0)
-    fallbackArgumentType = null
 
     if (!isAwaitingArgument) {
       logger.trace("Action does not require an argument. Setting command state to READY")
@@ -255,8 +268,6 @@ class CommandBuilder private constructor(
     // If so, update the motion argument to include the given argument
     this.argument = motionArgument?.withArgument(argument) ?: argument
 
-    fallbackArgumentType = null
-
     if (!isAwaitingArgument) {
       logger.trace("Argument is simple type, or motion with own argument. No further argument required. Setting command state to READY")
       commandState = CurrentCommandState.READY
@@ -266,14 +277,14 @@ class CommandBuilder private constructor(
   /**
    * Process a keystroke, matching an action if available
    *
-   * If the given keystroke matches an action, the [processor] is invoked with the action instance. Typically, the
+   * If the given keystroke matches an action, the [processor] is invoked with the matched command. Typically, the
    * caller will end up passing the action back to [addAction], but there are more housekeeping steps that stop us
    * encapsulating it completely.
    *
    * If the given keystroke does not yet match an action, the internal state is updated to track the current command
    * part node.
    */
-  fun processKey(key: KeyStroke, processor: (EditorActionHandlerBase) -> Unit): Boolean {
+  fun processKey(key: KeyStroke, processor: (LazyVimCommand) -> Unit): Boolean {
     commandKeyStrokes.add(key)
     val node = keyStrokeTrie.getTrieNode(commandKeyStrokes)
     if (node == null) {
@@ -305,7 +316,7 @@ class CommandBuilder private constructor(
       logger.trace { "Found command ${command.instance} for ${injector.parser.toPrintableString(commandKeyStrokes)} - ${node.debugString}" }
       commandKeyStrokes.clear()
     }
-    processor(command.instance)
+    processor(command)
     return true
   }
 
@@ -368,8 +379,8 @@ class CommandBuilder private constructor(
     selectedRegister = null
     action = null
     argument = null
+    forcedMotion = null
     typedKeyStrokes.clear()
-    fallbackArgumentType = null
   }
 
   /**
@@ -398,13 +409,14 @@ class CommandBuilder private constructor(
 
     if (keyStrokeTrie != other.keyStrokeTrie) return false
     if (counts != other.counts) return false
+    if (isRegisterPending != other.isRegisterPending) return false
     if (selectedRegister != other.selectedRegister) return false
     if (action != other.action) return false
     if (argument != other.argument) return false
+    if (forcedMotion != other.forcedMotion) return false
     if (typedKeyStrokes != other.typedKeyStrokes) return false
     if (commandState != other.commandState) return false
     if (expectedArgumentType != other.expectedArgumentType) return false
-    if (fallbackArgumentType != other.fallbackArgumentType) return false
 
     return true
   }
@@ -412,13 +424,14 @@ class CommandBuilder private constructor(
   override fun hashCode(): Int {
     var result = keyStrokeTrie.hashCode()
     result = 31 * result + counts.hashCode()
+    result = 31 * result + isRegisterPending.hashCode()
     result = 31 * result + selectedRegister.hashCode()
     result = 31 * result + action.hashCode()
     result = 31 * result + argument.hashCode()
+    result = 31 * result + forcedMotion.hashCode()
     result = 31 * result + typedKeyStrokes.hashCode()
     result = 31 * result + commandState.hashCode()
     result = 31 * result + expectedArgumentType.hashCode()
-    result = 31 * result + fallbackArgumentType.hashCode()
     return result
   }
 
@@ -430,10 +443,11 @@ class CommandBuilder private constructor(
       commandKeyStrokes.toMutableList()
     )
     result.selectedRegister = selectedRegister
+    result.isRegisterPending = isRegisterPending
     result.action = action
     result.argument = argument
+    result.forcedMotion = forcedMotion
     result.commandState = commandState
-    result.fallbackArgumentType = fallbackArgumentType
     return result
   }
 

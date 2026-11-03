@@ -160,7 +160,11 @@ abstract class VimSearchHelperBase : VimSearchHelper {
     return TextRange(start, end)
   }
 
-  override fun findWordAtOrFollowingCursor(editor: VimEditor, caret: ImmutableVimCaret, isBigWord: Boolean): TextRange? {
+  override fun findWordAtOrFollowingCursor(
+    editor: VimEditor,
+    caret: ImmutableVimCaret,
+    isBigWord: Boolean,
+  ): TextRange? {
     val offset = caret.offset
     return findWordAtOrFollowingCursor(editor, offset, isBigWord)
   }
@@ -168,9 +172,13 @@ abstract class VimSearchHelperBase : VimSearchHelper {
   override fun findFilenameAtOrFollowingCursor(editor: VimEditor, caret: ImmutableVimCaret): TextRange? {
     return findFilenameAtOrFollowingCursor(editor, caret.offset)
   }
+
   override fun findFilenameAtOrFollowingCursor(editor: VimEditor, offset: Int): TextRange? {
     val text = editor.text()
-    if (text.isEmpty()) return null
+
+    // The offset can be the end of the text, e.g. when it comes from the exclusive end offset of an incsearch match at
+    // the end of the document. There is obviously no filename at that position. Vim reports "No file name under cursor"
+    if (offset !in text.indices) return null
 
     val start = if (!KeywordOptionHelper.isFilename(editor, text[offset])) {
       moveForwardsToStartOfFilename(editor, text, offset)
@@ -289,7 +297,9 @@ abstract class VimSearchHelperBase : VimSearchHelper {
     val regex = try {
       VimRegex(pattern)
     } catch (e: VimRegexException) {
-      injector.messages.showErrorMessage(editor, e.message)
+      if (showMessages) {
+        injector.messages.showErrorMessage(editor, e.message)
+      }
       return null
     }
 
@@ -300,6 +310,9 @@ abstract class VimSearchHelperBase : VimSearchHelper {
     }
 
     if (result is VimMatchResult.Failure) {
+      if (!showMessages) {
+        return null
+      }
       if (wrap) {
         injector.messages.showErrorMessage(editor, injector.messages.message("E486", pattern))
       } else if (dir === Direction.FORWARDS) {
@@ -307,7 +320,6 @@ abstract class VimSearchHelperBase : VimSearchHelper {
       } else {
         injector.messages.showErrorMessage(editor, injector.messages.message("E384", pattern))
       }
-      return null
     }
 
     // When trying to find the end position for a match, we're allowed to match the current position. But if we do that
@@ -332,6 +344,10 @@ abstract class VimSearchHelperBase : VimSearchHelper {
         }
         return null
       }
+    }
+
+    if (result is VimMatchResult.Failure) {
+      return null
     }
 
     return (result as VimMatchResult.Success).range
@@ -377,6 +393,7 @@ abstract class VimSearchHelperBase : VimSearchHelper {
     return result
   }
 
+
   override fun findAll(
     editor: VimEditor,
     pattern: String,
@@ -384,20 +401,46 @@ abstract class VimSearchHelperBase : VimSearchHelper {
     endLine: Int,
     ignoreCase: Boolean,
   ): List<TextRange> {
+    return findAll(editor, pattern, startLine, endLine, ignoreCase, Int.MAX_VALUE)
+  }
+
+  override fun findAll(
+    editor: VimEditor,
+    pattern: String,
+    startLine: Int,
+    endLine: Int,
+    ignoreCase: Boolean,
+    maxCount: Int,
+  ): List<TextRange> {
+    return findAll(editor, pattern, startLine, endLine, ignoreCase, maxCount) { false }
+  }
+
+  override fun findAll(
+    editor: VimEditor,
+    pattern: String,
+    startLine: Int,
+    endLine: Int,
+    ignoreCase: Boolean,
+    maxCount: Int,
+    isCancelled: () -> Boolean,
+  ): List<TextRange> {
     val options = enumSetOf<VimRegexOptions>()
-    if (injector.globalOptions().smartcase) options.add(VimRegexOptions.SMART_CASE)
-    if (injector.globalOptions().ignorecase) options.add(VimRegexOptions.IGNORE_CASE)
+    // If we are explicitly asked to ignore case, assume that smartcase check has already taken place
+    if (injector.globalOptions().smartcase && !ignoreCase) options.add(VimRegexOptions.SMART_CASE)
+    if (injector.globalOptions().ignorecase || ignoreCase) options.add(VimRegexOptions.IGNORE_CASE)
     val regex = try {
       VimRegex(pattern)
     } catch (e: VimRegexException) {
-      injector.messages.showErrorMessage(editor, e.message)
       return emptyList()
     }
+    if (startLine > editor.lineCount()) return listOf()
     return regex.findAll(
       editor,
       editor.getLineStartOffset(startLine),
       editor.getLineEndOffset(if (endLine == -1) editor.lineCount() - 1 else endLine) + 1,
-      options
+      options,
+      maxCount,
+      isCancelled,
     ).map { it.range }
   }
 
@@ -460,6 +503,10 @@ abstract class VimSearchHelperBase : VimSearchHelper {
 
     // Always move back one to make sure that we don't get stuck on the start of a word
     pos--
+
+    // We've moved back past the start of the text, so there is nothing left to skip. Note that we must return before
+    // looking at `chars[pos]` below, which would otherwise be an out of bounds access
+    if (pos < 0) return 0
 
     if (allowMoveFromWordStart
       || startingCharType == charType(editor, chars[pos], bigWord)
@@ -732,6 +779,7 @@ abstract class VimSearchHelperBase : VimSearchHelper {
     offset: Int,
     quote: Char,
     isOuter: Boolean,
+    includeQuotes: Boolean,
   ): TextRange? {
     var leftQuote: Int
     var rightQuote: Int
@@ -749,16 +797,21 @@ abstract class VimSearchHelperBase : VimSearchHelper {
       rightQuote = quoteAfterCaret
     }
     if (!isOuter) {
-      leftQuote++
-      rightQuote--
+      // With a count of 2 or more the quotes are included, but no extra white space as with a", a' or a`
+      // (:help v_iquote). Vim guards the same adjustment with "count < 2" in current_quote()
+      if (!includeQuotes) {
+        leftQuote++
+        rightQuote--
+      }
     } else {
       // For outer quotes: include trailing whitespace, or leading whitespace if no trailing
       // See :help a" - "Any trailing white space is included, unless there is none, then leading white space is included"
       val text = editor.text()
       var trailingEnd = rightQuote + 1
 
-      // Check for trailing whitespace (on same line)
-      while (trailingEnd < text.length && text[trailingEnd] == ' ') {
+      // Check for trailing whitespace (on same line). Vim's in_quote uses vim_iswhite, which is a space or a tab.
+      // Note that Char.isWhitespace would also match a new line and let the scan leave the line
+      while (trailingEnd < text.length && text[trailingEnd].isSpaceOrTab()) {
         trailingEnd++
       }
 
@@ -768,7 +821,7 @@ abstract class VimSearchHelperBase : VimSearchHelper {
       } else {
         // No trailing whitespace, check for leading whitespace
         var leadingStart = leftQuote
-        while (leadingStart > 0 && text[leadingStart - 1] == ' ') {
+        while (leadingStart > 0 && text[leadingStart - 1].isSpaceOrTab()) {
           leadingStart--
         }
         if (leadingStart < leftQuote) {
@@ -784,9 +837,10 @@ abstract class VimSearchHelperBase : VimSearchHelper {
     caret: ImmutableVimCaret,
     quote: Char,
     isOuter: Boolean,
+    includeQuotes: Boolean,
   ): TextRange? {
     val offset = caret.offset
-    return findBlockQuoteInLineRange(editor, offset, quote, isOuter)
+    return findBlockQuoteInLineRange(editor, offset, quote, isOuter, includeQuotes)
   }
 
   /**
@@ -987,7 +1041,9 @@ abstract class VimSearchHelperBase : VimSearchHelper {
   ): @Range(from = 0, to = Int.MAX_VALUE.toLong()) Int? {
     // Save off the next paragraph since a paragraph is a valid sentence.
     val lline: Int = editor.offsetToBufferPosition(start).line
-    val np: Int = findNextParagraph(editor, lline, dir, false)
+    // For a file that ends with a new line, the next paragraph can be the empty last line that the IDE shows after
+    // that new line. Vim has no such line, so clamp the offset to the last character of the file
+    val np: Int = findNextParagraph(editor, lline, dir, false).let { if (it == max && max > 0) max - 1 else it }
     var end: Int?
     // start < max was added to avoid exception and it may be incorrect
     end = if (start < max && chars[start] == '\n' && !countCurrent) {
@@ -1768,7 +1824,8 @@ abstract class VimSearchHelperBase : VimSearchHelper {
 
     if (isOuter && shouldEndOnWhitespace && start > 0
       && !isWhitespace(editor, chars[end], isBig)
-      && !isWhitespace(editor, chars[start], isBig)) {
+      && !isWhitespace(editor, chars[start], isBig)
+    ) {
 
       // Outer word objects normally include following whitespace. But if there's no following whitespace to include,
       // we should extend the range to include preceding whitespace. However, Vim doesn't select whitespace at the
@@ -1991,3 +2048,8 @@ abstract class VimSearchHelperBase : VimSearchHelper {
     return null
   }
 }
+
+/**
+ * True if the character is a space or a tab, matching Vim's vim_iswhite
+ */
+private fun Char.isSpaceOrTab() = this == ' ' || this == '\t'

@@ -1,0 +1,36 @@
+{
+  "!": {
+    "className": "com.maddyhome.idea.vim.vimscript.model.commands.CmdFilterCommand",
+    "barSeparates": false
+  },
+  "actionl[ist]": {
+    "className": "com.maddyhome.idea.vim.vimscript.model.commands.ActionListCommand"
+  },
+  "b[uffer]": {
+    "className": "com.maddyhome.idea.vim.vimscript.model.commands.BufferCommand"
+  },
+  "buffers": {
+    "className": "com.maddyhome.idea.vim.vimscript.model.commands.BufferListCommand"
+  },
+  "files": {
+    "className": "com.maddyhome.idea.vim.vimscript.model.commands.BufferListCommand"
+  },
+  "h[elp]": {
+    "className": "com.maddyhome.idea.vim.vimscript.model.commands.HelpCommand",
+    "barSeparates": false
+  },
+  "ls": {
+    "className": "com.maddyhome.idea.vim.vimscript.model.commands.BufferListCommand"
+  },
+  "r[ead]": {
+    "className": "com.maddyhome.idea.vim.vimscript.model.commands.ReadCommand",
+    "barSeparates": false
+  },
+  "res[ize]": {
+    "className": "com.maddyhome.idea.vim.resize.ResizeCommand"
+  },
+  "vert[ical]": {
+    "className": "com.maddyhome.idea.vim.resize.VerticalCommand",
+    "barSeparates": false
+  }
+}

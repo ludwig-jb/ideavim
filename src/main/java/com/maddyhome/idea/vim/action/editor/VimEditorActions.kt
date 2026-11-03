@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2023 The IdeaVim authors
+ * Copyright 2003-2026 The IdeaVim authors
  *
  * Use of this source code is governed by an MIT-style
  * license that can be found in the LICENSE.txt file or at
@@ -22,17 +22,24 @@ import com.maddyhome.idea.vim.command.OperatorArguments
 import com.maddyhome.idea.vim.handler.IdeActionHandler
 import com.maddyhome.idea.vim.handler.VimActionHandler
 import com.maddyhome.idea.vim.helper.enumSetOf
-import com.maddyhome.idea.vim.key.VimActionsPromoter
 import com.maddyhome.idea.vim.undo.VimKeyBasedUndoService
 import com.maddyhome.idea.vim.undo.VimTimestampBasedUndoService
 import java.util.*
 
-@CommandOrMotion(keys = ["<Del>"], modes = [Mode.INSERT])
+@CommandOrMotion(
+  keys = ["<Del>"],
+  modes = [Mode.INSERT],
+  description = "In Insert mode, delete the character under the cursor using the IDE's Delete action."
+)
 internal class VimEditorDelete : IdeActionHandler(IdeActions.ACTION_EDITOR_DELETE) {
   override val type: Command.Type = Command.Type.DELETE
 }
 
-@CommandOrMotion(keys = ["<Down>", "<kDown>"], modes = [Mode.INSERT])
+@CommandOrMotion(
+  keys = ["<Down>", "<kDown>"],
+  modes = [Mode.INSERT],
+  description = "In Insert mode, move the cursor one line down using the IDE's caret action, starting a new undo step."
+)
 internal class VimEditorDown : IdeActionHandler(IdeActions.ACTION_EDITOR_MOVE_CARET_DOWN) {
   override val type: Command.Type = Command.Type.MOTION
   override val flags: EnumSet<CommandFlags> = enumSetOf(CommandFlags.FLAG_CLEAR_STROKES)
@@ -61,7 +68,7 @@ internal class VimEditorDown : IdeActionHandler(IdeActions.ACTION_EDITOR_MOVE_CA
  * Insert mode handler for `<Tab>` and `<C-I>`. This will invoke the IDE's "EditorTab" action, which will insert the
  * tab or the appropriate number of spaces.
  *
- * Note that `Tab` has special handling in [VimActionsPromoter]. Typically, the promoter makes sure that
+ * Note that `Tab` has special handling in [com.maddyhome.idea.vim.key.VimActionsPromoter]. Typically, the promoter makes sure that
  * [VimShortcutKeyAction] is the first action to be evaluated and potentially invoked. However, when the list of
  * possible actions for the shortcut includes [TabAction], the promoter will actually demote [VimShortcutKeyAction] so
  * that it is invoked almost last, second only to [TabAction]. This means the user has the chance to invoke context
@@ -76,13 +83,21 @@ internal class VimEditorDown : IdeActionHandler(IdeActions.ACTION_EDITOR_MOVE_CA
  * Also, by inserting `Tab` with our action, we will correctly update the scroll position to keep the caret visible,
  * applying `'scrolloff'` and `'sidescrolloff'`.
  */
-@CommandOrMotion(keys = ["<Tab>", "<C-I>"], modes = [Mode.INSERT])
+@CommandOrMotion(
+  keys = ["<Tab>", "<C-I>"],
+  modes = [Mode.INSERT],
+  description = "In Insert mode, insert a tab or the equivalent spaces using the IDE's Tab action."
+)
 internal class VimEditorTab : IdeActionHandler(IdeActions.ACTION_EDITOR_TAB) {
   override val type: Command.Type = Command.Type.INSERT
   override val flags: EnumSet<CommandFlags> = enumSetOf(CommandFlags.FLAG_SAVE_STROKE)
 }
 
-@CommandOrMotion(keys = ["<Up>", "<kUp>"], modes = [Mode.INSERT])
+@CommandOrMotion(
+  keys = ["<Up>", "<kUp>"],
+  modes = [Mode.INSERT],
+  description = "In Insert mode, move the cursor one line up using the IDE's caret action, starting a new undo step."
+)
 internal class VimEditorUp : IdeActionHandler(IdeActions.ACTION_EDITOR_MOVE_CARET_UP) {
   override val type: Command.Type = Command.Type.MOTION
   override val flags: EnumSet<CommandFlags> = enumSetOf(CommandFlags.FLAG_CLEAR_STROKES)
@@ -105,7 +120,11 @@ internal class VimEditorUp : IdeActionHandler(IdeActions.ACTION_EDITOR_MOVE_CARE
   }
 }
 
-@CommandOrMotion(keys = ["K"], modes = [Mode.NORMAL])
+@CommandOrMotion(
+  keys = ["K"],
+  modes = [Mode.NORMAL],
+  description = "Show documentation for the symbol under the cursor using the IDE's Quick Documentation action."
+)
 internal class VimQuickJavaDoc : VimActionHandler.SingleExecution() {
   override val type: Command.Type = Command.Type.OTHER_READONLY
 

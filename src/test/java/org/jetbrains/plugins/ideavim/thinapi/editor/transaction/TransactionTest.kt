@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2025 The IdeaVim authors
+ * Copyright 2003-2026 The IdeaVim authors
  *
  * Use of this source code is governed by an MIT-style
  * license that can be found in the LICENSE.txt file or at
@@ -8,7 +8,12 @@
 
 package org.jetbrains.plugins.ideavim.thinapi.editor.transaction
 
+import com.intellij.openapi.Disposable
+import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.util.Disposer
+import com.intellij.testFramework.replaceService
 import com.intellij.vim.api.VimApi
+import com.intellij.vim.api.models.Jump as ApiJump
 import com.maddyhome.idea.vim.api.VimEditor
 import com.maddyhome.idea.vim.api.VimInjector
 import com.maddyhome.idea.vim.api.VimJumpService
@@ -16,8 +21,11 @@ import com.maddyhome.idea.vim.api.VimMarkService
 import com.maddyhome.idea.vim.api.injector
 import com.maddyhome.idea.vim.common.ListenerOwner
 import com.maddyhome.idea.vim.key.MappingOwner
+import com.maddyhome.idea.vim.mark.Jump as EngineJump
+import com.maddyhome.idea.vim.mark.JumpSource
 import com.maddyhome.idea.vim.newapi.vim
 import com.maddyhome.idea.vim.thinapi.VimApiImpl
+import kotlinx.coroutines.runBlocking
 import org.jetbrains.plugins.ideavim.mock.MockTestCase
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.BeforeEach
@@ -28,6 +36,7 @@ import org.mockito.kotlin.argumentCaptor
 import org.mockito.kotlin.eq
 import org.mockito.kotlin.spy
 import org.mockito.kotlin.verify
+import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 class TransactionTest : MockTestCase() {
@@ -37,6 +46,7 @@ class TransactionTest : MockTestCase() {
   private lateinit var vimEditor: VimEditor
   private lateinit var mockInjector: VimInjector
   private lateinit var realInjector: VimInjector
+  private lateinit var serviceDisposable: Disposable
 
   @BeforeEach
   override fun setUp(testInfo: TestInfo) {
@@ -45,17 +55,26 @@ class TransactionTest : MockTestCase() {
 
     val listenerOwner = ListenerOwner.Plugin.get("test")
     val mappingOwner = MappingOwner.Plugin.get("test")
-    myVimApi = VimApiImpl(listenerOwner, mappingOwner)
+    myVimApi = VimApiImpl(listenerOwner, mappingOwner, null)
 
     mockInjector = spy(injector)
 
-    mockMarkService = mockService(VimMarkService::class.java)
+    // Use a separate disposable for service replacements so we can dispose it
+    // before super.tearDown(). This prevents editor teardown from calling methods
+    // on mock services (via editorReleased), which would record invocations on
+    // the EDT's MockingProgressImpl thread-local and leak the project.
+    serviceDisposable = Disposer.newDisposable("TransactionTest services")
+
+    mockMarkService = Mockito.mock(VimMarkService::class.java)
+    ApplicationManager.getApplication().replaceService(VimMarkService::class.java, mockMarkService, serviceDisposable)
     Mockito.`when`(mockInjector.markService).thenReturn(mockMarkService)
 
-    mockJumpService = mockService(VimJumpService::class.java)
+    mockJumpService = Mockito.mock(VimJumpService::class.java)
+    ApplicationManager.getApplication().replaceService(VimJumpService::class.java, mockJumpService, serviceDisposable)
     Mockito.`when`(mockInjector.jumpService).thenReturn(mockJumpService)
 
     vimEditor = fixture.editor.vim
+    Mockito.`when`(mockInjector.fallbackWindow).thenReturn(vimEditor)
 
     realInjector = injector
     injector = mockInjector
@@ -63,13 +82,18 @@ class TransactionTest : MockTestCase() {
 
   @AfterEach
   override fun tearDown(testInfo: TestInfo) {
-    super.tearDown(testInfo)
-    // reset mocks
+    injector = realInjector
+
+    // Dispose service replacements BEFORE super.tearDown() so that editor
+    // teardown (editorReleased) hits the real services, not mocks.
+    Disposer.dispose(serviceDisposable)
+
     Mockito.reset(mockMarkService)
     Mockito.reset(mockJumpService)
     Mockito.reset(mockInjector)
+    Mockito.framework().clearInlineMocks()
 
-    injector = realInjector
+    super.tearDown(testInfo)
   }
 
   fun assertEqualsEditor(expected: VimEditor, actual: VimEditor) {
@@ -83,9 +107,11 @@ class TransactionTest : MockTestCase() {
   fun `test setMark calls setMark`() {
     val char = 'a'
 
-    myVimApi.editor {
-      change {
-        setMark(char)
+    runBlocking {
+      myVimApi.editor {
+        change {
+          setMark(char)
+        }
       }
     }
 
@@ -102,9 +128,11 @@ class TransactionTest : MockTestCase() {
   fun `test removeMark calls removeMark`() {
     val char = 'b'
 
-    myVimApi.editor {
-      change {
-        removeMark(char)
+    runBlocking {
+      myVimApi.editor {
+        change {
+          removeMark(char)
+        }
       }
     }
 
@@ -122,9 +150,11 @@ class TransactionTest : MockTestCase() {
     val char = 'A'
     val offset = 0
 
-    myVimApi.editor {
-      change {
-        setGlobalMark(char)
+    runBlocking {
+      myVimApi.editor {
+        change {
+          setGlobalMark(char)
+        }
       }
     }
 
@@ -142,9 +172,11 @@ class TransactionTest : MockTestCase() {
   fun `test removeGlobalMark calls removeGlobalMark`() {
     val char = 'B'
 
-    myVimApi.editor {
-      change {
-        removeGlobalMark(char)
+    runBlocking {
+      myVimApi.editor {
+        change {
+          removeGlobalMark(char)
+        }
       }
     }
 
@@ -156,9 +188,11 @@ class TransactionTest : MockTestCase() {
     val char = 'C'
     val offset = 10
 
-    myVimApi.editor {
-      change {
-        setGlobalMark(char, offset)
+    runBlocking {
+      myVimApi.editor {
+        change {
+          setGlobalMark(char, offset)
+        }
       }
     }
 
@@ -174,9 +208,11 @@ class TransactionTest : MockTestCase() {
 
   @Test
   fun `test resetAllMarks calls resetAllMarks`() {
-    myVimApi.editor {
-      change {
-        resetAllMarks()
+    runBlocking {
+      myVimApi.editor {
+        change {
+          resetAllMarks()
+        }
       }
     }
 
@@ -185,9 +221,11 @@ class TransactionTest : MockTestCase() {
 
   @Test
   fun `test dropLastJump calls dropLastJump`() {
-    myVimApi.editor {
-      change {
-        dropLastJump()
+    runBlocking {
+      myVimApi.editor {
+        change {
+          dropLastJump()
+        }
       }
     }
 
@@ -196,12 +234,30 @@ class TransactionTest : MockTestCase() {
 
   @Test
   fun `test clearJumps calls clearJumps`() {
-    myVimApi.editor {
-      change {
-        clearJumps()
+    runBlocking {
+      myVimApi.editor {
+        change {
+          clearJumps()
+        }
       }
     }
 
     verify(injector.jumpService).clearJumps(eq(vimEditor.projectId))
+  }
+
+  @Test
+  fun `test addJump from the API records a plain file jump`() {
+    runBlocking {
+      myVimApi.editor {
+        val path = read { filePath }
+        change {
+          addJump(ApiJump(2, 3, path), reset = true)
+        }
+      }
+    }
+
+    val jumpCaptor = argumentCaptor<EngineJump>()
+    verify(injector.jumpService).addJump(eq(vimEditor.jumpListId), jumpCaptor.capture(), eq(true))
+    assertEquals(JumpSource.File, jumpCaptor.firstValue.source)
   }
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2025 The IdeaVim authors
+ * Copyright 2003-2026 The IdeaVim authors
  *
  * Use of this source code is governed by an MIT-style
  * license that can be found in the LICENSE.txt file or at
@@ -8,10 +8,10 @@
 package com.maddyhome.idea.vim.extension.miniai
 
 import com.intellij.vim.api.VimApi
+import com.intellij.vim.api.VimInitApi
 import com.intellij.vim.api.models.Range
 import com.intellij.vim.api.scopes.TextObjectRange
 import com.maddyhome.idea.vim.extension.VimExtension
-import com.maddyhome.idea.vim.extension.api
 
 /**
  * A simplified imitation of mini.ai approach for motions "aq", "iq", "ab", "ib".
@@ -28,9 +28,8 @@ class MiniAI : VimExtension {
 
   override fun getName() = "mini-ai"
 
-  override fun init() {
-    val api = api()
-    api.textObjects {
+  override fun init(initApi: VimInitApi) {
+    initApi.textObjects {
       register("aq", preserveSelectionAnchor = false) { _ ->
         findQuoteRange(isOuter = true)
       }
@@ -59,7 +58,7 @@ class MiniAI : VimExtension {
  *
  * If [isOuter] == false (i.e. 'iq'), shrink the final range by 1 char on each side.
  */
-private fun VimApi.findQuoteRange(isOuter: Boolean): TextObjectRange? {
+private suspend fun VimApi.findQuoteRange(isOuter: Boolean): TextObjectRange? {
   val text = editor { read { text } }
   val caretOffset = editor { read { withPrimaryCaret { offset } } }
   val caretLine = editor { read { withPrimaryCaret { line.number } } }
@@ -116,7 +115,7 @@ private fun gatherAllQuoteRanges(text: CharSequence): List<Range.Simple> {
  * We treat bracket pairs ( (), [], {}, <> ) in a naive balanced scanning way.
  * If [isOuter] is false, we shrink boundaries to skip the bracket chars.
  */
-private fun VimApi.findBracketRange(isOuter: Boolean): TextObjectRange? {
+private suspend fun VimApi.findBracketRange(isOuter: Boolean): TextObjectRange? {
   val text = editor { read { text } }
   val caretOffset = editor { read { withPrimaryCaret { offset } } }
   val caretLine = editor { read { withPrimaryCaret { line.number } } }
@@ -151,7 +150,7 @@ private fun VimApi.findBracketRange(isOuter: Boolean): TextObjectRange? {
  */
 private fun gatherAllBracketRanges(
   text: CharSequence,
-  brackets: List<Char>
+  brackets: List<Char>,
 ): List<Range.Simple> {
   val pairs = mapOf('(' to ')', '[' to ']', '{' to '}', '<' to '>')
   val results = mutableListOf<Range.Simple>()

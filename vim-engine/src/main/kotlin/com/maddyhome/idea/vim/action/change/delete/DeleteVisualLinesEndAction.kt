@@ -28,7 +28,11 @@ import java.util.*
 /**
  * @author vlan
  */
-@CommandOrMotion(keys = ["D"], modes = [Mode.VISUAL])
+@CommandOrMotion(
+  keys = ["D"],
+  modes = [Mode.VISUAL],
+  description = "Delete the highlighted lines into register [x]. In Visual block mode, delete from the block start to the end of each line."
+)
 class DeleteVisualLinesEndAction : VisualOperatorActionHandler.ForEachCaret() {
   override val type: Command.Type = Command.Type.DELETE
 
@@ -61,7 +65,11 @@ class DeleteVisualLinesEndAction : VisualOperatorActionHandler.ForEachCaret() {
         false,
       )
     } else {
-      val lineEndForOffset = editor.getLineEndForOffset(vimTextRange.endOffset)
+      val lineEndForOffset = if (range.type == SelectionType.CHARACTER_WISE) {
+        editor.getLineEndForOffset(vimTextRange.endOffset - 1)
+      } else {
+        editor.getLineEndForOffset(vimTextRange.endOffset)
+      }
       val endsWithNewLine = if (lineEndForOffset.toLong() == editor.fileSize()) 0 else 1
       val lineRange = TextRange(
         editor.getLineStartForOffset(vimTextRange.startOffset),

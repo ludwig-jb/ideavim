@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2023 The IdeaVim authors
+ * Copyright 2003-2026 The IdeaVim authors
  *
  * Use of this source code is governed by an MIT-style
  * license that can be found in the LICENSE.txt file or at
@@ -7,7 +7,6 @@
  */
 package com.maddyhome.idea.vim.group
 
-import com.intellij.codeInsight.actions.AsyncActionExecutionService
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.actionSystem.IdeActions
 import com.intellij.openapi.application.ApplicationManager
@@ -16,34 +15,34 @@ import com.intellij.openapi.command.UndoConfirmationPolicy
 import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.editor.Editor
 import com.intellij.openapi.editor.actionSystem.TypedActionHandler
-import com.intellij.openapi.editor.actions.EnterAction
 import com.intellij.openapi.editor.event.EditorMouseEvent
 import com.intellij.openapi.editor.event.EditorMouseListener
-import com.intellij.openapi.util.UserDataHolder
+import com.intellij.openapi.editor.impl.editorId
 import com.intellij.psi.codeStyle.CodeStyleManager
 import com.intellij.psi.util.PsiUtilBase
 import com.maddyhome.idea.vim.EventFacade
 import com.maddyhome.idea.vim.api.ExecutionContext
+import com.maddyhome.idea.vim.api.NativeAction
+import com.maddyhome.idea.vim.api.Options
 import com.maddyhome.idea.vim.api.VimCaret
 import com.maddyhome.idea.vim.api.VimChangeGroupBase
 import com.maddyhome.idea.vim.api.VimEditor
-import com.maddyhome.idea.vim.api.getLineEndForOffset
-import com.maddyhome.idea.vim.api.getLineStartForOffset
 import com.maddyhome.idea.vim.api.injector
 import com.maddyhome.idea.vim.common.TextRange
-import com.maddyhome.idea.vim.group.visual.vimSetSystemSelectionSilently
-import com.maddyhome.idea.vim.handler.commandContinuation
+import com.maddyhome.idea.vim.group.format.FormatRemoteApi
+import com.maddyhome.idea.vim.helper.CodeWrapper
+import com.maddyhome.idea.vim.helper.CommentLeaderParser
 import com.maddyhome.idea.vim.helper.inInsertMode
+import com.maddyhome.idea.vim.ide.ChatInputProvider
 import com.maddyhome.idea.vim.key.KeyHandlerKeeper
 import com.maddyhome.idea.vim.listener.VimInsertListener
-import com.maddyhome.idea.vim.newapi.IjVimCaret
-import com.maddyhome.idea.vim.newapi.IjVimCopiedText
 import com.maddyhome.idea.vim.newapi.IjVimEditor
 import com.maddyhome.idea.vim.newapi.ij
-import com.maddyhome.idea.vim.state.mode.Mode
+import com.maddyhome.idea.vim.newapi.ijOptions
+import com.maddyhome.idea.vim.newapi.vim
+import com.maddyhome.idea.vim.options.OptionAccessScope
 import com.maddyhome.idea.vim.undo.VimKeyBasedUndoService
 import com.maddyhome.idea.vim.undo.VimTimestampBasedUndoService
-import kotlin.math.min
 
 /**
  * Provides all the insert/replace related functionality
@@ -58,23 +57,35 @@ class ChangeGroup : VimChangeGroupBase() {
     }
   }
 
-  fun editorCreated(editor: Editor?, disposable: Disposable) {
-    EventFacade.getInstance().addEditorMouseListener(editor!!, listener, disposable)
+  fun editorCreated(editor: VimEditor, disposable: Disposable) {
+    EventFacade.getInstance().addEditorMouseListener(editor.ij, listener, disposable)
+  }
+
+  override fun getLineBreakAction(editor: VimEditor): NativeAction? {
+    val ijEditor = editor.ij
+    return ChatInputProvider.forEditor(ijEditor)?.getLineBreakAction(ijEditor)?.vim
   }
 
   override fun type(vimEditor: VimEditor, context: ExecutionContext, key: Char) {
     doType(vimEditor, context) {
-      it.execute(vimEditor.ij, key, context.ij)
+      tryExpandAbbreviation(vimEditor, key)
+      it.execute(vimEditor.ij, key.toDocumentChar(), context.ij)
     }
   }
 
   override fun type(vimEditor: VimEditor, context: ExecutionContext, string: String) {
     doType(vimEditor, context) { handler ->
       string.forEach { char ->
-        handler.execute(vimEditor.ij, char, context.ij)
+        handler.execute(vimEditor.ij, char.toDocumentChar(), context.ij)
       }
     }
   }
+
+  /**
+   * IntelliJ documents only allow `\n` as a line separator, so a carriage return (e.g. inserted literally with
+   * `<C-V><CR>`) is typed as a line break.
+   */
+  private fun Char.toDocumentChar(): Char = if (this == '\r') '\n' else this
 
   private fun doType(vimEditor: VimEditor, context: ExecutionContext, action: (TypedActionHandler) -> Unit) {
     val editor = (vimEditor as IjVimEditor).editor
@@ -99,47 +110,58 @@ class ChangeGroup : VimChangeGroupBase() {
     injector.scroll.scrollCaretIntoView(vimEditor)
   }
 
-  /**
-   * If this is REPLACE mode we need to turn off OVERWRITE before and then turn OVERWRITE back on after sending the
-   * "ENTER" key.
-   */
-  override fun processEnter(
-    editor: VimEditor,
-    caret: VimCaret,
-    context: ExecutionContext,
-  ) {
-    if (editor.mode is Mode.REPLACE) {
-      editor.insertMode = true
-    }
-    try {
-      val continuation = (context.context as UserDataHolder).getUserData(commandContinuation)
-      val ijEditor = editor.ij
-      val ij = context.ij
-      val ijCaret = caret.ij
-      if (continuation != null) {
-        continuation.execute(ijEditor, ijCaret, ij)
-      } else {
-        EnterAction().handler.execute(ijEditor, ijCaret, ij)
-      }
-    } finally {
-      if (editor.mode is Mode.REPLACE) {
-        editor.insertMode = false
-      }
-    }
-  }
-
   override fun processBackspace(editor: VimEditor, context: ExecutionContext) {
     injector.actionExecutor.executeAction(editor, name = IdeActions.ACTION_EDITOR_BACKSPACE, context = context)
     injector.scroll.scrollCaretIntoView(editor)
   }
 
-  private fun restoreCursor(editor: VimEditor, caret: VimCaret, startLine: Int) {
-    if (caret != editor.primaryCaret()) {
-      (editor as IjVimEditor).editor.caretModel.addCaret(
-        editor.editor.offsetToVisualPosition(injector.motion.moveCaretToLineStartSkipLeading(editor, startLine)), false
-      )
+  override fun initBlockInsert(
+    editor: VimEditor,
+    context: ExecutionContext,
+    range: TextRange,
+    append: Boolean,
+  ): Boolean {
+    // Block insert spans: enter insert at top-of-block (user types `#`) → `<Esc>`
+    // triggers `repeatInsert` which replays across N-1 lines below. To group all
+    // N lines into one undo step, start the mark here (before the top-line `#`
+    // is typed) and finish it in `repeatInsert`.
+    startVimUndoGroup(editor, "Vim Block Insert")
+    blockInsertActive = true
+    return try {
+      super.initBlockInsert(editor, context, range, append)
+    } catch (t: Throwable) {
+      finishVimUndoGroup(editor)
+      blockInsertActive = false
+      throw t
     }
   }
+
+  override fun repeatInsert(editor: VimEditor, context: ExecutionContext, count: Int, started: Boolean) {
+    // Replay paths to group as one undo step:
+    //   • Block insert: `initBlockInsert` already opened the mark — close it.
+    //   • count > 1 (e.g. `5iHi <Esc>`) — open+close locally.
+    // Plain `iHi <Esc>` (count <= 1, no block) is NOT a replay and must not be
+    // wrapped — an empty start/finish group on the backend would swallow the
+    // first `u` (the frontend speculative-undo flicker we observed earlier).
+    // Dot-repeat (started=false) is wrapped one level up in `RepeatChangeAction`
+    // so the wrap covers the *whole* replayed command (incl. `s`/`c`'s delete).
+    when {
+      blockInsertActive -> {
+        try {
+          super.repeatInsert(editor, context, count, started)
+        } finally {
+          finishVimUndoGroup(editor)
+          blockInsertActive = false
+        }
+      }
+      count > 1 -> withVimUndoGroup(editor, "Vim Repeat") {
+        super.repeatInsert(editor, context, count, started)
+      }
+      else -> super.repeatInsert(editor, context, count, started)
+    }
+  }
+
+  private var blockInsertActive: Boolean = false
 
   override fun reformatCode(editor: VimEditor, start: Int, end: Int) {
     val project = (editor as IjVimEditor).editor.project ?: return
@@ -148,59 +170,83 @@ class ChangeGroup : VimChangeGroupBase() {
     injector.application.runWriteAction {
       CodeStyleManager.getInstance(project).reformatText(file, listOf(textRange))
     }
+    wrapText(editor, start, end)
+  }
+
+  private fun wrapText(editor: IjVimEditor, start: Int, end: Int) {
+    val textwidth = injector.ijOptions(editor).textwidth
+    if (textwidth <= 0) {
+      return
+    }
+    wrapTextToWidth(editor, start, end, textwidth)
+  }
+
+  private fun wrapTextToWidth(editor: IjVimEditor, start: Int, end: Int, width: Int) {
+    val ijEditor = editor.editor
+    val document = ijEditor.document
+
+    val text = document.getText(com.intellij.openapi.util.TextRange.create(start, end))
+    val commentsValue = injector.optionGroup
+      .getOptionValue(Options.comments, OptionAccessScope.LOCAL(editor))
+      .value
+    val wrapper = CodeWrapper(
+      width = width,
+      tabWidth = ijEditor.settings.getTabSize(ijEditor.project),
+      leaders = CommentLeaderParser.parse(commentsValue),
+    )
+    val wrapped = wrapper.wrap(text)
+
+    if (wrapped == text) {
+      return
+    }
+
+    injector.application.runWriteAction {
+      document.replaceString(start, end, wrapped)
+    }
   }
 
   override fun autoIndentRange(
     editor: VimEditor,
-    caret: VimCaret,
     context: ExecutionContext,
-    range: TextRange,
+    ranges: List<TextRange>,
+    carets: List<VimCaret>,
   ) {
-    val startOffset = editor.getLineStartForOffset(range.startOffset)
-    val endOffset = editor.getLineEndForOffset(range.endOffset)
     val ijEditor = (editor as IjVimEditor).editor
+    // Bottom-to-top, so that indenting a range doesn't shift the ranges above it
+    val orderedRanges = ranges.sortedByDescending { it.startOffset }
 
-    // FIXME: Here we do selection, and it is not a good idea, because it updates primary selection in Linux
-    // FIXME: I'll leave here a dirty fix that restores primary selection, but it would be better to rewrite this method
-    var copiedText: IjVimCopiedText? = null
-    try {
-      if (injector.registerGroup.isPrimaryRegisterSupported()) {
-        copiedText = injector.clipboardManager.getPrimaryContent(editor, context) as IjVimCopiedText
-      }
-    } catch (e: Exception) {
-      // FIXME: [isPrimaryRegisterSupported()] is not implemented perfectly, so there might be thrown an exception after trying to access the primary selection
-      logger.warn("False positive X11 primary selection support")
+    // Each range is a separate backend command, so they need an explicit mark to stay a single `u`
+    // (a no-op in monolith mode, where the platform groups them anyway).
+    withVimUndoGroup(editor, "Vim Auto Indent") {
+      orderedRanges.forEach { autoIndent(ijEditor, it) }
     }
-    ijEditor.selectionModel.vimSetSystemSelectionSilently(startOffset, endOffset)
-    val project = ijEditor.project
-    val actionExecution = {
-      val joinLinesAction = injector.nativeActionManager.indentLines
-      if (joinLinesAction != null) {
-        injector.actionExecutor.executeAction(editor, joinLinesAction, context)
-      }
+
+    for ((caret, range) in carets.zip(ranges)) {
+      moveCaretToFirstNonBlank(editor, range, caret)
     }
-    val afterAction = {
-      val firstLine = editor.offsetToBufferPosition(
-        min(startOffset.toDouble(), endOffset.toDouble()).toInt()
-      ).line
-      val newOffset = injector.motion.moveCaretToLineStartSkipLeading(editor, firstLine)
-      caret.moveToOffset(newOffset)
-      restoreCursor(editor, caret, (caret as IjVimCaret).caret.logicalPosition.line)
+  }
+
+  private fun autoIndent(ijEditor: Editor, range: TextRange) {
+    rpc(ijEditor.project) {
+      FormatRemoteApi.getInstance().format(ijEditor.editorId(), range.startOffset, range.endOffset)
     }
-    if (project != null) {
-      AsyncActionExecutionService.getInstance(project)
-        .withExecutionAfterAction(IdeActions.ACTION_EDITOR_AUTO_INDENT_LINES, actionExecution, afterAction)
-    } else {
-      actionExecution.invoke()
-      afterAction.invoke()
+  }
+
+  override fun getLanguageIndent(editor: VimEditor, offset: Int): String? {
+    val ijEditor = (editor as IjVimEditor).editor
+    return rpc(ijEditor.project) {
+      FormatRemoteApi.getInstance().lineIndent(ijEditor.editorId(), offset)
     }
-    try {
-      if (copiedText != null) {
-        injector.clipboardManager.setPrimaryContent(editor, context, copiedText)
-      }
-    } catch (e: Exception) {
-      // FIXME: [isPrimaryRegisterSupported()] is not implemented perfectly, so there might be thrown an exception after trying to access the primary selection
-    }
+  }
+
+  private fun moveCaretToFirstNonBlank(
+    editor: IjVimEditor,
+    range: TextRange,
+    caret: VimCaret,
+  ) {
+    val firstLine = editor.offsetToBufferPosition(range.startOffset).line
+    val newOffset = injector.motion.moveCaretToLineStartSkipLeading(editor, firstLine)
+    caret.moveToOffset(newOffset)
   }
 
   @Deprecated(

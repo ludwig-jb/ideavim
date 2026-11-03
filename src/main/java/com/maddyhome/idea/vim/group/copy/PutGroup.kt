@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2023 The IdeaVim authors
+ * Copyright 2003-2026 The IdeaVim authors
  *
  * Use of this source code is governed by an MIT-style
  * license that can be found in the LICENSE.txt file or at
@@ -8,19 +8,20 @@
 
 package com.maddyhome.idea.vim.group.copy
 
+import com.intellij.codeInsight.CodeInsightSettings
 import com.intellij.codeInsight.editorActions.TextBlockTransferable
 import com.intellij.ide.CopyPasteManagerEx
 import com.intellij.ide.DataManager
 import com.intellij.ide.PasteProvider
 import com.intellij.openapi.actionSystem.DataContext
 import com.intellij.openapi.actionSystem.PlatformDataKeys
-import com.intellij.openapi.components.Service
 import com.intellij.openapi.editor.Caret
 import com.intellij.openapi.editor.RangeMarker
 import com.intellij.openapi.editor.ex.EditorEx
 import com.intellij.openapi.ide.CopyPasteManager
 import com.intellij.util.PlatformUtils
 import com.maddyhome.idea.vim.VimPlugin
+import com.maddyhome.idea.vim.VimPlugin.getNotifications
 import com.maddyhome.idea.vim.api.ExecutionContext
 import com.maddyhome.idea.vim.api.VimCaret
 import com.maddyhome.idea.vim.api.VimEditor
@@ -31,6 +32,7 @@ import com.maddyhome.idea.vim.api.setChangeMarks
 import com.maddyhome.idea.vim.common.TextRange
 import com.maddyhome.idea.vim.diagnostic.debug
 import com.maddyhome.idea.vim.helper.EditorHelper
+import com.maddyhome.idea.vim.helper.EngineStringHelper
 import com.maddyhome.idea.vim.helper.VimLockLabel
 import com.maddyhome.idea.vim.helper.moveToInlayAwareOffset
 import com.maddyhome.idea.vim.ide.isClionNova
@@ -57,8 +59,29 @@ import com.maddyhome.idea.vim.undo.VimKeyBasedUndoService
 import com.maddyhome.idea.vim.undo.VimTimestampBasedUndoService
 import java.awt.datatransfer.DataFlavor
 
-@Service
 internal class PutGroup : VimPutBase() {
+
+  @VimLockLabel.SelfSynchronized
+  override fun putText(
+    editor: VimEditor,
+    context: ExecutionContext,
+    data: PutData,
+    updateVisualMarks: Boolean,
+    modifyRegister: Boolean,
+  ): Boolean {
+    val pasted = super.putText(editor, context, data, updateVisualMarks, modifyRegister)
+    if (pasted) suggestControlCharsEditorIfNeeded(editor, data)
+    return pasted
+  }
+
+  /** After a paste, suggest the control-chars editor if the pasted text contains control characters. */
+  private fun suggestControlCharsEditorIfNeeded(editor: VimEditor, data: PutData) {
+    if (editor.getVirtualBufferKind() != null) return // the user is already editing in a virtual buffer
+    val text = data.textData?.rawText ?: return
+    if (!EngineStringHelper.containsControlCharacters(text)) return
+    val project = editor.ij.project ?: return
+    getNotifications(project).notifyControlCharactersPasted()
+  }
 
   override fun getProviderForPasteViaIde(
     editor: VimEditor,
@@ -215,11 +238,15 @@ internal class PutGroup : VimPutBase() {
     val startLineOffset = (editor as IjVimEditor).editor.document.getLineStartOffset(startLine)
     val endLineOffset = editor.editor.document.getLineEndOffset(endLine)
 
+    if (CodeInsightSettings.getInstance().REFORMAT_ON_PASTE == CodeInsightSettings.NO_REFORMAT) return editor.getLineEndOffset(
+      endLine,
+      true
+    )
+
     VimPlugin.getChange().autoIndentRange(
       editor,
-      caret,
       context,
-      TextRange(startLineOffset, endLineOffset),
+      ranges = listOf(TextRange(startLineOffset, endLineOffset)),
     )
     return editor.getLineEndOffset(endLine, true)
   }
@@ -234,7 +261,7 @@ internal class PutGroup : VimPutBase() {
 
     VimPlugin.getVimState().isIdeaPutNotified = true
 
-    VimPlugin.getNotifications(project).notifyAboutIdeaPut()
+    getNotifications(project).notifyAboutIdeaPut()
   }
 }
 

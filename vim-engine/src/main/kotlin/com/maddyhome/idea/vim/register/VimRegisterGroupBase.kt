@@ -12,6 +12,7 @@ import com.maddyhome.idea.vim.api.ExecutionContext
 import com.maddyhome.idea.vim.api.ImmutableVimCaret
 import com.maddyhome.idea.vim.api.Options
 import com.maddyhome.idea.vim.api.VimEditor
+import com.maddyhome.idea.vim.api.VirtualBufferKind
 import com.maddyhome.idea.vim.api.getText
 import com.maddyhome.idea.vim.api.globalOptions
 import com.maddyhome.idea.vim.api.injector
@@ -21,10 +22,13 @@ import com.maddyhome.idea.vim.common.VimCopiedText
 import com.maddyhome.idea.vim.diagnostic.VimLogger
 import com.maddyhome.idea.vim.diagnostic.debug
 import com.maddyhome.idea.vim.diagnostic.vimLogger
+import com.maddyhome.idea.vim.helper.EngineStringHelper
 import com.maddyhome.idea.vim.options.OptionConstants
+import com.maddyhome.idea.vim.register.RegisterConstants.ALTERNATE_BUFFER_REGISTER
 import com.maddyhome.idea.vim.register.RegisterConstants.BLACK_HOLE_REGISTER
 import com.maddyhome.idea.vim.register.RegisterConstants.CLIPBOARD_REGISTER
 import com.maddyhome.idea.vim.register.RegisterConstants.CLIPBOARD_REGISTERS
+import com.maddyhome.idea.vim.register.RegisterConstants.CURRENT_FILENAME_REGISTER
 import com.maddyhome.idea.vim.register.RegisterConstants.LAST_SEARCH_REGISTER
 import com.maddyhome.idea.vim.register.RegisterConstants.PLAYBACK_REGISTERS
 import com.maddyhome.idea.vim.register.RegisterConstants.PRIMARY_REGISTER
@@ -219,12 +223,12 @@ abstract class VimRegisterGroupBase : VimRegisterGroup {
     if (register == CLIPBOARD_REGISTER) {
       injector.clipboardManager.setClipboardContent(editor, context, copiedText)
       if (!isRegisterSpecifiedExplicitly && !isDelete && isPrimaryRegisterSupported() && OptionConstants.clipboard_unnamedplus in injector.globalOptions().clipboard) {
-        injector.clipboardManager.setPrimaryContent(editor, context, copiedText)
+        injector.clipboardManager.setPrimaryContent(editor, context, copiedText, type)
       }
     }
     if (register == PRIMARY_REGISTER) {
       if (isPrimaryRegisterSupported()) {
-        injector.clipboardManager.setPrimaryContent(editor, context, copiedText)
+        injector.clipboardManager.setPrimaryContent(editor, context, copiedText, type)
         if (!isRegisterSpecifiedExplicitly && !isDelete && OptionConstants.clipboard_unnamed in injector.globalOptions().clipboard) {
           injector.clipboardManager.setClipboardContent(editor, context, copiedText)
         }
@@ -273,6 +277,11 @@ abstract class VimRegisterGroupBase : VimRegisterGroup {
       myRegisters['0'] = Register('0', copiedText, type)
       logger.debug { "register '0' contains: \"$copiedText\"" }
     } // Yanks also go to register 0 if the default register was used
+
+    // Notified once for the whole operation, after every register above has been written. Note this
+    // is deliberately not raised for the black hole register, which returns early, nor for
+    // storeTextSpecial or `let @a = ...`, neither of which routes through here.
+    injector.listenersNotifier.notifyRegisterStored(register, copiedText, type, isDelete)
     return true
   }
 
@@ -295,7 +304,10 @@ abstract class VimRegisterGroupBase : VimRegisterGroup {
   ): Boolean {
     if (isRegisterWritable()) {
       val text = preprocessTextBeforeStoring(editor.getText(range), type)
-      return storeTextInternal(editor, context, range, text, type, lastRegisterChar, isDelete)
+      val normalized = if (editor.getVirtualBufferKind() == VirtualBufferKind.ControlCharsEditor) {
+        EngineStringHelper.fromPrintableCharacters(text)
+      } else text
+      return storeTextInternal(editor, context, range, normalized, type, lastRegisterChar, isDelete)
     }
 
     return false
@@ -401,11 +413,21 @@ abstract class VimRegisterGroupBase : VimRegisterGroup {
     return System.getenv("DISPLAY") != null && injector.systemInfoService.isXWindow
   }
 
-  private fun setSystemPrimaryRegisterText(editor: VimEditor, context: ExecutionContext, copiedText: VimCopiedText) {
+  override fun getLastExplicitlyWrittenRegister(r: Char): Register? {
+    require(CLIPBOARD_REGISTERS.contains(r.lowercaseChar())) { "Only clipboard registers are supported: got '$r'" }
+    return myRegisters[r.lowercaseChar()]
+  }
+
+  private fun setSystemPrimaryRegisterText(
+    editor: VimEditor,
+    context: ExecutionContext,
+    copiedText: VimCopiedText,
+    selectionType: SelectionType,
+  ) {
     logger.trace("Setting text: $copiedText to primary selection...")
     if (isPrimaryRegisterSupported()) {
       try {
-        injector.clipboardManager.setPrimaryContent(editor, context, copiedText)
+        injector.clipboardManager.setPrimaryContent(editor, context, copiedText, selectionType)
       } catch (e: Exception) {
         logger.warn("False positive X11 primary selection support")
         logger.trace("Setting text to primary selection failed. Setting it to clipboard selection instead")
@@ -421,24 +443,86 @@ abstract class VimRegisterGroupBase : VimRegisterGroup {
     injector.clipboardManager.setClipboardContent(editor, context, copiedText)
   }
 
+  /**
+   * Resolves the `*` register, whose backing store is the windowing system's PRIMARY selection.
+   *
+   * PRIMARY holds text and nothing else, so the selection type has to be found elsewhere. Each source
+   * below is less trustworthy than the one before it, ending in a guess made from the text alone.
+   */
   private fun refreshPrimaryRegister(editor: VimEditor, context: ExecutionContext): Register? {
-    logger.trace("Syncing cached primary selection value..")
     if (!isPrimaryRegisterSupported()) {
       logger.trace("X11 primary selection is not supported. Syncing clipboard selection..")
       return refreshClipboardRegister(editor, context)
     }
-    try {
-      val clipboardData = injector.clipboardManager.getPrimaryContent(editor, context) ?: return null
-      val currentRegister = myRegisters[PRIMARY_REGISTER]
-      if (currentRegister != null && clipboardData.text == currentRegister.text) {
-        return currentRegister
-      }
-      return Register(PRIMARY_REGISTER, clipboardData, guessSelectionType(clipboardData.text))
+    return try {
+      registerWeStillOwn() ?: registerFor(injector.clipboardManager.getPrimaryContent(editor, context))
     } catch (e: Exception) {
       logger.warn("False positive X11 primary selection support")
-      logger.trace("Syncing primary selection failed. Syncing clipboard selection instead")
-      return refreshClipboardRegister(editor, context)
+      refreshClipboardRegister(editor, context)
     }
+  }
+
+  private fun registerWeStillOwn(): Register? =
+    injector.clipboardManager.getOwnedPrimaryContent()
+      ?.let { Register(PRIMARY_REGISTER, it.copiedText, it.selectionType) }
+
+  private fun registerFor(selection: VimCopiedText?): Register? {
+    if (selection == null || selection.text.isEmpty()) return registerForUnreadableSelection(selection)
+    // What we published is asked first: it is the record of what actually went to the selection,
+    // whereas the `*` register is only updated by the paths that write it explicitly.
+    return publishedRegisterHolding(selection)
+      ?: cachedRegisterHolding(selection)
+      ?: Register(PRIMARY_REGISTER, selection, guessSelectionType(selection.text))
+  }
+
+  /**
+   * Wayland/XWayland clears PRIMARY on focus change, so an unreadable selection is far more likely to
+   * be that than a deliberate clear — prefer the last value we held. A readable-but-empty selection is
+   * still a register: reporting it as absent would drop the `*` row from `:registers` altogether.
+   */
+  private fun registerForUnreadableSelection(selection: VimCopiedText?): Register? =
+    myRegisters[PRIMARY_REGISTER]
+      ?: selection?.let { Register(PRIMARY_REGISTER, it, SelectionType.CHARACTER_WISE) }
+
+  /**
+   * The IDE republishes the editor selection to PRIMARY on every selection change, as untyped text, so
+   * ownership is routinely lost to our own process with no foreign application involved. Recognising
+   * our own text lets the type survive that.
+   */
+  private fun publishedRegisterHolding(selection: VimCopiedText): Register? =
+    injector.clipboardManager.getLastPublishedPrimaryContent()
+      ?.let { recoverRegister(selection, it.copiedText, it.selectionType) }
+
+  private fun cachedRegisterHolding(selection: VimCopiedText): Register? =
+    myRegisters[PRIMARY_REGISTER]?.let { recoverRegister(selection, it.copiedText, it.type) }
+
+  /**
+   * Rebuilds the register from [ours] when the selection still holds that text.
+   *
+   * On an exact match our own copy is returned, keeping the transferable data collected at yank time.
+   * On a stripped match only the *type* is taken from [ours]: the selection's text is what a paste
+   * should insert, and substituting ours would hand back characters the selection never held.
+   */
+  private fun recoverRegister(selection: VimCopiedText, ours: VimCopiedText, type: SelectionType): Register? = when {
+    selection.text == ours.text -> Register(PRIMARY_REGISTER, ours, type)
+    selection.isTailStrippedFormOf(ours.text) -> Register(PRIMARY_REGISTER, selection, type)
+    else -> null
+  }
+
+  /**
+   * Whether the selection can only be [ourText] with its tail eaten in transit — the trailing newline,
+   * or that newline together with the whitespace before it. Something republishes our line reformatted
+   * (the IDE reindents a pasted range, and a formatter drops trailing whitespace), and the type has to
+   * survive that.
+   *
+   * Deliberately one-directional. Text carrying trailing whitespace of its own was not produced by
+   * stripping, so it belongs to whoever put it there; comparing both sides trimmed would also collapse
+   * every whitespace-only string to the same value and let any blank selection match any blank register.
+   */
+  private fun VimCopiedText.isTailStrippedFormOf(ourText: String): Boolean {
+    if (text + "\n" == ourText) return true
+    if (text != text.trimEnd()) return false
+    return text == ourText.trimEnd()
   }
 
   private fun refreshClipboardRegister(editor: VimEditor, context: ExecutionContext): Register? {
@@ -447,8 +531,14 @@ abstract class VimRegisterGroupBase : VimRegisterGroup {
 
     val clipboardData = injector.clipboardManager.getClipboardContent(editor, context) ?: return null
     val currentRegister = myRegisters[systemAwareClipboardRegister]
-    if (currentRegister != null && clipboardData.text == currentRegister.text) {
-      return currentRegister
+    if (currentRegister != null) {
+      // Same lossy-tail tolerance as PRIMARY: the clipboard is usually faithful, but it is re-read
+      // from the X server once another application owns it, and `+` would otherwise lose its type
+      // for exactly the same reason `*` did.
+      if (clipboardData.text == currentRegister.text) return currentRegister
+      if (clipboardData.isTailStrippedFormOf(currentRegister.text)) {
+        return Register(systemAwareClipboardRegister, clipboardData, currentRegister.type)
+      }
     }
     return Register(systemAwareClipboardRegister, clipboardData, guessSelectionType(clipboardData.text))
   }
@@ -459,6 +549,15 @@ abstract class VimRegisterGroupBase : VimRegisterGroup {
     if (Character.isUpperCase(myR)) {
       myR = Character.toLowerCase(myR)
     }
+
+    if (r == CURRENT_FILENAME_REGISTER) {
+      return getCurrentFileNameRegister(editor)
+    }
+
+    if (r == ALTERNATE_BUFFER_REGISTER) {
+      return getAlternateBufferName(editor)
+    }
+
     return if (CLIPBOARD_REGISTERS.indexOf(myR) >= 0) refreshClipboardRegister(
       editor,
       context,
@@ -471,8 +570,11 @@ abstract class VimRegisterGroupBase : VimRegisterGroup {
     val clipboardRegisters = CLIPBOARD_REGISTERS
       .filterNot { it == CLIPBOARD_REGISTER && !isPrimaryRegisterSupported() } // for some reason non-X systems use PRIMARY_REGISTER as a clipboard storage
       .mapNotNull { refreshClipboardRegister(editor, context, it) }
-
-    return (filteredRegisters + clipboardRegisters).sortedWith(Register.KeySorter)
+    return (filteredRegisters + clipboardRegisters + listOfNotNull(
+      getCurrentFileNameRegister(editor),
+      getAlternateBufferName(editor)
+    ))
+      .sortedWith(Register.KeySorter)
   }
 
   override fun saveRegister(editor: VimEditor, context: ExecutionContext, r: Char, register: Register) {
@@ -489,7 +591,7 @@ abstract class VimRegisterGroupBase : VimRegisterGroup {
         }
 
         PRIMARY_REGISTER -> {
-          setSystemPrimaryRegisterText(editor, context, register.copiedText)
+          setSystemPrimaryRegisterText(editor, context, register.copiedText, register.type)
         }
       }
     }
@@ -561,4 +663,22 @@ abstract class VimRegisterGroupBase : VimRegisterGroup {
   override fun isSystemClipboard(register: Char): Boolean {
     return register == '+' || register == '*'
   }
+}
+
+private fun getCurrentFileNameRegister(editor: VimEditor): Register? {
+  val fileName = injector.file.bufferName(editor) ?: return null
+  return Register(
+    CURRENT_FILENAME_REGISTER,
+    injector.clipboardManager.dumbCopiedText(fileName),
+    SelectionType.CHARACTER_WISE
+  )
+}
+
+private fun getAlternateBufferName(editor: VimEditor): Register? {
+  val fileName = injector.file.alternateBufferName(editor) ?: return null
+  return Register(
+    ALTERNATE_BUFFER_REGISTER,
+    injector.clipboardManager.dumbCopiedText(fileName),
+    SelectionType.CHARACTER_WISE
+  )
 }

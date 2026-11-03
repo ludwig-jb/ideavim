@@ -16,6 +16,7 @@ import com.maddyhome.idea.vim.api.ExecutionContext
 import com.maddyhome.idea.vim.api.ImmutableVimCaret
 import com.maddyhome.idea.vim.api.VimEditor
 import com.maddyhome.idea.vim.api.getLineEndOffset
+import com.maddyhome.idea.vim.api.hasMapTo
 import com.maddyhome.idea.vim.api.injector
 import com.maddyhome.idea.vim.command.MappingMode
 import com.maddyhome.idea.vim.command.OperatorArguments
@@ -25,6 +26,7 @@ import com.maddyhome.idea.vim.common.TextRange
 import com.maddyhome.idea.vim.extension.ExtensionHandler
 import com.maddyhome.idea.vim.group.visual.vimSetSelection
 import com.maddyhome.idea.vim.handler.TextObjectActionHandler
+import com.maddyhome.idea.vim.helper.enumSetOf
 import com.maddyhome.idea.vim.key.MappingOwner
 import com.maddyhome.idea.vim.state.mode.Mode
 
@@ -41,7 +43,7 @@ internal class TextObjectScopeImpl(
     keys: String,
     registerDefaultMapping: Boolean,
     preserveSelectionAnchor: Boolean,
-    rangeProvider: VimApi.(count: Int) -> TextObjectRange?,
+    rangeProvider: suspend VimApi.(count: Int) -> TextObjectRange?,
   ) {
     val plugKeys = "<Plug>($pluginName-$keys)"
 
@@ -63,8 +65,8 @@ internal class TextObjectScopeImpl(
       val toKeys = injector.parser.parseKeys(plugKeys)
 
       // Only add mapping if no mapping to this <Plug> already exists
-      val filteredModes = MappingMode.XO.filterNotTo(HashSet()) {
-        injector.keyGroup.hasmapto(it, toKeys)
+      val filteredModes = MappingMode.XO.filterTo(HashSet()) {
+        !injector.keyGroup.hasMapTo(toKeys, enumSetOf(it))
       }
 
       if (filteredModes.isNotEmpty()) {
@@ -88,7 +90,7 @@ private class TextObjectExtensionHandler(
   private val listenerOwner: ListenerOwner,
   private val mappingOwner: MappingOwner,
   private val preserveSelectionAnchor: Boolean,
-  private val rangeProvider: VimApi.(count: Int) -> TextObjectRange?,
+  private val rangeProvider: suspend VimApi.(count: Int) -> TextObjectRange?,
 ) : ExtensionHandler {
 
   override val isRepeatable: Boolean = false
@@ -130,7 +132,7 @@ private class ApiTextObjectActionHandler(
   private val listenerOwner: ListenerOwner,
   private val mappingOwner: MappingOwner,
   override val preserveSelectionAnchor: Boolean,
-  private val rangeProvider: VimApi.(count: Int) -> TextObjectRange?,
+  private val rangeProvider: suspend VimApi.(count: Int) -> TextObjectRange?,
 ) : TextObjectActionHandler() {
 
   // Will be set based on the result of rangeProvider
@@ -139,6 +141,8 @@ private class ApiTextObjectActionHandler(
   override val visualType: TextObjectVisualType
     get() = computedVisualType
 
+  override val supportsLinewiseDeletePromotion: Boolean = false
+
   override fun getRange(
     editor: VimEditor,
     caret: ImmutableVimCaret,
@@ -146,10 +150,10 @@ private class ApiTextObjectActionHandler(
     count: Int,
     rawCount: Int,
   ): TextRange? {
-    val vimApi = VimApiImpl(listenerOwner, mappingOwner)
+    val vimApi = VimApiImpl(listenerOwner, mappingOwner, editor.projectId)
 
-    // Execute the range provider
-    val apiRange = vimApi.rangeProvider(count) ?: return null
+    // Execute the range provider (suspend lambda bridged via runBlocking for now)
+    val apiRange = kotlinx.coroutines.runBlocking { vimApi.rangeProvider(count) } ?: return null
 
     // Convert API range to internal TextRange and set visual type
     return when (apiRange) {

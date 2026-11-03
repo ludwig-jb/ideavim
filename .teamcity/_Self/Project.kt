@@ -1,13 +1,24 @@
+/*
+ * Copyright 2003-2026 The IdeaVim authors
+ *
+ * Use of this source code is governed by an MIT-style
+ * license that can be found in the LICENSE.txt file or at
+ * https://opensource.org/licenses/MIT.
+ */
+
 package _Self
 
 import _Self.buildTypes.Compatibility
+import _Self.buildTypes.LargeFileTests
 import _Self.buildTypes.LongRunning
 import _Self.buildTypes.Nvim
 import _Self.buildTypes.PluginVerifier
 import _Self.buildTypes.PropertyBased
 import _Self.buildTypes.RandomOrderTests
+import _Self.buildTypes.RiderTests
+import _Self.buildTypes.SplitModeTests
+
 import _Self.buildTypes.TestingBuildType
-import _Self.buildTypes.TypeScriptTest
 import _Self.subprojects.Releases
 import _Self.vcsRoots.ReleasesVcsRoot
 import jetbrains.buildServer.configs.kotlin.v2019_2.BuildType
@@ -23,19 +34,27 @@ object Project : Project({
   vcsRoot(ReleasesVcsRoot)
 
   // Active tests
-  buildType(TestingBuildType("Latest EAP", version = "LATEST-EAP-SNAPSHOT"))
-  buildType(TestingBuildType("2025.3"))
+  // Only the LATEST-EAP-SNAPSHOT platform ships JVM target 25 bytecode (its inline functions can't be
+  // inlined into a Java 21 build), so EAP must run on Java 25. 2026.1 and 2025.3 build fine on Java 21.
+  buildType(TestingBuildType("Latest EAP", version = "LATEST-EAP-SNAPSHOT", javaVersion = "25"))
+  buildType(TestingBuildType("2026.2", version = "2026.2", javaVersion = "25"))
+  buildType(TestingBuildType("2026.1"))
+  buildType(TestingBuildType("2025.3", javaVersion = "21"))
 
   buildType(PropertyBased)
   buildType(LongRunning)
   buildType(RandomOrderTests)
+  buildType(SplitModeTests)
+  buildType(LargeFileTests)
+  buildType(RiderTests)
 
   buildType(Nvim)
   buildType(PluginVerifier)
   buildType(Compatibility)
 
-  // TypeScript scripts test
-  buildType(TypeScriptTest)
+  features {
+    largeFileCharts()
+  }
 })
 
 // Agent size configurations (CPU count)
@@ -47,12 +66,16 @@ object AgentSize {
 // Common build type for all configurations
 abstract class IdeaVimBuildType(init: BuildType.() -> Unit) : BuildType({
   artifactRules = """
-        +:build/reports => build/reports
-        +:tests/java-tests/build/reports => java-tests/build/reports
-        +:tests/long-running-tests/build/reports => long-running-tests/build/reports
-        +:tests/property-tests/build/reports => property-tests/build/reports
-        +:/mnt/agent/temp/buildTmp/ => /mnt/agent/temp/buildTmp/
+        +:build/reports => reports.zip
+        +:tests/java-tests/build/reports => java-tests-reports.zip
+        +:tests/long-running-tests/build/reports => long-running-tests-reports.zip
+        +:tests/property-tests/build/reports => property-tests-reports.zip
+        +:/mnt/agent/temp/buildTmp/ => buildTmp.zip
     """.trimIndent()
+
+  params {
+    param("env.JAVA_HOME", "/usr/lib/jvm/java-21-amazon-corretto")
+  }
 
   features {
     buildCache {

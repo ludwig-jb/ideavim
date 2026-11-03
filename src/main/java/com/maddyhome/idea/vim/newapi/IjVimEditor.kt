@@ -10,6 +10,7 @@ package com.maddyhome.idea.vim.newapi
 
 import com.intellij.codeInsight.folding.impl.FoldingUtil
 import com.intellij.execution.impl.ConsoleViewImpl
+import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.editor.Editor
 import com.intellij.openapi.editor.EditorModificationUtil
 import com.intellij.openapi.editor.FoldRegion
@@ -23,6 +24,7 @@ import com.intellij.openapi.editor.ex.util.EditorUtil
 import com.intellij.openapi.editor.impl.CaretModelImpl
 import com.intellij.openapi.editor.impl.EditorImpl
 import com.intellij.openapi.vfs.VirtualFileManager
+import com.intellij.platform.project.projectId
 import com.maddyhome.idea.vim.api.BufferPosition
 import com.maddyhome.idea.vim.api.ExecutionContext
 import com.maddyhome.idea.vim.api.ImmutableVimCaret
@@ -38,13 +40,14 @@ import com.maddyhome.idea.vim.api.VimIndentConfig
 import com.maddyhome.idea.vim.api.VimScrollingModel
 import com.maddyhome.idea.vim.api.VimVirtualFile
 import com.maddyhome.idea.vim.api.VimVisualPosition
+import com.maddyhome.idea.vim.api.VirtualBufferKind
+import com.maddyhome.idea.vim.api.getVisualStartLine
+import com.maddyhome.idea.vim.api.globalOptions
 import com.maddyhome.idea.vim.api.injector
 import com.maddyhome.idea.vim.common.IndentConfig
 import com.maddyhome.idea.vim.common.LiveRange
-import com.maddyhome.idea.vim.common.ModeChangeListener
 import com.maddyhome.idea.vim.common.TextRange
 import com.maddyhome.idea.vim.common.VimEditorReplaceMask
-import com.maddyhome.idea.vim.common.forgetAllReplaceMasks
 import com.maddyhome.idea.vim.group.visual.vimSetSystemBlockSelectionSilently
 import com.maddyhome.idea.vim.helper.EditorHelper
 import com.maddyhome.idea.vim.helper.StrictMode
@@ -66,7 +69,7 @@ import org.jetbrains.annotations.ApiStatus
 import java.lang.System.identityHashCode
 
 @ApiStatus.Internal
-internal class IjVimEditor(editor: Editor) : MutableLinearEditor, VimEditorBase() {
+open class IjVimEditor(editor: Editor) : MutableLinearEditor, VimEditorBase() {
   companion object {
     // For cases where Editor does not have a project (for some reason)
     // It's something IJ Platform related and stored here because of this reason
@@ -81,6 +84,12 @@ internal class IjVimEditor(editor: Editor) : MutableLinearEditor, VimEditorBase(
     get() = editor.replaceMask
     set(value) {
       editor.replaceMask = value
+    }
+  override val jumpListId: String
+    get() {
+      if (!injector.globalOptions().ideawindowjumps) return projectId
+      val windowId = injector.windowIdService.getWindowId(this) ?: return projectId
+      return "$projectId/$windowId"
     }
 
   override fun updateMode(mode: Mode) {
@@ -197,6 +206,7 @@ internal class IjVimEditor(editor: Editor) : MutableLinearEditor, VimEditorBase(
   }
 
   override fun isInForEachCaretScope(): Boolean {
+    if (editor.caretModel !is CaretModelImpl) return false
     return (editor.caretModel as CaretModelImpl).isIteratingOverCarets
   }
 
@@ -231,6 +241,20 @@ internal class IjVimEditor(editor: Editor) : MutableLinearEditor, VimEditorBase(
 
   override fun isOneLineMode(): Boolean {
     return editor.isOneLineMode
+  }
+
+  override fun getVirtualBufferKind(): VirtualBufferKind? =
+    editor.virtualFile?.getUserData(com.maddyhome.idea.vim.helper.CmdwinKeys.KIND)
+
+  override fun getCmdwinOriginalEditor(): VimEditor? {
+    val originalFile = editor.virtualFile?.getUserData(com.maddyhome.idea.vim.helper.CmdwinKeys.ORIGINAL_FILE)
+      ?: return null
+    val project = editor.project ?: return null
+    val fem = com.intellij.openapi.fileEditor.FileEditorManager.getInstance(project)
+    val textEditor = (fem.getSelectedEditor(originalFile) as? com.intellij.openapi.fileEditor.TextEditor)
+      ?: fem.getEditors(originalFile).filterIsInstance<com.intellij.openapi.fileEditor.TextEditor>().firstOrNull()
+      ?: return null
+    return textEditor.editor.vim
   }
 
   override fun getText(left: Int, right: Int): CharSequence {
@@ -333,6 +357,41 @@ internal class IjVimEditor(editor: Editor) : MutableLinearEditor, VimEditorBase(
     editor.selectionModel.vimSetSystemBlockSelectionSilently(startPosition, endPosition)
   }
 
+  override fun runBatchCaretOperation(runnable: () -> Unit) {
+    editor.caretModel.runBatchCaretOperation(runnable)
+  }
+
+  override fun runAsAllCaretsAction(runnable: () -> Unit) {
+    // Piggy-back on runForEachCaret to fire the CaretActionListener
+    // `beforeAllCaretsAction`/`afterAllCaretsAction` pair, which is split-mode's
+    // PatchEngineEditorSynchronizer's batching window: per-caret events fired during the
+    // runnable get swallowed (`isInsideAllCaretsAction` is true), and a single snapshot is sent
+    // over the RD protocol at the end — instead of N caret events × walk-all-N-carets
+    // serialization, which is O(N²) for block-visual motions on large blocks.
+    //
+    // The action is run exactly once regardless of caret count; we use runForEachCaret purely
+    // for its lifecycle. Caller must guarantee no nested runForEachCaret (e.g. no IDE actions);
+    // we fall back to a plain batch if that contract is broken.
+    if (ApplicationManager.getApplication().isDispatchThread()) {
+      try {
+        runOnceInsideRunForEachCaret(runnable)
+        return
+      } catch (_: IllegalStateException) {
+        // Already inside runForEachCaret — fall back to plain batch.
+      }
+    }
+    editor.caretModel.runBatchCaretOperation(runnable)
+  }
+
+  private fun runOnceInsideRunForEachCaret(runnable: () -> Unit) {
+    var alreadyRan = false
+    editor.caretModel.runForEachCaret {
+      if (alreadyRan) return@runForEachCaret
+      alreadyRan = true
+      runnable()
+    }
+  }
+
   override fun getLineStartOffset(line: Int): Int {
     return if (line < 0) {
       StrictMode.fail("Incorrect line: $line")
@@ -384,7 +443,7 @@ internal class IjVimEditor(editor: Editor) : MutableLinearEditor, VimEditorBase(
     return EditorHelper.getVirtualFile(editor)?.url?.let { VirtualFileManager.extractProtocol(it) }
   }
 
-  override val projectId = editor.project?.let { injector.file.getProjectId(it) } ?: DEFAULT_PROJECT_ID
+  override val projectId = editor.project?.projectId()?.serializeToString() ?: DEFAULT_PROJECT_ID
 
   override fun visualPositionToOffset(position: VimVisualPosition): Int {
     return editor.visualPositionToOffset(VisualPosition(position.line, position.column, position.leansRight))
@@ -463,7 +522,6 @@ internal class IjVimEditor(editor: Editor) : MutableLinearEditor, VimEditorBase(
     get() = (editor as? EditorEx)?.isInsertMode ?: false
     set(value) {
       (editor as? EditorEx)?.isInsertMode = value
-      forgetAllReplaceMasks()
     }
 
   override val document: VimDocument
@@ -488,6 +546,12 @@ internal class IjVimEditor(editor: Editor) : MutableLinearEditor, VimEditorBase(
     return toVimFoldRegion(ijFoldRegion)
   }
 
+  override fun getCollapsedFoldRegionAtVisualStartLine(line: Int): VimFoldRegion? {
+    return editor.foldingModel.allFoldRegions
+      .map { toVimFoldRegion(it) }
+      .firstOrNull { !it.isExpanded && it.getVisualStartLine(this) == line }
+  }
+
   override fun getAllFoldRegions(): List<VimFoldRegion> {
     return editor.foldingModel.allFoldRegions.map { toVimFoldRegion(it) }
   }
@@ -496,12 +560,11 @@ internal class IjVimEditor(editor: Editor) : MutableLinearEditor, VimEditorBase(
     val allFolds = editor.foldingModel.allFoldRegions
     if (allFolds.isEmpty()) return
 
+    val depths = FoldDepthCalculator.computeDepths(allFolds)
+
     editor.foldingModel.runBatchFoldingOperation {
-      // I'm aware it's O(n^2) comparison here,
-      // but it doesn't affect performance even on a large amount of fold
-      allFolds.forEach { fold ->
-        val depth = calculateFoldDepth(fold, allFolds)
-        fold.isExpanded = depth < foldLevel
+      for (i in allFolds.indices) {
+        allFolds[i].isExpanded = depths[i] < foldLevel
       }
     }
   }
@@ -510,9 +573,10 @@ internal class IjVimEditor(editor: Editor) : MutableLinearEditor, VimEditorBase(
     val allFolds = editor.foldingModel.allFoldRegions
     if (allFolds.isEmpty()) return 0
 
-    return allFolds.maxOfOrNull { fold ->
-      calculateFoldDepth(fold, allFolds)
-    } ?: 0
+    val depths = FoldDepthCalculator.computeDepths(allFolds)
+    var max = 0
+    for (d in depths) if (d > max) max = d
+    return max
   }
 
   override fun createFoldRegion(startOffset: Int, endOffset: Int, collapse: Boolean): VimFoldRegion? {
@@ -570,27 +634,6 @@ internal class IjVimEditor(editor: Editor) : MutableLinearEditor, VimEditorBase(
       }
       .minByOrNull { fold -> fold.endOffset - fold.startOffset }
   }
-
-  private fun calculateFoldDepth(fold: FoldRegion, allFolds: Array<FoldRegion>): Int {
-    return allFolds.count { otherFold ->
-      isWrappedBy(fold, otherFold)
-    }
-  }
-
-  /**
-   * Returns true if the inner fold is completely contained by the outer fold (allowing matching boundaries)
-   * but excludes identical folds.
-   */
-  private fun isWrappedBy(inner: FoldRegion, outer: FoldRegion): Boolean {
-    return outer.startOffset <= inner.startOffset &&
-      outer.endOffset >= inner.endOffset &&
-      areDifferentFolds(inner, outer)
-  }
-
-  private fun areDifferentFolds(
-    first: FoldRegion,
-    second: FoldRegion,
-  ): Boolean = first.startOffset != second.startOffset || first.endOffset != second.endOffset
 
   private fun toVimFoldRegion(ijFoldRegion: FoldRegion): VimFoldRegion {
     return IjVimFoldRegion(ijFoldRegion, editor)
@@ -650,22 +693,11 @@ internal class IjVimEditor(editor: Editor) : MutableLinearEditor, VimEditorBase(
 }
 
 val Editor.vim: VimEditor
-  get() = IjVimEditor(this)
+  get() = VimEditorFactory.getInstance().createVimEditor(this)
+
 val VimEditor.ij: Editor
-  get() = (this as IjVimEditor).editor
+  get() = VimEditorFactory.getInstance().extractEditor(this)
 
 val com.intellij.openapi.util.TextRange.vim: TextRange
   get() = TextRange(this.startOffset, this.endOffset)
 
-internal class InsertTimeRecorder : ModeChangeListener {
-  override fun modeChanged(editor: VimEditor, oldMode: Mode) {
-    editor as IjVimEditor
-    if (oldMode == Mode.INSERT) {
-      val undo = injector.undo as? VimTimestampBasedUndoService ?: return
-      val nanoTime = System.nanoTime()
-      injector.application.runReadAction {
-        editor.nativeCarets().forEach { undo.endInsertSequence(it, it.offset, nanoTime) }
-      }
-    }
-  }
-}

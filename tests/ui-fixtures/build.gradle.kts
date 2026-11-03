@@ -5,7 +5,7 @@ plugins {
 }
 
 repositories {
-  mavenCentral()
+  maven { url = uri("https://cache-redirector.jetbrains.com/repo.maven.apache.org/maven2") }
   maven { url = uri("https://cache-redirector.jetbrains.com/intellij-dependencies") }
 }
 
@@ -15,7 +15,7 @@ val javaVersion: String by project
 val remoteRobotVersion: String by project
 
 dependencies {
-  testFixturesImplementation("org.junit.jupiter:junit-jupiter:6.0.1")
+  testFixturesImplementation("org.junit.jupiter:junit-jupiter:6.1.3")
   compileOnly("org.jetbrains.kotlin:kotlin-stdlib:$kotlinVersion")
   testFixturesImplementation("org.jetbrains.kotlin:kotlin-test:$kotlinVersion")
   testFixturesImplementation(testFixtures(project(":"))) // The root project

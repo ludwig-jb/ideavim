@@ -209,6 +209,22 @@ class ShiftRightTest : VimTestCase() {
     )
   }
 
+  @TestWithoutNeovim(SkipNeovimReason.TABS)
+  @Test
+  fun `test shift characterwise selection ending on newline`() {
+    doTest(
+      "vj\$>",
+      """${c}Lorem ipsum dolor sit amet,
+          |consectetur adipiscing elit
+          |Sed in orci mauris.
+    """.trimMargin(),
+      """    ${c}Lorem ipsum dolor sit amet,
+          |    consectetur adipiscing elit
+          |Sed in orci mauris.
+    """.trimMargin(),
+    )
+  }
+
   @Test
   fun `test undo after shift right single line`() {
     configureByText(
@@ -401,7 +417,7 @@ class ShiftRightTest : VimTestCase() {
   }
 
   @Test
-  fun `test undo after shift right single line with oldundo`() {
+  fun `test undo after shift right single line with ideaoldundo`() {
     configureByText(
       """
       func main() {
@@ -410,7 +426,7 @@ class ShiftRightTest : VimTestCase() {
     """.trimIndent()
     )
     try {
-      enterCommand("set oldundo")
+      enterCommand("set ideaoldundo")
       typeText(">>")
       assertState(
         """
@@ -428,12 +444,12 @@ class ShiftRightTest : VimTestCase() {
     """.trimIndent()
       )
     } finally {
-      enterCommand("set nooldundo")
+      enterCommand("set noideaoldundo")
     }
   }
 
   @Test
-  fun `test undo after shift right with motion with oldundo`() {
+  fun `test undo after shift right with motion with ideaoldundo`() {
     configureByText(
       """
       func main() {
@@ -444,7 +460,7 @@ class ShiftRightTest : VimTestCase() {
     """.trimIndent()
     )
     try {
-      enterCommand("set oldundo")
+      enterCommand("set ideaoldundo")
       typeText(">2j")  // Shift right 3 lines
       assertState(
         """
@@ -466,12 +482,12 @@ class ShiftRightTest : VimTestCase() {
     """.trimIndent()
       )
     } finally {
-      enterCommand("set nooldundo")
+      enterCommand("set noideaoldundo")
     }
   }
 
   @Test
-  fun `test undo after shift right visual mode with oldundo`() {
+  fun `test undo after shift right visual mode with ideaoldundo`() {
     configureByText(
       """
       func main() {
@@ -482,7 +498,7 @@ class ShiftRightTest : VimTestCase() {
     """.trimIndent()
     )
     try {
-      enterCommand("set oldundo")
+      enterCommand("set ideaoldundo")
       typeText("Vj>")  // Visual select 2 lines and shift right
       assertState(
         """
@@ -504,15 +520,15 @@ class ShiftRightTest : VimTestCase() {
     """.trimIndent()
       )
     } finally {
-      enterCommand("set nooldundo")
+      enterCommand("set noideaoldundo")
     }
   }
 
   @Test
-  fun `test multiple undo after sequential shifts right with oldundo`() {
+  fun `test multiple undo after sequential shifts right with ideaoldundo`() {
     configureByText("${c}unindented line")
     try {
-      enterCommand("set oldundo")
+      enterCommand("set ideaoldundo")
       typeText(">>")
       assertState("    ${c}unindented line")
       typeText(">>")
@@ -532,12 +548,12 @@ class ShiftRightTest : VimTestCase() {
       typeText("u")
       assertState("${c}unindented line")
     } finally {
-      enterCommand("set nooldundo")
+      enterCommand("set noideaoldundo")
     }
   }
 
   @Test
-  fun `test undo shift right in insert mode with oldundo`() {
+  fun `test undo shift right in insert mode with ideaoldundo`() {
     configureByText(
       """
       func main() {
@@ -546,7 +562,7 @@ class ShiftRightTest : VimTestCase() {
     """.trimIndent()
     )
     try {
-      enterCommand("set oldundo")
+      enterCommand("set ideaoldundo")
       typeText("i<C-T>")
       assertState(
         """
@@ -565,12 +581,12 @@ class ShiftRightTest : VimTestCase() {
     """.trimIndent()
       )
     } finally {
-      enterCommand("set nooldundo")
+      enterCommand("set noideaoldundo")
     }
   }
 
   @Test
-  fun `test undo shift right and left combination with oldundo`() {
+  fun `test undo shift right and left combination with ideaoldundo`() {
     configureByText(
       """
       func main() {
@@ -579,7 +595,7 @@ class ShiftRightTest : VimTestCase() {
     """.trimIndent()
     )
     try {
-      enterCommand("set oldundo")
+      enterCommand("set ideaoldundo")
       typeText(">>")  // Shift right
       assertState(
         """
@@ -617,7 +633,7 @@ class ShiftRightTest : VimTestCase() {
     """.trimIndent()
       )
     } finally {
-      enterCommand("set nooldundo")
+      enterCommand("set noideaoldundo")
     }
   }
 }

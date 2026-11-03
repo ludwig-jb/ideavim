@@ -36,21 +36,27 @@ import kotlin.math.ceil
 /**
  * see "h :set"
  */
-@ExCommand(command = "se[t]")
+@ExCommand(
+  command = "se[t]",
+  description = "Show or set options. Without arguments show all options that differ from their default value. See :set {option}, no{option}, {option}={value}."
+)
 data class SetCommand(val range: Range, val modifier: CommandModifier, val argument: String) :
   SetCommandBase(range, modifier, argument) {
 
   override fun getScope(editor: VimEditor): OptionAccessScope = OptionAccessScope.EFFECTIVE(editor)
 }
 
-@ExCommand(command = "setg[lobal]")
+@ExCommand(command = "setg[lobal]", description = "Like :set, but only show or set the global value of an option.")
 data class SetglobalCommand(val range: Range, val modifier: CommandModifier, val argument: String) :
   SetCommandBase(range, modifier, argument) {
 
   override fun getScope(editor: VimEditor): OptionAccessScope = OptionAccessScope.GLOBAL(editor)
 }
 
-@ExCommand(command = "setl[ocal]")
+@ExCommand(
+  command = "setl[ocal]",
+  description = "Like :set, but only show or set the value of an option that is local to the current buffer or window."
+)
 data class SetlocalCommand(val range: Range, val modifier: CommandModifier, val argument: String) :
   SetCommandBase(range, modifier, argument) {
 
@@ -143,19 +149,12 @@ fun parseOptionLine(
     }
   }
 
-  // We now have 1 or more option operators separator by spaces
+  // We now have 1 or more option operators separator by spaces. Some of the option values might have escaped whitespace
   var error: String? = null
-  val tokenizer = StringTokenizer(argument)
+  val tokenizer = EscapedWhitespaceStringTokenizer(argument)
   val toShow = mutableListOf<Pair<String, String>>()
   while (tokenizer.hasMoreTokens()) {
-    var token = tokenizer.nextToken()
-    // See if a space has been backslashed, if not get the rest of the text
-    while (token.endsWith("\\")) {
-      token = token.take(token.length - 1) + ' '
-      if (tokenizer.hasMoreTokens()) {
-        token += tokenizer.nextToken()
-      }
-    }
+    val token = tokenizer.nextToken()
 
     val eq = token.indexOf('=')
     val colon = token.indexOf(':')
@@ -202,6 +201,9 @@ fun parseOptionLine(
         '-' -> removeValue(option, existingValue, value)
         else -> value
       } ?: throw exExceptionMessage("E474.arg", token)
+
+      // Setting the value will check validity, but will not have the token for the user-facing error message
+      option.checkIfValueValid(newValue, token)
       optionGroup.setOptionValue(option, scope, newValue)
     }
     if (error != null) {
@@ -332,5 +334,15 @@ private fun removeValue(option: Option<VimDataType>, currentValue: VimDataType, 
     is StringListOption -> option.removeValue(currentValue as VimString, value as VimString)
     is NumberOption -> option.subtractValues(currentValue as VimInt, value as VimInt)
     else -> null
+  }
+}
+
+private class EscapedWhitespaceStringTokenizer(string: String) : StringTokenizer(string) {
+  override fun nextToken(): String {
+    var token = super.nextToken()
+    while (token.endsWith("\\") && hasMoreTokens()) {
+      token = token.substring(0, token.length - 1) + ' ' + super.nextToken()
+    }
+    return token
   }
 }

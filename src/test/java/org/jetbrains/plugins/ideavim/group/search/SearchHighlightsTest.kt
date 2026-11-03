@@ -8,9 +8,30 @@
 
 package org.jetbrains.plugins.ideavim.group.search
 
+import com.intellij.openapi.application.ApplicationManager
+import org.jetbrains.plugins.ideavim.SkipNeovimReason
+import org.jetbrains.plugins.ideavim.TestWithoutNeovim
 import org.jetbrains.plugins.ideavim.VimTestCase
 import org.junit.jupiter.api.Test
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 
+/**
+ * Search highlights are asserted as `«…»` for a normal match ([com.intellij.openapi.editor.colors.EditorColors.TEXT_SEARCH_RESULT_ATTRIBUTES])
+ * and `‷…‴` for the current match (the same attributes plus a box, IdeaVim's equivalent of Vim's `hl-CurSearch`).
+ *
+ * IdeaVim only draws the box while `'incsearch'` is previewing the pattern being typed - see VIM-4308. Once the search
+ * is accepted, every match looks the same again, and `n`, `N`, caret movement, document edits, toggling `'hlsearch'`
+ * and switching windows all leave it that way. So no test in this class expects `‷…‴`; the ones that do live in
+ * [IncsearchTests] and friends, where the command line is still open.
+ *
+ * Vim's own mechanism is different - `CurSearch` is applied to the match under each window's cursor whenever the
+ * highlights are visible, and it follows the cursor. It is invisible in practice, because Vim's default colour scheme
+ * links `CurSearch` to `Search`, so the two are drawn identically unless the user defines `CurSearch` themselves.
+ * Neovim's default scheme does define it, which is why the box shows up there. IdeaVim has no colour scheme key for the
+ * current match - the box is hardcoded and cannot be turned off - so it follows what a stock Vim looks like rather than
+ * what Vim's internals do. Verified against Vim 9.1 (patches 1-1752) and Neovim 0.12.
+ */
 class SearchHighlightsTest : VimTestCase() {
   @Test
   fun `test highlight search results`() {
@@ -33,6 +54,22 @@ class SearchHighlightsTest : VimTestCase() {
            |where it was settled on some sodden s«and»
            |hard by the torrent of a mountain pass.
       """.trimMargin(),
+    )
+  }
+
+  @Test
+  fun `test star search with smartcase highlights case-insensitive matches`() {
+    configureByText("${c}Lorem ipsum lorem ipsum")
+    enterCommand("set hlsearch")
+    enterCommand("set ignorecase")
+    enterCommand("set smartcase")
+
+    // `*` ignores smartcase, so the lowercase occurrence must be highlighted too
+    typeText("*")
+
+    assertSearchHighlights(
+      "\\<Lorem\\>",
+      "«Lorem» ipsum «lorem» ipsum",
     )
   }
 
@@ -512,11 +549,161 @@ class SearchHighlightsTest : VimTestCase() {
   }
 
   @Test
+  fun `test moving caret does not show or move current match highlight`() {
+    configureByText("${c}lorem ipsum lorem ipsum")
+    enterCommand("set hlsearch")
+
+    val pattern = "lorem"
+    enterSearch(pattern) // Moves the caret to the second occurrence
+    assertSearchHighlights(pattern, "«lorem» ipsum «lorem» ipsum")
+
+    typeText("gg0") // Back to the first occurrence
+    assertSearchHighlights(pattern, "«lorem» ipsum «lorem» ipsum")
+  }
+
+  @Test
+  fun `test editing text does not show current match highlight under caret`() {
+    configureByText("${c}lorem ipsum XXlorem ipsum")
+    enterCommand("set hlsearch")
+
+    val pattern = "lorem"
+    enterSearch(pattern) // Moves the caret to the second occurrence
+    typeText("hh") // Move to the "XX" before the match
+    assertSearchHighlights(pattern, "«lorem» ipsum XX«lorem» ipsum")
+
+    // Deleting "XX" doesn't move the caret, but it does move the match under it
+    typeText("2x")
+    assertSearchHighlights(pattern, "«lorem» ipsum «lorem» ipsum")
+  }
+
+  @Test
   fun `test search highlight with tabs`() {
     configureByText("\tfoo")
     enterCommand("set hlsearch")
     val pattern = "foo"
     enterSearch(pattern)
     assertSearchHighlights(pattern, "\t«foo»")
+  }
+
+  @Test
+  fun `accepting search should not show current match highlight`() {
+    configureByText("${c}lorem ipsum lorem ipsum")
+    enterCommand("set hlsearch")
+
+    val pattern = "lorem"
+    enterSearch(pattern)
+
+    assertSearchHighlights(pattern, "«lorem» ipsum «lorem» ipsum")
+  }
+
+  @Test
+  fun `n does not show current match highlight`() {
+    configureByText("${c}lorem ipsum lorem ipsum")
+    enterCommand("set hlsearch")
+
+    val pattern = "lorem"
+    enterSearch(pattern)
+    typeText("n")
+
+    assertSearchHighlights(pattern, "«lorem» ipsum «lorem» ipsum")
+  }
+
+  @Test
+  fun `N does not show current match highlight`() {
+    configureByText("lorem ipsum ${c}lorem ipsum")
+    enterCommand("set hlsearch")
+
+    val pattern = "lorem"
+    enterSearch(pattern)
+    typeText("N")
+
+    assertSearchHighlights(pattern, "«lorem» ipsum «lorem» ipsum")
+  }
+
+  @Test
+  fun `moving caret onto a match does not show current match highlight`() {
+    configureByText("${c}lorem ipsum lorem ipsum")
+    enterCommand("set hlsearch")
+
+    val pattern = "lorem"
+    enterSearch(pattern)
+    typeText("gg0")
+
+    assertSearchHighlights(pattern, "«lorem» ipsum «lorem» ipsum")
+  }
+
+  @Test
+  fun `moving caret off a match does not affect current match highlight`() {
+    configureByText("${c}lorem ipsum lorem ipsum")
+    enterCommand("set hlsearch")
+
+    val pattern = "lorem"
+    enterSearch(pattern)
+    typeText("$")
+
+    assertSearchHighlights(pattern, "«lorem» ipsum «lorem» ipsum")
+  }
+
+  @Test
+  fun `accepting incsearch removes current match highlight`() {
+    configureByText("${c}lorem ipsum lorem ipsum")
+    enterCommand("set hlsearch incsearch")
+
+    val pattern = "lorem"
+    typeText("/$pattern")
+    typeText("<CR>")
+
+    assertSearchHighlights(pattern, "«lorem» ipsum «lorem» ipsum")
+  }
+
+  /**
+   * Vim computes 'hlsearch' during redraw, per screen cell, and keeps no highlight objects at all. IdeaVim has to
+   * materialise a RangeHighlighter per match, so it only materialises the ones that could be on screen - see
+   * [com.maddyhome.idea.vim.helper.SearchHighlights].
+   *
+   * The viewport is [screenWidth] x [screenHeight] characters in the test fixture, so 200 lines is several screens.
+   */
+  @TestWithoutNeovim(SkipNeovimReason.NOT_VIM_TESTING)
+  @Test
+  fun `test search highlights do not cover matches far off screen`() {
+    configureByLines(200, "lorem ipsum dolor sit amet,")
+    enterCommand("set hlsearch")
+    enterSearch("lorem")
+
+    val highlightedLines = highlightedLines()
+    assertTrue(0 in highlightedLines, "The top of the file is on screen, so its match should be highlighted")
+    assertFalse(
+      199 in highlightedLines,
+      "The last line is several screens away and should not be highlighted, but lines $highlightedLines are",
+    )
+  }
+
+  @TestWithoutNeovim(SkipNeovimReason.NOT_VIM_TESTING)
+  @Test
+  fun `test scrolling highlights the matches that come into view`() {
+    configureByLines(200, "lorem ipsum dolor sit amet,")
+    enterCommand("set hlsearch")
+    enterSearch("lorem")
+    assertFalse(199 in highlightedLines(), "The last line starts off screen")
+
+    // Scroll to the end of the file, putting line 180 at the top of the screen
+    typeText("181Gzt")
+    assertTrue(199 in highlightedLines(), "The last line is now on screen, so its match should be highlighted")
+
+    // ...and back to the top
+    typeText("1G")
+    assertTrue(0 in highlightedLines(), "The first line is on screen again, so its match should be highlighted")
+  }
+
+  /** The lines that have a search highlight on them, as the markup model actually has it. */
+  private fun highlightedLines(): Set<Int> {
+    lateinit var lines: Set<Int>
+    ApplicationManager.getApplication().invokeAndWait {
+      val editor = fixture.editor
+      lines = editor.markupModel.allHighlighters
+        .map { editor.offsetToLogicalPosition(it.startOffset).line }
+        .toSet()
+    }
+    return lines
   }
 }

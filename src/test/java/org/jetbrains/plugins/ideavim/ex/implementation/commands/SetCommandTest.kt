@@ -177,42 +177,7 @@ class SetCommandTest : VimTestCase() {
   fun `test show all effective option values`() {
     // 'fileencoding' defaults to "", but is automatically detected as UTF-8
     setOsSpecificOptionsToSafeValues()
-    val expected = """
-      |--- Options ---
-      |noargtextobj        noideajoin          norelativenumber    nosurround
-      |nobomb                ideamarks           scroll=0          notextobj-entire
-      |nobreakindent         ideawrite=all       scrolljump=1      notextobj-indent
-      |  colorcolumn=      noignorecase          scrolloff=0         textwidth=0
-      |nocommentary        noincsearch           selectmode=         timeout
-      |nocursorline        nolist                shellcmdflag=-x     timeoutlen=1000
-      |nodigraph           nomatchit             shellxescape=@    notrackactionids
-      |noexchange            maxmapdepth=20      shellxquote={       undolevels=1000
-      |  fileformat=unix   nomini-ai             showcmd           noVimEverywhere
-      |  foldlevel=1         more                showmode            virtualedit=
-      |nogdefault          nomultiple-cursors    sidescroll=0      novisualbell
-      |nohighlightedyank   noNERDTree            sidescrolloff=0     visualdelay=100
-      |  history=50          nrformats=hex     nosmartcase           whichwrap=b,s
-      |nohlsearch          nonumber            nosneak               wrap
-      |  ide=IntelliJ IDEA   operatorfunc=       startofline         wrapscan
-      |  clipboard=ideaput,autoselect
-      |  fileencoding=utf-8
-      |  guicursor=n-v-c:block-Cursor/lCursor,ve:ver35-Cursor,o:hor50-Cursor,i-ci:ver25-Cursor/lCursor,r-cr:hor20-Cursor/lCursor,sm:block-Cursor-blinkwait175-blinkoff150-blinkon175
-      |noideacopypreprocess
-      |  idearefactormode=select
-      |  ideastatusicon=enabled
-      |  ideavimsupport=dialog
-      |  isfname=@,48-57,/,\,.,-,_,+,,,#,$,%,{,},[,],:,@-@,!,~,=
-      |  iskeyword=@,48-57,_
-      |  keymodel=continueselect,stopselect
-      |  lookupkeys=<Tab>,<Down>,<Up>,<Enter>,<Left>,<Right>,<C-Down>,<C-Up>,<PageUp>,<PageDown>,<C-J>,<C-Q>
-      |  matchpairs=(:),{:},[:]
-      |noReplaceWithRegister
-      |  selection=inclusive
-      |  shell=/dummy/path/to/bash
-      |novim-paragraph-motion
-      |  viminfo='100,<50,s10,h
-    """.trimMargin()
-    assertCommandOutput("set all", expected)
+    assertAllOptionsShown("set all", header = "--- Options ---", singleColumn = false)
   }
 
   @Test
@@ -250,87 +215,7 @@ class SetCommandTest : VimTestCase() {
   fun `test show all option values in single column`() {
     // 'fileencoding' defaults to "", but is automatically detected as UTF-8
     setOsSpecificOptionsToSafeValues()
-    val expected = """
-    |--- Options ---
-    |noargtextobj
-    |nobomb
-    |nobreakindent
-    |  clipboard=ideaput,autoselect
-    |  colorcolumn=
-    |nocommentary
-    |nocursorline
-    |nodigraph
-    |noexchange
-    |  fileencoding=utf-8
-    |  fileformat=unix
-    |  foldlevel=1
-    |nogdefault
-    |  guicursor=n-v-c:block-Cursor/lCursor,ve:ver35-Cursor,o:hor50-Cursor,i-ci:ver25-Cursor/lCursor,r-cr:hor20-Cursor/lCursor,sm:block-Cursor-blinkwait175-blinkoff150-blinkon175
-    |nohighlightedyank
-    |  history=50
-    |nohlsearch
-    |  ide=IntelliJ IDEA
-    |noideacopypreprocess
-    |noideajoin
-    |  ideamarks
-    |  idearefactormode=select
-    |  ideastatusicon=enabled
-    |  ideavimsupport=dialog
-    |  ideawrite=all
-    |noignorecase
-    |noincsearch
-    |  isfname=@,48-57,/,\,.,-,_,+,,,#,$,%,{,},[,],:,@-@,!,~,=
-    |  iskeyword=@,48-57,_
-    |  keymodel=continueselect,stopselect
-    |nolist
-    |  lookupkeys=<Tab>,<Down>,<Up>,<Enter>,<Left>,<Right>,<C-Down>,<C-Up>,<PageUp>,<PageDown>,<C-J>,<C-Q>
-    |nomatchit
-    |  matchpairs=(:),{:},[:]
-    |  maxmapdepth=20
-    |nomini-ai
-    |  more
-    |nomultiple-cursors
-    |noNERDTree
-    |  nrformats=hex
-    |nonumber
-    |  operatorfunc=
-    |norelativenumber
-    |noReplaceWithRegister
-    |  scroll=0
-    |  scrolljump=1
-    |  scrolloff=0
-    |  selection=inclusive
-    |  selectmode=
-    |  shell=/dummy/path/to/bash
-    |  shellcmdflag=-x
-    |  shellxescape=@
-    |  shellxquote={
-    |  showcmd
-    |  showmode
-    |  sidescroll=0
-    |  sidescrolloff=0
-    |nosmartcase
-    |nosneak
-    |  startofline
-    |nosurround
-    |notextobj-entire
-    |notextobj-indent
-    |  textwidth=0
-    |  timeout
-    |  timeoutlen=1000
-    |notrackactionids
-    |  undolevels=1000
-    |novim-paragraph-motion
-    |noVimEverywhere
-    |  viminfo='100,<50,s10,h
-    |  virtualedit=
-    |novisualbell
-    |  visualdelay=100
-    |  whichwrap=b,s
-    |  wrap
-    |  wrapscan
-    """.trimMargin()
-    assertCommandOutput("set! all", expected)
+    assertAllOptionsShown("set! all", header = "--- Options ---", singleColumn = true)
   }
 
   @Test

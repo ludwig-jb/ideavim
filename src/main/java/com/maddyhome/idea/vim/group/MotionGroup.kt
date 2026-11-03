@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2023 The IdeaVim authors
+ * Copyright 2003-2026 The IdeaVim authors
  *
  * Use of this source code is governed by an MIT-style
  * license that can be found in the LICENSE.txt file or at
@@ -8,7 +8,7 @@
 package com.maddyhome.idea.vim.group
 
 import com.intellij.openapi.actionSystem.DataContext
-import com.intellij.openapi.components.Service
+import com.intellij.openapi.components.service
 import com.intellij.openapi.editor.Caret
 import com.intellij.openapi.editor.Editor
 import com.intellij.openapi.editor.VisualPosition
@@ -16,7 +16,9 @@ import com.intellij.openapi.fileEditor.FileEditorManagerEvent
 import com.intellij.openapi.fileEditor.TextEditor
 import com.intellij.openapi.fileEditor.ex.FileEditorManagerEx
 import com.intellij.openapi.fileEditor.impl.EditorWindow
+import com.intellij.platform.project.projectId
 import com.maddyhome.idea.vim.KeyHandler
+import com.maddyhome.idea.vim.api.BufferPosition
 import com.maddyhome.idea.vim.api.ExecutionContext
 import com.maddyhome.idea.vim.api.ImmutableVimCaret
 import com.maddyhome.idea.vim.api.VimChangeGroupBase
@@ -25,14 +27,18 @@ import com.maddyhome.idea.vim.api.VimMotionGroupBase
 import com.maddyhome.idea.vim.api.anyNonWhitespace
 import com.maddyhome.idea.vim.api.getLeadingCharacterOffset
 import com.maddyhome.idea.vim.api.getVisualLineCount
+import com.maddyhome.idea.vim.api.VirtualBufferKind
 import com.maddyhome.idea.vim.api.injector
+import com.maddyhome.idea.vim.helper.CmdwinKeys
 import com.maddyhome.idea.vim.api.lineLength
+import com.maddyhome.idea.vim.api.normalizeOffset
 import com.maddyhome.idea.vim.api.normalizeVisualLine
 import com.maddyhome.idea.vim.api.visualLineToBufferLine
 import com.maddyhome.idea.vim.command.Argument
 import com.maddyhome.idea.vim.command.MotionType
 import com.maddyhome.idea.vim.command.OperatorArguments
 import com.maddyhome.idea.vim.common.TextRange
+import com.maddyhome.idea.vim.group.changelist.ChangeListService
 import com.maddyhome.idea.vim.handler.ExternalActionHandler
 import com.maddyhome.idea.vim.handler.Motion
 import com.maddyhome.idea.vim.handler.Motion.AbsoluteOffset
@@ -56,8 +62,41 @@ import kotlin.math.min
 /**
  * This handles all motion related commands and marks
  */
-@Service
-internal class MotionGroup : VimMotionGroupBase() {
+
+class MotionGroup : VimMotionGroupBase() {
+
+  override fun moveCaretToChange(
+    editor: VimEditor,
+    caret: ImmutableVimCaret,
+    count: Int,
+  ): Motion {
+    val project = editor.ij.project ?: return Motion.Error
+    val result = service<ChangeListService>().goToChange(project.projectId().serializeToString(), count)
+    return when (result) {
+      ChangeListService.MoveResult.Empty -> reportChangeListError(editor, "E664")
+      ChangeListService.MoveResult.AtStart -> reportChangeListError(editor, "E662")
+      ChangeListService.MoveResult.AtEnd -> reportChangeListError(editor, "E663")
+      is ChangeListService.MoveResult.At -> motionToChange(editor, result.change)
+    }
+  }
+
+  private fun reportChangeListError(editor: VimEditor, code: String): Motion {
+    injector.messages.showErrorMessage(editor, injector.messages.message(code))
+    return Motion.Error
+  }
+
+  private fun motionToChange(editor: VimEditor, change: ChangeListService.Change): Motion {
+    val target = BufferPosition(change.line, change.col, false)
+    if (editor.getPath() == change.filepath) {
+      return AbsoluteOffset(editor.bufferPositionToOffset(target))
+    }
+    injector.file.selectEditor(editor.projectId, change.filepath, change.protocol, target)?.let { newEditor ->
+      val offset = newEditor.bufferPositionToOffset(target)
+      newEditor.currentCaret().moveToOffset(newEditor.normalizeOffset(offset, false))
+    }
+    return Motion.Error
+  }
+
   override fun moveCaretToFirstDisplayLine(
     editor: VimEditor,
     caret: ImmutableVimCaret,
@@ -189,6 +228,7 @@ internal class MotionGroup : VimMotionGroupBase() {
 
       var start: Int
       var end: Int
+      var isForwardMotion = false
 
       val action = argument.motion
       when (action) {
@@ -206,9 +246,16 @@ internal class MotionGroup : VimMotionGroupBase() {
           )
 
           // Invalid motion
-          if (Motion.Error == motion) return null
           if (Motion.NoMotion == motion) return null
-          end = (motion as AbsoluteOffset).offset
+          if (Motion.Error == motion) {
+            // A forward word motion fails at the end of the file, but with a pending operator Vim ignores the failure
+            // and applies the operator to the rest of the file instead
+            if (!action.clampToEndOfFileWhenOperatorPending) return null
+            end = editor.vim.fileSize().toInt()
+          } else {
+            end = (motion as AbsoluteOffset).offset
+          }
+          isForwardMotion = end >= start
 
           // If inclusive, add the last character to the range
           if (action.motionType === MotionType.INCLUSIVE && end < editor.vim.fileSize()) {
@@ -240,6 +287,22 @@ internal class MotionGroup : VimMotionGroupBase() {
         }
 
         else -> throw RuntimeException("Commands doesn't take " + action.javaClass.simpleName + " as an operator")
+      }
+
+      // :help exclusive - if the motion is exclusive and the end of the motion is in column 1, the end of the motion is
+      // moved to the end of the previous line and the motion becomes inclusive. See VimMotionGroupBase.getMotionRange,
+      // which has to apply the same rule
+      // Only forward motions are adjusted, so the range is already in order here
+      if (action is MotionActionHandler && action.motionType === MotionType.EXCLUSIVE && isForwardMotion) {
+        val vimEditor = editor.vim
+        val startPosition = vimEditor.offsetToBufferPosition(start)
+        val endPosition = vimEditor.offsetToBufferPosition(end)
+        if (endPosition.column == 0 &&
+          endPosition.line > startPosition.line &&
+          vimEditor.anyNonWhitespace(start, -1)
+        ) {
+          end = max(start, vimEditor.getLineEndOffset(endPosition.line - 1))
+        }
       }
 
       // This is a kludge for dw, dW, and d[w. Without this kludge, an extra newline is operated when it shouldn't be.
@@ -312,6 +375,8 @@ internal class MotionGroup : VimMotionGroupBase() {
               }
 
               is Mode.CMD_LINE -> {
+                // in case of substitute preview we don't wont to close current command line
+                if (isOpeningSubstitutePreview(event)) return
                 val commandLine = injector.commandLine.getActiveCommandLine() ?: return
                 commandLine.close(refocusOwningEditor = false, resetCaret = false)
                 injector.outputPanel.getCurrentOutputPanel()?.close()
@@ -330,5 +395,8 @@ internal class MotionGroup : VimMotionGroupBase() {
         KeyHandler.getInstance().reset(keyHandler.keyHandlerState, state.mode)
       }
     }
+
+    private fun isOpeningSubstitutePreview(event: FileEditorManagerEvent): Boolean =
+      event.newFile?.getUserData(CmdwinKeys.KIND) == VirtualBufferKind.SubstitutePreview
   }
 }

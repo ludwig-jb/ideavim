@@ -17,7 +17,11 @@ import com.maddyhome.idea.vim.command.Command
 import com.maddyhome.idea.vim.command.OperatorArguments
 import com.maddyhome.idea.vim.handler.VimActionHandler
 
-@CommandOrMotion(keys = ["<C-H>", "<BS>"], modes = [Mode.INSERT])
+@CommandOrMotion(
+  keys = ["<C-H>", "<BS>"],
+  modes = [Mode.INSERT],
+  description = "In Insert mode, delete the character before the cursor. In Replace mode, restore the original character."
+)
 internal class InsertBackspaceAction : VimActionHandler.SingleExecution() {
   override val type: Command.Type = Command.Type.OTHER_WRITABLE
 
@@ -30,15 +34,17 @@ internal class InsertBackspaceAction : VimActionHandler.SingleExecution() {
     if (editor.insertMode) {
       injector.changeGroup.processBackspace(editor, context)
     } else {
-      for (caret in editor.carets()) {
-        val offset = (caret.offset - 1).takeIf { it > 0 } ?: continue
-        val oldChar = editor.replaceMask?.popChange(editor, offset)
-        if (oldChar != null) {
-          injector.changeGroup.replaceText(editor, caret, offset, offset + 1, oldChar.toString())
-        }
-        caret.moveToOffset(offset)
-      }
+      replaceModeBackspaceAtCarets(editor)
     }
     return true
+  }
+}
+
+private fun replaceModeBackspaceAtCarets(editor: VimEditor) {
+  for (caret in editor.carets()) {
+    val previousOffset = caret.offset - 1
+    if (previousOffset >= 0) {
+      replaceModeBackspace(editor, caret, previousOffset)
+    }
   }
 }

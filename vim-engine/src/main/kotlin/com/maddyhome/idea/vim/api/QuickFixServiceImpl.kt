@@ -1,0 +1,125 @@
+/*
+ * Copyright 2003-2026 The IdeaVim authors
+ *
+ * Use of this source code is governed by an MIT-style
+ * license that can be found in the LICENSE.txt file or at
+ * https://opensource.org/licenses/MIT.
+ */
+
+package com.maddyhome.idea.vim.api
+
+/**
+ * Registered as the application service directly: the quickfix list needs nothing from the IDE.
+ */
+class QuickFixServiceImpl : QuickFixService {
+
+  private val listsByProject = mutableMapOf<String, QuickFixList>()
+
+  override fun replaceList(editor: VimEditor, items: List<QuickFixItem>) {
+    val list = QuickFixList(items.toList())
+    listsByProject[editor.projectId] = list
+    QuickFixWindow.refresh(editor, list.items, list.currentIndex)
+  }
+
+  override fun jumpToFirst(editor: VimEditor): QuickFixJump = jumpTo(editor) { 0 }
+
+  override fun jumpToLast(editor: VimEditor): QuickFixJump = jumpTo(editor) { list -> list.lastIndex }
+
+  override fun jumpToItem(editor: VimEditor, number: Int): QuickFixJump = jumpTo(editor) { list ->
+    (number - 1).coerceIn(0, list.lastIndex)
+  }
+
+  override fun jumpForward(editor: VimEditor, count: Int): QuickFixJump = jumpTo(editor) { list ->
+    if (list.isOnLast) null else minOf(list.currentIndex + count, list.lastIndex)
+  }
+
+  override fun jumpBackward(editor: VimEditor, count: Int): QuickFixJump = jumpTo(editor) { list ->
+    if (list.isOnFirst) null else maxOf(list.currentIndex - count, 0)
+  }
+
+  override fun jumpToNextFile(editor: VimEditor, count: Int): QuickFixJump =
+    jumpAcrossFiles(editor, count, QuickFixList::firstIndexInNextFile)
+
+  override fun jumpToPreviousFile(editor: VimEditor, count: Int): QuickFixJump =
+    jumpAcrossFiles(editor, count, QuickFixList::lastIndexInPreviousFile)
+
+  override fun openWindow(editor: VimEditor) {
+    val list = listsByProject[editor.projectId]
+    QuickFixWindow.open(editor, list?.items.orEmpty(), list?.currentIndex ?: 0)
+  }
+
+  override fun closeWindow(editor: VimEditor) {
+    QuickFixWindow.close(editor)
+  }
+
+  override fun removeList(projectId: String) {
+    listsByProject.remove(projectId)
+  }
+
+  override fun reset() {
+    listsByProject.clear()
+  }
+
+  /**
+   * Stops at the last file it reaches, and reports no more items only when not even one file
+   * could be skipped.
+   *
+   * @param indexInOtherFile index of the item to land on in the file next to the one at the given index
+   */
+  private fun jumpAcrossFiles(
+    editor: VimEditor,
+    count: Int,
+    indexInOtherFile: QuickFixList.(Int) -> Int?,
+  ): QuickFixJump = jumpTo(editor) { list ->
+    var index = list.currentIndex
+    repeat(count) {
+      index = list.indexInOtherFile(index) ?: return@jumpTo index.takeIf { it != list.currentIndex }
+    }
+    index
+  }
+
+  /**
+   * @param newIndex the index to make current in the editor's list, or null if there's no item to move to
+   */
+  private fun jumpTo(editor: VimEditor, newIndex: (QuickFixList) -> Int?): QuickFixJump {
+    val list = listsByProject[editor.projectId]
+    if (list == null || list.items.isEmpty()) return QuickFixJump.EmptyList
+    list.currentIndex = newIndex(list) ?: return QuickFixJump.NoMoreItems
+    QuickFixWindow.refresh(editor, list.items, list.currentIndex)
+    val item = list.currentItem
+    return QuickFixJump.Moved(openItem(editor, item), item, number = list.currentIndex + 1, size = list.items.size)
+  }
+
+  private fun openItem(editor: VimEditor, item: QuickFixItem): VimEditor? {
+    injector.jumpService.saveJumpLocation(editor)
+    val position = BufferPosition(item.line, item.col)
+    val target = injector.file.selectEditor(editor.projectId, item.filepath, item.protocol, position) ?: return null
+    target.currentCaret().moveToOffset(target.bufferPositionToOffset(position))
+    return target
+  }
+}
+
+private class QuickFixList(val items: List<QuickFixItem>) {
+  var currentIndex = 0
+
+  val lastIndex: Int get() = items.lastIndex
+  val isOnFirst: Boolean get() = currentIndex == 0
+  val isOnLast: Boolean get() = currentIndex == lastIndex
+  val currentItem: QuickFixItem get() = items[currentIndex]
+
+  /**
+   * Index of the first item after [index] that is in another file than the item at [index].
+   */
+  fun firstIndexInNextFile(index: Int): Int? {
+    val file = items[index].filepath
+    return (index + 1..lastIndex).firstOrNull { items[it].filepath != file }
+  }
+
+  /**
+   * Index of the last item before [index] that is in another file than the item at [index].
+   */
+  fun lastIndexInPreviousFile(index: Int): Int? {
+    val file = items[index].filepath
+    return (index - 1 downTo 0).firstOrNull { items[it].filepath != file }
+  }
+}

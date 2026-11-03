@@ -14,36 +14,30 @@ import com.maddyhome.idea.vim.api.VimEditor
 import com.maddyhome.idea.vim.api.VimOutputPanel
 import com.maddyhome.idea.vim.api.injector
 
-object OutputPanelScopeImpl : OutputPanelScope {
+class OutputPanelScopeImpl(
+  private val projectId: String?,
+) : OutputPanelScope {
   private val vimEditor: VimEditor
-    get() = injector.editorGroup.getFocusedEditor()!!
+    get() = projectId?.let { injector.editorGroup.getSelectedEditor(it) } ?: injector.fallbackWindow
 
   private val vimContext: ExecutionContext
     get() = injector.executionContextManager.getEditorExecutionContext(vimEditor)
 
-  private val outputPanel: VimOutputPanel = injector.outputPanel.getOrCreate(vimEditor, vimContext)
+  private val outputPanel: VimOutputPanel
+    get() = injector.outputPanel.getOrCreate(vimEditor, vimContext)
 
-  override val text: String
-    get() = outputPanel.text
-
-  override val label: String
-    get() = outputPanel.label
-
-  override fun setText(text: String) {
-    outputPanel.setContent(text)
+  override suspend fun setText(text: String) {
+    outputPanel.clearText()
+    appendText(text, false)
     outputPanel.show() // has to be called to update the text
   }
 
-  override fun appendText(text: String, startNewLine: Boolean) {
+  override suspend fun appendText(text: String, startNewLine: Boolean) {
     outputPanel.addText(text, startNewLine)
     outputPanel.show() // has to be called to update the text
   }
 
-  override fun setLabel(label: String) {
-    outputPanel.label = label
-  }
-
-  override fun clearText() {
+  override suspend fun clearText() {
     outputPanel.clearText()
     outputPanel.show() // has to be called to update the text
   }

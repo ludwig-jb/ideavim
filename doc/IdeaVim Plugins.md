@@ -16,6 +16,65 @@ in `~/.ideavimrc`. E.g. `set nosurround`.
 Available plugins:
 
 <details>
+<summary><h2>abolish: Case-aware substitute and coercion mappings between case styles</h2></summary>
+
+Original plugin: [vim-abolish](https://github.com/tpope/vim-abolish).
+
+### Summary:
+Coercion mappings (`crs`/`cr_`, `crm`/`crp`, `crc`, `cru`/`crU`, `cr-`/`crk`, `cr.`, `cr<Space>`, `crt`)
+recase the word under the cursor between snake_case, MixedCase, camelCase, UPPER_SNAKE, kebab-case,
+dot.case, space case and Title Case. `:Subvert` (alias `:S`) is a case-aware `:substitute` that
+handles all case variants and `{a,b,c}` brace alternatives in a single command. With only a pattern
+(`:S/foo/` or `:S?foo?`) it does a case-aware forward or backward search instead.
+
+### Setup:
+- Add the following command to `~/.ideavimrc`: `Plug 'tpope/vim-abolish'`
+    <details>
+      <summary>Alternative syntax</summary>
+      <code>Plugin 'tpope/vim-abolish'</code>
+      <br/>
+      <code>Plug 'https://github.com/tpope/vim-abolish'</code>
+      <br/>
+      <code>Plug 'vim-abolish'</code>
+      <br/>
+      <code>set abolish</code>
+      </details>
+
+### Instructions
+
+https://github.com/tpope/vim-abolish/blob/master/doc/abolish.txt
+
+`:Abolish` (insert-mode auto-correcting abbreviations) is not supported.
+
+By default each `cr<x>` mapping recases the inner word under the cursor.
+To get tpope-style motion support (`crsiw`, `crsap`, `crs2w`, …) remap to the
+per-style operator `<Plug>` mappings:
+
+```
+nmap crs <Plug>(abolish-coerce-snake)
+nmap crm <Plug>(abolish-coerce-pascal)
+nmap crc <Plug>(abolish-coerce-camel)
+nmap cru <Plug>(abolish-coerce-upper_snake)
+nmap cr- <Plug>(abolish-coerce-kebab)
+nmap cr. <Plug>(abolish-coerce-dot)
+nmap cr<Space> <Plug>(abolish-coerce-space)
+nmap crt <Plug>(abolish-coerce-title)
+```
+
+To bind extra trigger characters, set `g:abolish_coercions` *before* enabling
+the plugin. Each entry maps a single character to the name of a built-in case
+style (case-insensitive: `snake`, `pascal`, `camel`, `upper_snake`, `kebab`,
+`dot`, `space`, `title`).
+
+```
+let g:abolish_coercions = {'q': 'kebab', 'x': 'upper_snake'}
+```
+
+After this, `crq` recases to kebab-case and `crx` to UPPER_SNAKE.
+
+</details>
+
+<details>
 <summary><h2>anyobject: Useful text objects like functions, arguments, classes, loops, list items, block comments, and more.</h2></summary>
 
 ### Summary:
@@ -80,6 +139,140 @@ https://www.vim.org/scripts/script.php?script_id=2699
 </details>
 
 <details>
+<summary><h2>CamelCaseMotion: Motions through CamelCase and snake_case words</h2></summary>
+
+Original plugin: [CamelCaseMotion](https://github.com/bkad/CamelCaseMotion).
+
+### Summary:
+Adds `w`, `b`, `e`, `ge` style motions and `iw`/`ib`/`ie`/`ige` inner "word" text objects that move
+and select by sub-word boundaries — uppercase letters in `CamelCase` and `_`/`-` delimiters in
+`snake_case`/`kebab-case` — instead of whole words. For example, with the leader as the key,
+`<leader>w` jumps `Camel|CaseWord` → `Camel[C]aseWord`, and `ci<leader>w` changes a single chunk of
+an identifier. The motions honour `[count]`, work in normal, visual and operator-pending modes, and
+respect the `'iskeyword'` option.
+
+### Setup:
+- Add the following command to `~/.ideavimrc`: `Plug 'bkad/CamelCaseMotion'`
+    <details>
+      <summary>Alternative syntax</summary>
+      <code>Plugin 'bkad/CamelCaseMotion'</code>
+      <br/>
+      <code>Plug 'https://github.com/bkad/CamelCaseMotion'</code>
+      <br/>
+      <code>Plug 'CamelCaseMotion'</code>
+      <br/>
+      <code>set CamelCaseMotion</code>
+      </details>
+- No mappings are created until you choose a key. The most common setup is to add this to your
+  `~/.ideavimrc` (before the `Plug`/`set` line):
+
+  ```
+  let g:camelcasemotion_key = '<leader>'
+  ```
+
+  which creates `<leader>w`, `<leader>b`, `<leader>e`, `<leader>ge` and the inner objects
+  `i<leader>w`, `i<leader>b`, `i<leader>e`, `i<leader>ge`.
+
+### Instructions
+
+https://github.com/bkad/CamelCaseMotion/blob/master/README.markdown
+
+With `g:camelcasemotion_key` set to `<leader>` (the default leader is `\`):
+
+| Mapping | Description |
+|---------|-------------|
+| `<leader>w` | Move forward to the next start of a sub-word |
+| `<leader>b` | Move backward to the previous start of a sub-word |
+| `<leader>e` | Move forward to the next end of a sub-word |
+| `<leader>ge` | Move backward to the previous end of a sub-word |
+| `i<leader>w` | Inner sub-word (e.g. `ci<leader>w`, `vi<leader>w`) |
+| `i<leader>b` | Inner sub-word, extends backward with a count |
+| `i<leader>e` | Inner sub-word, excludes a trailing delimiter |
+| `i<leader>ge` | Inner sub-word, backward to the previous word end |
+
+Instead of (or in addition to) `g:camelcasemotion_key`, you can map the motion `<Plug>` targets
+directly, for example to replace the built-in `w`/`b`/`e`:
+
+```
+map <silent> w <Plug>CamelCaseMotion_w
+map <silent> b <Plug>CamelCaseMotion_b
+map <silent> e <Plug>CamelCaseMotion_e
+map <silent> ge <Plug>CamelCaseMotion_ge
+```
+
+</details>
+
+<details>
+<summary><h2>classtextobj: Provides a text object for class definitions</h2></summary>
+
+### Summary:
+Adds the `ac` text object that selects "a class definition" — the entire class declaration and body. Works in any language whose PSI tree provides a class element (Java, Kotlin, Python, JavaScript/TypeScript, Go, Dart, PHP, Ruby, Rust).
+
+### Setup:
+- Add the following command to `~/.ideavimrc`: `set classtextobj`
+
+### Instructions
+
+| Mapping | Description |
+|---------|-------------|
+| `ac`    | A class definition (e.g. `vac`, `dac`, `cac`, `yac`) |
+
+When classes are nested, the innermost enclosing class is selected.
+
+</details>
+
+<details>
+<summary><h2>clever-f: Repeat f, F, t and T by pressing the same key again</h2></summary>
+
+Original plugin: [clever-f.vim](https://github.com/rhysd/clever-f.vim).
+
+### Summary:
+Extends `f`, `F`, `t` and `T` so that pressing the same key again repeats the last search, instead of `;` and `,`.
+After `f{char}`, `f` jumps to the next `{char}` and `F` to the previous one. The direction is relative to the first
+search, so after `F{char}`, `f` keeps searching backward. Unlike the builtin motions, searches cross line boundaries.
+Moving the cursor in any other way, changing the text or entering Insert mode starts a new search. Works in normal,
+visual and operator-pending modes, and takes a `[count]`. The characters the search can jump to on the cursor line
+are highlighted until the search ends.
+
+### Setup:
+- Add the following command to `~/.ideavimrc`: `Plug 'rhysd/clever-f.vim'`
+    <details>
+      <summary>Alternative syntax</summary>
+      <code>Plugin 'rhysd/clever-f.vim'</code>
+      <br/>
+      <code>Plug 'https://github.com/rhysd/clever-f.vim'</code>
+      <br/>
+      <code>Plug 'clever-f.vim'</code>
+      <br/>
+      <code>set clever-f</code>
+      </details>
+
+### Instructions
+
+https://github.com/rhysd/clever-f.vim/blob/master/doc/clever_f.txt
+
+Supported variables (`g:clever_f_not_overwrites_standard_mappings` must be set before the plugin is loaded):
+
+| Variable | Description |
+|----------|-------------|
+| `g:clever_f_across_no_line` | Search only in the current line |
+| `g:clever_f_ignore_case` | Ignore case |
+| `g:clever_f_smart_case` | Ignore case unless the input is an uppercase character |
+| `g:clever_f_fix_key_direction` | `f` always searches forward and `F` always backward |
+| `g:clever_f_chars_match_any_signs` | Characters which match any sign, e.g. `';'` |
+| `g:clever_f_repeat_last_char_inputs` | Keys which repeat the last searched character, `<CR>` by default |
+| `g:clever_f_timeout_ms` | Start a new search if the last one is older than this |
+| `g:clever_f_mark_char` | Highlight the characters the search can jump to, enabled by default |
+| `g:clever_f_not_overwrites_standard_mappings` | Don't map `f`, `F`, `t` and `T` |
+
+Available `<Plug>` mappings: `<Plug>(clever-f-f)`, `<Plug>(clever-f-F)`, `<Plug>(clever-f-t)`, `<Plug>(clever-f-T)`,
+`<Plug>(clever-f-repeat-forward)`, `<Plug>(clever-f-repeat-back)` and `<Plug>(clever-f-reset)`.
+
+`g:clever_f_mark_cursor`, `g:clever_f_mark_direct`, custom highlight colors and migemo are not currently supported.
+
+</details>
+
+<details>
 <summary><h2>commentary: Adds mapping for quickly commenting stuff out</h2></summary>
 
 By [Daniel Leong](https://github.com/dhleong)  
@@ -112,6 +305,9 @@ That's it.
 ### Instructions
 
 https://github.com/tpope/vim-commentary/blob/master/doc/commentary.txt
+
+Unlike vim-commentary, IdeaVim uses a block comment when the range is not linewise, so `gciw` can
+comment out a single argument. Set `let g:commentary_block_comments = 0` to always comment whole lines.
 
 </details>
 
@@ -193,6 +389,71 @@ Easy text exchange operator for Vim.
 ### Instructions
 
 https://github.com/tommcdo/vim-exchange/blob/master/doc/exchange.txt
+
+</details>
+
+<details>
+<summary><h2>fugitive: Search the files tracked by Git and walk the matches</h2></summary>
+
+Original plugin: [vim-fugitive](https://github.com/tpope/vim-fugitive).
+
+### Summary:
+`:Ggrep {args}` runs `git grep {args}` in the work tree of the current file, fills the quickfix list
+with the matches and jumps to the first one. `:Ggrep!` fills the list without jumping. Only files
+tracked by Git are searched, and every `git grep` flag works, e.g. `:Ggrep -i 'foo bar' -- '*.kt'`.
+
+The quickfix commands work on that list: `:cnext`/`:cprevious`, `:cnfile`/`:cpfile`, `:cfirst`/`:clast`,
+and `:copen`/`:cclose` for a window listing all matches, where `<CR>` jumps to the match under the cursor.
+Every project has its own list.
+
+### Setup:
+- Add the following command to `~/.ideavimrc`: `Plug 'tpope/vim-fugitive'`
+    <details>
+      <summary>Alternative syntax</summary>
+      <code>Plugin 'tpope/vim-fugitive'</code>
+      <br/>
+      <code>Plug 'https://github.com/tpope/vim-fugitive'</code>
+      <br/>
+      <code>Plug 'vim-fugitive'</code>
+      <br/>
+      <code>set fugitive</code>
+      </details>
+
+### Instructions
+
+https://github.com/tpope/vim-fugitive/blob/master/doc/fugitive.txt
+
+Only `:Ggrep` is supported. Git is run from the path set in Settings | Version Control | Git, or from `PATH`
+when the Git plugin is disabled.
+
+</details>
+
+<details>
+<summary><h2>functextobj: Provides text objects for method/function definitions</h2></summary>
+
+Inspired by [vim-textobj-function](https://github.com/kana/vim-textobj-function).
+
+### Summary:
+Adds text objects for selecting methods/functions. Three variants distinguish what is included: the signature and body, the same with JavaDoc and annotations, or just the inner body content. Works in any language whose PSI tree provides a function/method element (Java, Kotlin, Python, JavaScript/TypeScript, Go, Dart, PHP, Ruby, Rust).
+
+### Setup:
+- Add the following command to `~/.ideavimrc`: `set functextobj`
+    <details>
+      <summary>Alternative syntax</summary>
+      <code>Plug 'kana/vim-textobj-function'</code>
+      <br/>
+      <code>Plug 'vim-textobj-function'</code>
+    </details>
+
+### Instructions
+
+| Mapping | Description |
+|---------|-------------|
+| `am`    | A method definition (signature + body, excluding JavaDoc and annotations) |
+| `aM`    | A Method definition (same as `am`, but including JavaDoc and annotations) |
+| `im`    | Inner method definition (only the contents between the body braces) |
+
+Use with operators (`d`, `c`, `y`) or in visual mode — e.g. `dam`, `cim`, `vaM`. When methods are nested, the innermost enclosing method is selected.
 
 </details>
 
@@ -285,6 +546,79 @@ https://github.com/michaeljsmith/vim-indent-object/blob/master/doc/indent-object
 </details>
 
 <details>
+<summary><h2>indentwise: Motions based on indentation depth and indent blocks</h2></summary>
+
+Original plugin: [vim-indentwise](https://github.com/jeetsukumaran/vim-indentwise).
+
+### Summary:
+Adds motions that navigate by the indentation level of lines rather than by their content. You can
+jump to the previous/next line of lesser, greater or equal indentation relative to the current line,
+and jump to the beginning/end of the current indentation block. Blank and whitespace-only lines are
+skipped, so the motions follow the visible structure of the code. The motions take a `[count]`, and
+work in normal, visual and operator-pending modes (e.g. `d]-`, `v[%`). Operator-pending and visual
+moves are line-wise.
+
+### Setup:
+- Add the following command to `~/.ideavimrc`: `Plug 'jeetsukumaran/vim-indentwise'`
+    <details>
+      <summary>Alternative syntax</summary>
+      <code>Plugin 'jeetsukumaran/vim-indentwise'</code>
+      <br/>
+      <code>Plug 'https://github.com/jeetsukumaran/vim-indentwise'</code>
+      <br/>
+      <code>Plug 'vim-indentwise'</code>
+      <br/>
+      <code>set indentwise</code>
+      </details>
+
+### Instructions
+
+https://github.com/jeetsukumaran/vim-indentwise/blob/master/doc/indentwise.txt
+
+| Mapping | Description |
+|---------|-------------|
+| `[-`    | Move to the previous line of **lesser** indent |
+| `]-`    | Move to the next line of **lesser** indent |
+| `[+`    | Move to the previous line of **greater** indent |
+| `]+`    | Move to the next line of **greater** indent |
+| `[=`    | Move to the previous line of **equal** indent |
+| `]=`    | Move to the next line of **equal** indent |
+| `[%`    | Move to the **beginning** of the current indent block |
+| `]%`    | Move to the **end** of the current indent block |
+
+For the block-scope motions, a `[count]` repeats outward through enclosing blocks (e.g. `2[%`). The
+absolute-indent motions (`[_`, `]_`) from the original plugin are not currently supported.
+
+</details>
+
+<details>
+<summary><h2>keylog: Writes every typed key to a file</h2></summary>
+
+### Summary:
+Logs all the keys you type, like Vim's `vim -w {scriptout}` command line argument. Use the log to find out which
+commands you use most often.
+
+### Setup:
+- Add the following command to `~/.ideavimrc`: `set keylog`
+
+### Instructions
+
+The keys are appended to `ideavim.log` in the same directory as your ideavimrc file (e.g. `~/ideavim.log` for
+`~/.ideavimrc`). To use another file:  
+`let g:keylog_file = "~/vimlogs/ideavim.log"`  
+A relative path is relative to the directory of your ideavimrc file.
+
+The keys are written in Vim's key notation, as used by `:map`, e.g. `ciwfoo<Esc>`. A typed `<` is written as `<lt>`.
+Only the keys you type are logged, not the keys produced by mappings, macros or `.`.
+
+The keys are buffered in memory and written to the file every few seconds, and when the extension is disabled or the
+IDE exits.
+
+The log contains everything you type, including passwords typed into the editor. Keep it private.
+
+</details>
+
+<details>
 <summary><h2>matchit.vim: Extends the % key functionality</h2></summary>
 
 By [Martin Yzeiri](https://github.com/myzeiri)
@@ -307,6 +641,8 @@ The matchit plugin extends this in several ways...
       </details>
 
 ### Instructions
+
+Your own pairs can be defined in the `b:match_words` buffer variable, e.g. `let b:match_words = 'begin:end,if:elsif:else:end'`.
 
 https://github.com/adelarsq/vim-matchit/blob/master/doc/matchit.txt
 
@@ -353,24 +689,48 @@ Original plugin: [vim-multiple-cursors](https://github.com/terryma/vim-multiple-
 
 ### Instructions
 
-At the moment, the default key binds for this plugin do not get mapped correctly in IdeaVim (see [VIM-2178](https://youtrack.jetbrains.com/issue/VIM-2178)). To enable the default key binds, add the following to your `.ideavimrc` file...
+The default key bindings match the original terryma/vim-multiple-cursors plugin:
+
+| Action                                            | Shortcut  |
+|---------------------------------------------------|-----------|
+| Start / add next occurrence (whole word)          | `<C-n>`   |
+| Start / add next occurrence (not whole word)      | `g<C-n>`  |
+| Select all occurrences in file (whole word)       | `<A-n>`   |
+| Select all occurrences in file (not whole word)   | `g<A-n>`  |
+| Skip current and select next (during selection)   | `<C-x>`   |
+| Remove current selection (during selection)       | `<C-p>`   |
+
+These map to the following `<Plug>` mappings:
 
 ```
-" Remap multiple-cursors shortcuts to match terryma/vim-multiple-cursors
 nmap <C-n> <Plug>NextWholeOccurrence
 xmap <C-n> <Plug>NextWholeOccurrence
 nmap g<C-n> <Plug>NextOccurrence
 xmap g<C-n> <Plug>NextOccurrence
+nmap <A-n> <Plug>AllWholeOccurrences
+xmap <A-n> <Plug>AllWholeOccurrences
+nmap g<A-n> <Plug>AllOccurrences
+xmap g<A-n> <Plug>AllOccurrences
 xmap <C-x> <Plug>SkipOccurrence
 xmap <C-p> <Plug>RemoveOccurrence
+```
 
-" Note that the default <A-n> and g<A-n> shortcuts don't work on Mac due to dead keys.
+### Custom mappings
+
+To use your own mappings instead of the defaults, set `g:multi_cursor_use_default_mapping` to `0` and bind the
+`<Plug>` mappings yourself. This is also how you restore the old IdeaVim `<A-n>` based mappings:
+
+```
+let g:multi_cursor_use_default_mapping = 0
+
+" Note that the <A-n> and g<A-n> shortcuts don't work on Mac due to dead keys.
 " <A-n> is used to enter accented text e.g. ñ
-" Feel free to pick your own mappings that are not affected. I like to use <leader>
-nmap <leader><C-n> <Plug>AllWholeOccurrences
-xmap <leader><C-n> <Plug>AllWholeOccurrences
-nmap <leader>g<C-n> <Plug>AllOccurrences
-xmap <leader>g<C-n> <Plug>AllOccurrences
+nmap <A-n> <Plug>NextWholeOccurrence
+xmap <A-n> <Plug>NextWholeOccurrence
+nmap g<A-n> <Plug>NextOccurrence
+xmap g<A-n> <Plug>NextOccurrence
+xmap <A-x> <Plug>SkipOccurrence
+xmap <A-p> <Plug>RemoveOccurrence
 ```
 
 </details>
@@ -514,6 +874,63 @@ https://github.com/vim-scripts/ReplaceWithRegister/blob/master/doc/ReplaceWithRe
 </details>
 
 <details>
+<summary><h2>signature: Shows the local marks in the gutter and adds mark commands</h2></summary>
+
+Original plugin: [vim-signature](https://github.com/kshenoy/vim-signature).
+
+### Summary:
+Draws a gutter icon for every local mark `a`-`z` of the file, so you can see where your marks are
+instead of having to remember, and adds commands to place, clear and walk through them. Global marks
+`A`-`Z` are not drawn: with the default `ideamarks` they are IDE bookmarks, which the IDE already
+shows in the gutter itself.
+
+### Setup:
+- Add the following command to `~/.ideavimrc`: `Plug 'kshenoy/vim-signature'`
+    <details>
+      <summary>Alternative syntax</summary>
+      <code>Plug 'https://github.com/kshenoy/vim-signature'</code>
+      <br/>
+      <code>Plug 'vim-signature'</code>
+      <br/>
+      <code>set signature</code>
+      </details>
+
+### Instructions
+
+| Mapping    | Description                                                       |
+|------------|-------------------------------------------------------------------|
+| `m,`       | Place the next available mark                                     |
+| `m-`       | Delete all marks of the current line                              |
+| `m<Space>` | Delete all marks of the current buffer                            |
+| `]'`       | To the next line holding a mark, on its first non-blank           |
+| `['`       | To the previous line holding a mark, on its first non-blank       |
+| `']`       | To the next mark by letter, on the first non-blank of its line    |
+| `'[`       | To the previous mark by letter, on the first non-blank of its line |
+| `` `] ``   | To the next mark by letter, on its exact position                 |
+| `` `[ ``   | To the previous mark by letter, on its exact position             |
+
+All of them take a count, and jumping to a mark is a jump, so `''` and `<C-O>` bring you back.
+
+Note that `']`, `'[`, `` `] `` and `` `[ `` stop being Vim's marks of the last change or yank, as with
+the original plugin. Every key above is a mapping to a `<Plug>(Signature*)` name, so to keep a key,
+map your own in `~/.ideavimrc`, which suppresses the default:
+
+```
+nmap <Leader>m <Plug>(SignaturePlaceNextMark)
+nmap gn        <Plug>(SignatureGotoNextSpotAlpha)
+```
+
+Unlike the original, `` ]` `` and `` [` `` are left alone: IdeaVim implements them itself as real
+motions, with a count and with Vim's behaviour of stopping rather than wrapping at the last mark.
+
+Not implemented yet: `m.`, `dm{mark}`, the markers (`m<BS>`, `]-`, `[-`, `]=`, `[=`), the `m/` and
+`m?` listings, and the `g:Signature*` options.
+
+https://github.com/kshenoy/vim-signature/blob/master/doc/signature.txt
+
+</details>
+
+<details>
 <summary><h2>sneak: Jump to any location specified by two characters</h2></summary>
 
 <img src="images/sneakIcon.svg" width="80" height="80" alt="icon"/>  
@@ -588,6 +1005,52 @@ https://plugins.jetbrains.com/plugin/25899-vim-switch
 </details>
 
 <details>
+<summary><h2>targets: Adds many seeking text objects for pairs, quotes, separators, arguments and tags</h2></summary>
+
+Original plugin: [targets.vim](https://github.com/wellle/targets.vim).
+
+### Summary:
+Targets.vim expands on the built-in text objects (`di(`, `ci"`, …) to give you more targets to
+operate on and the ability to reach them without moving the cursor there first. It adds text objects
+for pairs (`( ) { } [ ] < >`, plus `b` for "any block"), quotes (`' " \``, plus `q` for "any quote"),
+separators (`, . ; : + - = ~ _ * # / | \ & $`), arguments (`a`) and tags (`t`), each available with
+four modifiers and the `n`/`l` next/last qualifiers:
+
+- `i` — inside the object (e.g. `ci(`)
+- `a` — a whole object, including its delimiters (e.g. `da,` deletes one list item and a separator)
+- `I` — inside, excluding surrounding whitespace
+- `A` — around, including adjacent whitespace
+- `in`/`il` (and `an`, `In`, `Al`, …) — operate on the next / last object without moving there, e.g.
+  `cin)` changes inside the next parentheses; a `[count]` skips further (`c2in)`).
+
+When the cursor is not inside an object, the plain commands seek to the nearest one. Quotes are
+paired by counting from the start of the line, so `ci"` skips the gap between two strings and changes
+the real one. Re-issuing a text object in visual mode grows the selection outward (`vi(i(`).
+
+### Setup:
+- Add the following command to `~/.ideavimrc`: `Plug 'wellle/targets.vim'`
+    <details>
+      <summary>Alternative syntax</summary>
+      <code>Plugin 'wellle/targets.vim'</code>
+      <br/>
+      <code>Plug 'https://github.com/wellle/targets.vim'</code>
+      <br/>
+      <code>Plug 'targets.vim'</code>
+      <br/>
+      <code>set targets</code>
+      </details>
+
+### Instructions
+
+https://github.com/wellle/targets.vim/blob/master/README.md
+(see also the [cheat sheet](https://github.com/wellle/targets.vim/blob/master/cheatsheet.md)).
+
+The settings (`g:targets_aiAI`, `g:targets_nl`, `g:targets_seekRanges`, `targets#mappings#extend`, …)
+and forced motions (`dVi-`, `d<C-V>i-`) are not currently supported.
+
+</details>
+
+<details>
 <summary><h2>textobj-entire: Adds mapping for selecting entire contents of file regardless of cursor position</h2></summary>
 
 By [Alexandre Grison](https://github.com/agrison)  
@@ -619,6 +1082,367 @@ https://github.com/kana/vim-textobj-entire/blob/master/doc/textobj-entire.txt
 </details>
 
 <details>
+<summary><h2>textobj-line: Adds text objects for selecting the current line</h2></summary>
+
+Original plugin: [vim-textobj-line](https://github.com/kana/vim-textobj-line).
+
+### Summary:
+vim-textobj-line provides two text objects for the current line:
+
+- `al` selects all characters in the current line, without the end of line character. Same as `0v$h`.
+- `il` selects the same, but without the leading and trailing whitespace. Same as `^vg_`.
+
+For example, with the line `  foo bar baz  ` (where `_` would be spaces), `dil` deletes `foo bar baz`
+and keeps the surrounding whitespace, while `dal` deletes the whole line content and leaves an empty line.
+
+Nothing is selected on an empty line, and `il` also selects nothing on a line that contains whitespace
+only, because there is no text to select in the current line.
+
+### Setup:
+- Add the following command to `~/.ideavimrc`: `Plug 'kana/vim-textobj-line'`
+    <details>
+      <summary>Alternative syntax</summary>
+      <code>Plugin 'kana/vim-textobj-line'</code>
+      <br/>
+      <code>Plug 'https://github.com/kana/vim-textobj-line'</code>
+      <br/>
+      <code>Plug 'vim-textobj-line'</code>
+      <br/>
+      <code>set textobj-line</code>
+      </details>
+
+To skip the default `al` and `il` mappings, set `g:textobj_line_no_default_key_mappings` before the
+plugin is enabled, and map the `<Plug>` mappings yourself:
+
+```
+let g:textobj_line_no_default_key_mappings = 1
+xmap aL <Plug>(textobj-line-al)
+omap aL <Plug>(textobj-line-al)
+xmap iL <Plug>(textobj-line-il)
+omap iL <Plug>(textobj-line-il)
+```
+
+### Instructions
+
+https://github.com/kana/vim-textobj-line/blob/master/doc/textobj-line.txt
+
+</details>
+
+<details>
+<summary><h2>textobj-user: Framework for defining your own text objects</h2></summary>
+
+Original plugin: [vim-textobj-user](https://github.com/kana/vim-textobj-user).
+
+### Summary:
+A framework that lets you declaratively define your own text objects from your `~/.ideavimrc`, without
+writing any plugin code. You describe each object with a Vim pattern and the keys that should select
+it, and `textobj-user` creates the mappings for you. For example, define `ad`/`id` to select an
+ISO date such as `2013-03-16`:
+
+```
+call textobj#user#plugin('datetime', {
+\   'date': {
+\     'pattern': '\<\d\d\d\d-\d\d-\d\d\>',
+\     'select': ['ad', 'id'],
+\   },
+\ })
+```
+
+After this, `dad` deletes the date under (or ahead of) the cursor, `vad` selects it, and so on.
+
+### Setup:
+- Add the following command to `~/.ideavimrc`: `Plug 'kana/vim-textobj-user'`
+    <details>
+      <summary>Alternative syntax</summary>
+      <code>Plugin 'kana/vim-textobj-user'</code>
+      <br/>
+      <code>Plug 'https://github.com/kana/vim-textobj-user'</code>
+      <br/>
+      <code>Plug 'vim-textobj-user'</code>
+      <br/>
+      <code>set textobj-user</code>
+      </details>
+
+### Instructions
+
+https://github.com/kana/vim-textobj-user/blob/master/doc/textobj-user.txt
+
+Define text objects by calling `textobj#user#plugin({name}, {specs})`, where `{specs}` maps an object
+name to a dictionary of properties. The following properties are supported:
+
+| Property | Description |
+|----------|-------------|
+| `pattern` | The Vim regexp for the object. A single string selects the whole match; a `[head, tail]` pair selects the region between the two delimiter patterns. |
+| `select` | Key(s) that select a single-`pattern` object (string or list of strings). |
+| `select-a` | Key(s) that select "a" region of a `[head, tail]` pair — including the delimiters. |
+| `select-i` | Key(s) that select the "inner" region of a `[head, tail]` pair — excluding the delimiters. |
+| `region-type` | Selection type: `'v'` (charwise, the default), `'V'` (linewise) or `"\<C-v>"` (blockwise). |
+| `move-n` / `move-p` | Key(s) that move the cursor to the **beginning** of the next / previous object. |
+| `move-N` / `move-P` | Key(s) that move the cursor to the **end** of the next / previous object. |
+
+Selecting objects works with operators (`d`, `c`, `y`) and in visual mode; the `move-*` mappings also
+work in normal, visual and operator-pending modes.
+
+A `[head, tail]` pair example — `aA` selects `<<…>>` including the markers, `iA` only the text between
+them:
+
+```
+call textobj#user#plugin('braces', {
+\   'angle': {
+\     'pattern': ['<<', '>>'],
+\     'select-a': 'aA',
+\     'select-i': 'iA',
+\   },
+\ })
+```
+
+Each operation also gets a remappable `<Plug>` interface mapping named
+`<Plug>(textobj-{plugin}-{object}-{operation})`, where `{operation}` is the mapping-property suffix
+(`a`, `i`, `n`, `p`, `N`, `P`, or omitted for a plain `select`). For the datetime example above that
+is `<Plug>(textobj-datetime-date)`, so you can choose your own keys:
+
+```
+omap gd <Plug>(textobj-datetime-date)
+xmap gd <Plug>(textobj-datetime-date)
+```
+
+`textobj#user#map({name}, {specs})` binds additional keys to an already-defined plugin's `<Plug>`
+names (reading only the `select` / `select-a` / `select-i` / `move-*` properties):
+
+```
+call textobj#user#map('datetime', {'date': {'select': 'gd'}})
+```
+
+The following features of the original plugin are **not** currently supported:
+- `select-function`, `select-a-function`, `select-i-function` and the `move-*-function` variants
+  (custom objects computed by a Vim function). This also means `[count]` support, which the original
+  plugin only offers through such functions, is unavailable.
+- The `scan` property (configurable search direction).
+- Blockwise `region-type` (`"\<C-v>"`) only takes effect in visual mode; an operator (e.g. `dad`)
+  over a blockwise object acts charwise.
+
+</details>
+
+<details>
+<summary><h2>VimEverywhere: Keyboard-driven IDE navigation outside the editor</h2></summary>
+
+### Summary:
+Brings vim-style keyboard navigation to the rest of the IDE: tool windows, trees, tables, popups and
+dialogs.
+
+- **Hints:** `Ctrl+Shift+\` (`Ctrl+Cmd+\` on macOS) labels UI elements so you can click them from the
+  keyboard.
+- **Tool windows:** `<C-W>h`/`j`/`k`/`l` move between the editor and tool windows.
+- **Trees:** `j`, `k`, `o`, `s`, `i`, `gs`, `gi` and other NERDTree keys work in any tree.
+- **Tables:** `h`, `j`, `k`, `l`, `gg`, `G`, `0`, `$` move the selection in any table.
+- **Popups and dialogs:** `<C-[>` works as `Esc`.
+
+Full key lists are in the sections below.
+
+### Setup:
+- Add the following command to `~/.ideavimrc`: `set VimEverywhere`
+
+Mappings from `~/.ideavimrc` work only in the editor. Outside the editor, use the keys listed below.
+
+### Hints
+
+Press `Ctrl+Shift+\` (`Ctrl+Cmd+\` on macOS) to show hint labels over buttons, tabs, tree nodes, text
+fields and other UI elements. Type the letters next to a target to focus or click it. Press `Esc` to
+close the hints without selecting anything.
+
+To use a different shortcut, change *Toggle Hints* in *Settings | Keymap*, or map it in `~/.ideavimrc`:
+
+```
+nmap <leader>h <Action>(ToggleHintsAction)
+```
+
+### Moving between tool windows
+
+| Direction | Keys                                        |
+|-----------|---------------------------------------------|
+| Left      | `<C-W>h`, `<C-W><C-H>`, `<C-W><Left>`       |
+| Down      | `<C-W>j`, `<C-W><C-J>`, `<C-W><Down>`       |
+| Up        | `<C-W>k`, `<C-W><C-K>`, `<C-W><Up>`         |
+| Right     | `<C-W>l`, `<C-W><C-L>`, `<C-W><Right>`      |
+
+These keys move focus to the neighbouring editor split or tool window in that direction. They work both
+in the editor and inside tool windows, so you can go from the editor to the Project view, to the
+Terminal and back. Press `Esc` after `<C-W>` to cancel.
+
+Use `<C-W>` followed by a direction; `<C-h>`, `<C-j>`, `<C-k>`, `<C-l>` alone don't move between tool
+windows. These keys can't be remapped.
+
+Works with docked tool windows (Project, Terminal, Run, Debug, Git, Find, Problems, AI Chat, tool
+windows from other plugins, ...). Floating and windowed tool windows, and the Python Console, are not
+supported.
+
+### Trees
+
+In any tree (Project, Structure, Find results, Services, ...):
+
+| Keys              | Action                                              |
+|-------------------|-----------------------------------------------------|
+| `j` / `k`         | Next / previous node                                |
+| `gg` / `G`        | First / last node                                   |
+| `<C-D>` / `<C-U>` | Scroll half a page down / up                        |
+| `p` / `P`         | Parent / root node                                  |
+| `K` / `J`         | First / last child                                  |
+| `<C-J>` / `<C-K>` | Next / previous sibling                             |
+| `O` / `x` / `X`   | Expand recursively / close parent / close children  |
+| `/`               | Speed search                                        |
+| `o`               | Open file or expand / collapse node                 |
+| `go`              | Preview file, stay in the tree                      |
+| `t` / `T`         | Open file / open file and stay in the tree          |
+| `s` / `i`         | Open file in a vertical / horizontal split          |
+| `gs` / `gi`       | Same as `s` / `i`, stay in the tree                 |
+
+You can change these keys with the same variables as in [NERDTree](NERDTree-support.md), e.g.
+`let g:NERDTreeMapActivateNode = 'l'`. The NERDTree plugin doesn't have to be enabled. If it is, the
+Project view also gets the rest of its mappings.
+
+### Tables
+
+In any table (database results, Git log, settings tables, ...):
+
+| Keys       | Action                 |
+|------------|------------------------|
+| `h` / `l`  | Previous / next column |
+| `j` / `k`  | Next / previous row    |
+| `gg` / `G` | First / last row       |
+| `0` / `$`  | First / last column    |
+
+To edit a cell, press `Enter` or `F2`.
+
+### Closing popups and dialogs
+
+`<C-[>` works as `Esc` everywhere in the IDE, e.g. to close a popup or a dialog.
+
+### Known limitations
+
+- **Terminal.** By default the terminal sends `<C-W>` to the shell. To use `<C-W>h`/`j`/`k`/`l` there,
+  disable *Settings | Tools | Terminal | Override IDE shortcuts*.
+- **AI Chat** and **web-based views** (e.g. Markdown preview) may not react to `<C-W>` or the hints
+  shortcut. Press `Esc` to return to the editor, or open another tool window with its shortcut
+  (e.g. `Alt+1` / `Cmd+1` for Project).
+
+### Examples
+
+- **Editor → Project view:** open the Project view (`Alt+1` / `Cmd+1`), press `Esc` to go back to the
+  editor, then `<C-W>h` to move back into the Project view.
+- **Project view → Terminal:** press `<C-W>l` to go to the editor, then `<C-W>j` to go down to the
+  Terminal.
+- **Back to the editor:** press `<C-W>` with the direction of the editor, or `Esc`.
+
+If nothing happens, check that `VimEverywhere` is enabled (`:set VimEverywhere?`) and that the tool
+window is docked.
+
+</details>
+
+<details>
+<summary><h2>visual-multi: Multiple cursors and selections</h2></summary>
+
+Original plugin: [vim-visual-multi](https://github.com/mg979/vim-visual-multi).
+
+### Setup:
+- Add the following command to `~/.ideavimrc`: `Plug 'mg979/vim-visual-multi'`
+    <details>
+      <summary>Alternative syntax</summary>
+      <code>Plugin 'mg979/vim-visual-multi'</code>
+      <br/>
+      <code>Plug 'https://github.com/mg979/vim-visual-multi'</code>
+      <br/>
+      <code>Plug 'vim-visual-multi'</code>
+      <br/>
+      <code>set visual-multi</code>
+      </details>
+
+Don't enable it together with `multiple-cursors`, both use `<C-n>`.
+
+### Instructions
+
+The cursors are the native IDE carets. The regions are their Visual selections, so motions and commands work on all
+of them. Press `<Tab>` to switch between regions and cursors.
+
+`\\` is the leader, see `g:VM_leader` below.
+
+Available anytime:
+
+| Action                                                  | Shortcut               |
+|---------------------------------------------------------|------------------------|
+| Select word under cursor / selection, add next one      | `<C-n>`                |
+| Select all occurrences of word / selection              | `\\A`                  |
+| Add cursor down / up                                    | `<C-Down>` / `<C-Up>`  |
+| Cursor on each line of selection                        | `\\c` (Visual)         |
+| Selection becomes regions                               | `\\a` (Visual)         |
+| Reselect regions of the last session                    | `\\gS`                 |
+
+With multiple cursors or regions (a session):
+
+| Action                                                  | Shortcut               |
+|---------------------------------------------------------|------------------------|
+| Find next / previous occurrence                         | `n` / `N`              |
+| Go to next / previous region                            | `]` / `[`              |
+| Skip region / remove region                             | `q` / `Q`              |
+| Switch between regions and cursors                      | `<Tab>`                |
+| Insert before / after regions, at line start / end      | `i` / `a` / `I` / `A`  |
+| Run `:normal` command / repeat it                       | `\\z` / `\\Z`          |
+| Run macro                                               | `\\@`                  |
+| Case conversion (`u` `U` `C` `t` `c` `P` `s` `S` `-` `.` `<Space>`) | `\\C`  |
+| Align cursors                                           | `\\a`                  |
+| Exit                                                    | `<Esc>`                |
+
+`n`, `N`, `]`, `[`, `q`, `Q`, `i`, `a`, `I`, `A` and `<Esc>` work on regions, the others on regions and cursors.
+Outside a session, these keys keep their Vim meaning. Every action has a `<Plug>` mapping named after it, e.g.
+`<Plug>(VM-Find-Under)`.
+
+### Options
+
+```
+" Change mappings, an empty string disables one
+let g:VM_maps = {}
+let g:VM_maps['Find Under'] = '<C-d>'
+let g:VM_maps['Find Subword Under'] = '<C-d>'
+
+let g:VM_leader = '\'                     " Default is '\\'
+let g:VM_default_mappings = 0             " Keep only <C-n>
+let g:VM_case_setting = 'smart'           " 'smart', 'sensitive' or 'ignore', default follows 'ignorecase'
+let g:VM_skip_shorter_lines = 0           " <C-Down> and <C-Up> don't skip shorter lines
+let g:VM_skip_empty_lines = 1             " <C-Down> and <C-Up> skip empty lines
+let g:VM_quit_after_leaving_insert_mode = 1
+```
+
+</details>
+
+<details>
+<summary><h2>visual-star-search: Makes * and # search for the selected text</h2></summary>
+
+Original plugin: [vim-visual-star-search](https://github.com/bronson/vim-visual-star-search).
+
+### Summary:
+In visual mode, `*` and `#` search forwards and backwards for the selected text instead of the word
+under the caret. The selection is searched for literally, without word boundaries, so it also matches
+inside longer words. `n` and `N` repeat the search as usual, and `gv` reselects the text you searched for.
+
+### Setup:
+- Add the following command to `~/.ideavimrc`: `Plug 'bronson/vim-visual-star-search'`
+    <details>
+      <summary>Alternative syntax</summary>
+      <code>Plugin 'bronson/vim-visual-star-search'</code>
+      <br/>
+      <code>Plug 'https://github.com/bronson/vim-visual-star-search'</code>
+      <br/>
+      <code>Plug 'vim-visual-star-search'</code>
+      <br/>
+      <code>set visual-star-search</code>
+      </details>
+
+### Instructions
+
+https://github.com/bronson/vim-visual-star-search#vim-visual-star-search
+
+</details>
+
+<details>
 <summary><h2>Which-Key: Displays available keybindings in popup</h2></summary>
 
 Original plugin: [vim-which-key](https://github.com/liuchengxu/vim-which-key).
@@ -633,5 +1457,86 @@ vim-which-key is vim port of emacs-which-key that displays available keybindings
 ### Instructions
 
 https://github.com/TheBlob42/idea-which-key?tab=readme-ov-file#installation
+
+</details>
+
+<details>
+<summary><h2>yankring: Keeps a history of yanks, deletes and changes to paste from</h2></summary>
+
+Original plugin: [YankRing.vim](https://www.vim.org/scripts/script.php?script_id=1234).
+
+### Summary:
+Vim keeps a history of deletes in `"1`-`"9`, but a yank always overwrites the last one. The yank ring
+adds the missing history - the Emacs kill ring - over yanks, deletes and changes alike. Paste with
+`p`, then press `<C-P>` to swap what you just pasted for the entry before it, and keep pressing to
+walk further back. `<C-N>` walks forward again, and a count like `2<C-P>` skips.
+
+### Setup:
+- Add the following command to `~/.ideavimrc`: `Plug 'vim-scripts/YankRing.vim'`
+    <details>
+      <summary>Alternative syntax</summary>
+      <code>Plugin 'vim-scripts/YankRing.vim'</code>
+      <br/>
+      <code>Plug 'https://github.com/vim-scripts/YankRing.vim'</code>
+      <br/>
+      <code>Plug 'YankRing'</code>
+      <br/>
+      <code>set yankring</code>
+      </details>
+
+### Instructions
+
+Cycling replaces the text of the last paste, so it works while the caret is still on the line you
+pasted onto and you have not edited the buffer since; otherwise it tells you to paste first. `p`,
+`P`, `gp`, `gP`, `]p`, `[p`, `]P` and `[P` are all tracked, in normal and visual mode, counts
+included. One `u` undoes the paste and the cycling together.
+
+`:YRShow` lists the ring newest first, `:YRClear` empties it, and `:YRReplace {offset} {p|P}` is what
+the keys call - a negative offset steps to an older entry, a positive one to a newer one.
+
+`let g:yankring_max_history = 100` caps how many entries are kept.
+
+Note that `<C-P>` and `<C-N>` stop being `k` and `j` in normal mode, as with the original plugin.
+Visual, operator-pending, insert and command-line mode are untouched. To keep the keys, map your own
+in `~/.ideavimrc`, which suppresses the defaults:
+
+```
+nmap <A-p> <Plug>YankRingReplacePrevious
+nmap <A-n> <Plug>YankRingReplaceNext
+```
+
+Not implemented yet: the ring window (`:YRShow` prints the listing instead), the other `:YR*`
+commands, every `g:yankring_*` option but the one above, persistence across restarts, and clipboard
+monitoring. Behaviour with multiple carets is undefined.
+
+https://github.com/vim-scripts/YankRing.vim/blob/master/doc/yankring.txt
+
+</details>
+
+<details>
+<summary><h2>youcompleteme: Cycle through code completion with Tab</h2></summary>
+
+Inspired by [YouCompleteMe](https://github.com/ycm-core/YouCompleteMe) / [SuperTab](https://github.com/ervandew/supertab).
+
+### Summary:
+Makes `<Tab>` cycle through the IDE's code completion popup, SuperTab style. While the completion
+popup (lookup) is open, `<Tab>` selects the next item and `<S-Tab>` the previous one — the same as
+the native `<C-N>`/`<C-P>` insert-mode completion keys. When no popup is open, `<Tab>` falls back to
+its normal behaviour (indentation), so ordinary tabbing is unaffected.
+
+### Setup:
+- Add the following command to `~/.ideavimrc`: `set youcompleteme`
+
+### Instructions
+
+Enabling the plugin removes `<Tab>` and `<S-Tab>` from the [`idealookupkeys`](https://github.com/JetBrains/ideavim/wiki/set-commands)
+option so that IdeaVim — rather than the IDE — handles them while the completion popup is open. If
+you want to keep Vim's default insert-mode completion keys as well, they continue to work alongside
+Tab:
+
+| Mapping | Description |
+|---------|-------------|
+| `<Tab>`   | Select the next item in the completion popup (or insert a tab when none is open) |
+| `<S-Tab>` | Select the previous item in the completion popup |
 
 </details>

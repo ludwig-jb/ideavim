@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2023 The IdeaVim authors
+ * Copyright 2003-2026 The IdeaVim authors
  *
  * Use of this source code is governed by an MIT-style
  * license that can be found in the LICENSE.txt file or at
@@ -9,9 +9,8 @@ package com.maddyhome.idea.vim.group
 
 import com.intellij.codeInsight.completion.CompletionPhase
 import com.intellij.codeInsight.completion.impl.CompletionServiceImpl
-import com.intellij.openapi.components.Service
 import com.intellij.openapi.diagnostic.logger
-import com.intellij.openapi.progress.ProcessCanceledException
+import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.progress.util.PotemkinProgress
 import com.maddyhome.idea.vim.KeyHandler.Companion.getInstance
@@ -19,14 +18,16 @@ import com.maddyhome.idea.vim.api.ExecutionContext
 import com.maddyhome.idea.vim.api.VimEditor
 import com.maddyhome.idea.vim.api.injector
 import com.maddyhome.idea.vim.helper.MessageHelper
+import com.maddyhome.idea.vim.key.KeySource
 import com.maddyhome.idea.vim.macro.VimMacroBase
-import com.maddyhome.idea.vim.newapi.IjVimEditor
+import com.maddyhome.idea.vim.newapi.ij
+import com.maddyhome.idea.vim.newapi.vim
 
 /**
  * Used to handle playback of macros
  */
-@Service
-internal class MacroGroup : VimMacroBase() {
+
+class MacroGroup : VimMacroBase() {
 
   // If it's null, this is the top macro (as in most cases). If it's not null, this macro is executed from top macro
   private var potemkinProgress: PotemkinProgress? = null
@@ -39,7 +40,7 @@ internal class MacroGroup : VimMacroBase() {
     context: ExecutionContext,
     total: Int,
   ) {
-    val project = (editor as IjVimEditor).editor.project
+    val project = editor.ij.project ?: return
     val keyStack = getInstance().keyStack
     if (!keyStack.hasStroke()) {
       logger.debug("done")
@@ -60,6 +61,8 @@ internal class MacroGroup : VimMacroBase() {
     myPotemkinProgress.fraction = 0.0
     try {
       myPotemkinProgress.text2 = if (isInternalMacro) "Executing internal macro" else ""
+      val fileEditorManager = FileEditorManager.getInstance(project)
+      val initialSelectedEditor = fileEditorManager.selectedTextEditor
       val runnable = runnable@{
         try {
           // Handle one keystroke then queue up the next key
@@ -68,17 +71,25 @@ internal class MacroGroup : VimMacroBase() {
               myPotemkinProgress.fraction = (i + 1).toDouble() / total
               while (keyStack.hasStroke()) {
                 val key = keyStack.feedStroke()
-                try {
-                  myPotemkinProgress.checkCanceled()
-                } catch (e: ProcessCanceledException) {
-                  return@runnable
-                }
+                myPotemkinProgress.checkCanceled()
                 val keyHandler = getInstance()
+                val nowSelected = fileEditorManager.selectedTextEditor
+                val currentEditor = if (nowSelected != null && nowSelected != initialSelectedEditor) {
+                  nowSelected.vim
+                } else {
+                  editor
+                }
                 ProgressManager.getInstance().executeNonCancelableSection {
                   // Prevent autocompletion during macros.
                   // See https://github.com/JetBrains/ideavim/pull/772 for details
                   CompletionServiceImpl.setCompletionPhase(CompletionPhase.NoCompletion)
-                  keyHandler.handleKey(editor, key, context, keyHandler.keyHandlerState)
+                  keyHandler.handleKey(
+                    currentEditor,
+                    key,
+                    KeySource.MACRO_PLAYBACK,
+                    context,
+                    keyHandler.keyHandlerState
+                  )
                 }
                 if (injector.messages.isError()) return@runnable
               }

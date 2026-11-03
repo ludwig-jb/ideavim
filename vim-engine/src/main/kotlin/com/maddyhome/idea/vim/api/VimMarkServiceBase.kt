@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2022 The IdeaVim authors
+ * Copyright 2003-2026 The IdeaVim authors
  *
  * Use of this source code is governed by an MIT-style
  * license that can be found in the LICENSE.txt file or at
@@ -28,13 +28,12 @@ import com.maddyhome.idea.vim.common.TextRange
 import com.maddyhome.idea.vim.diagnostic.debug
 import com.maddyhome.idea.vim.diagnostic.vimLogger
 import com.maddyhome.idea.vim.mark.Jump
+import com.maddyhome.idea.vim.mark.JumpSource
 import com.maddyhome.idea.vim.mark.Mark
 import com.maddyhome.idea.vim.mark.VimMark
 import com.maddyhome.idea.vim.state.mode.Mode
 import com.maddyhome.idea.vim.state.mode.SelectionType
 import com.maddyhome.idea.vim.state.mode.SelectionType.CHARACTER_WISE
-import java.lang.Integer.max
-import java.lang.Integer.min
 import java.util.*
 
 abstract class VimMarkServiceBase : VimMarkService {
@@ -140,7 +139,8 @@ abstract class VimMarkServiceBase : VimMarkService {
     } else {
       val insertionPoint = -1 * (result + 1)
       if ((insertionPoint == 0 && count < 0)
-        || (insertionPoint == lowerCaseMarksWithDistinctPositions.size && count > 0)) {
+        || (insertionPoint == lowerCaseMarksWithDistinctPositions.size && count > 0)
+      ) {
         // Moving left if before first mark, or moving right after last mark.
         return null
       }
@@ -160,12 +160,12 @@ abstract class VimMarkServiceBase : VimMarkService {
   private fun List<Mark>.sortedWithAndDistinctBy(comparator: Comparator<Mark>): List<Mark> {
     val sorted = this.sortedWith(Mark.PositionSorter)
     return sorted.fold(ArrayList<Mark>(sorted.size)) { outputList, mark ->
-        val previousMark = outputList.lastOrNull()
-        if (previousMark == null || Mark.PositionSorter.compare(previousMark, mark) != 0) {
-          outputList.add(mark)
-        }
-        outputList
+      val previousMark = outputList.lastOrNull()
+      if (previousMark == null || Mark.PositionSorter.compare(previousMark, mark) != 0) {
+        outputList.add(mark)
       }
+      outputList
+    }
   }
 
   override fun getAllLocalMarks(caret: ImmutableVimCaret): Set<Mark> {
@@ -223,13 +223,21 @@ abstract class VimMarkServiceBase : VimMarkService {
 
     when {
       !markChar.isOperationValidOnMark(VimMarkService.Operation.SET, caret) -> return false
-      markChar.isGlobalMark() -> setGlobalMark(mark)
+      // setGlobalMark notifies on its own, so this branch must not fall through to the notification below
+      markChar.isGlobalMark() -> {
+        setGlobalMark(mark)
+        return true
+      }
+
       markChar == SELECTION_START_MARK -> setSelectionStartMark(caret, mark.offset(editor))
       markChar == SELECTION_END_MARK -> setSelectionEndMark(caret, mark.offset(editor))
       markChar.isLocalMark() -> {
         if (caret.isPrimary) {
           if (mark.key == BEFORE_JUMP_MARK) {
-            val jump = Jump(mark.line, mark.col, mark.filepath, mark.protocol)
+            // The jump is in the same place as one recorded from this editor, e.g. on a side of a diff. Without the same
+            // source the two would be separate jumps
+            val source = injector.jumpService.jumpAtCaret(editor)?.source ?: JumpSource.File
+            val jump = Jump(mark.line, mark.col, mark.filepath, mark.protocol, source)
             injector.jumpService.addJump(editor, jump, true)
           }
           getLocalMarks(mark.filepath)[markChar] = mark
@@ -240,6 +248,7 @@ abstract class VimMarkServiceBase : VimMarkService {
 
       else -> return false
     }
+    injector.listenersNotifier.notifyMarksChanges(markChar)
     return true
   }
 
@@ -247,6 +256,10 @@ abstract class VimMarkServiceBase : VimMarkService {
     val markChar = char.normalizeMarkChar()
     val mark = createMark(caret, markChar, offset) ?: return false
     return setMark(caret, mark)
+  }
+
+  override fun setJumpMark(filepath: String, protocol: String, line: Int, col: Int) {
+    getLocalMarks(filepath)[BEFORE_JUMP_MARK] = VimMark(BEFORE_JUMP_MARK, line, col, filepath, protocol)
   }
 
   protected open fun createGlobalMark(editor: VimEditor, char: Char, offset: Int): Mark? {
@@ -267,6 +280,7 @@ abstract class VimMarkServiceBase : VimMarkService {
   override fun setGlobalMark(mark: Mark): Boolean {
     if (!isValidMark(mark.key, VimMarkService.Operation.SET, true)) return false
     globalMarks[mark.key] = mark
+    injector.listenersNotifier.notifyMarksChanges(mark.key)
     return true
   }
 
@@ -332,6 +346,7 @@ abstract class VimMarkServiceBase : VimMarkService {
     } else {
       caret.markStorage.removeMark(markChar)
     }
+    injector.listenersNotifier.notifyMarksChanges(markChar)
   }
 
   private fun removeSelectionStartMark(caret: ImmutableVimCaret) {
@@ -352,6 +367,7 @@ abstract class VimMarkServiceBase : VimMarkService {
     val markChar = char.normalizeMarkChar()
     if (markChar.isGlobalMark()) {
       globalMarks.remove(markChar)
+      injector.listenersNotifier.notifyMarksChanges(markChar)
     }
   }
 
@@ -369,7 +385,7 @@ abstract class VimMarkServiceBase : VimMarkService {
     for ((_, marks) in caretToMarks) {
       for (mark in marks.filterIsInstance<VimMark>()) {
         logger.debug { "mark = $mark" }
-        if (mark.key == SELECTION_START_MARK || mark.key == SELECTION_END_MARK) continue
+        if (isVisualMark(mark)) continue
         if (insStart.line < mark.line) {
           mark.line = mark.line + lines
         }
@@ -377,25 +393,9 @@ abstract class VimMarkServiceBase : VimMarkService {
       }
     }
 
-    for (caret in editor.carets()) {
-      val selectionInfo = caret.lastSelectionInfo
-
-      val startPosition = selectionInfo.start
-      var newStartPosition = selectionInfo.start
-      if (startPosition != null && insStart.line <= startPosition.line) {
-        newStartPosition = BufferPosition(startPosition.line + lines, startPosition.column, startPosition.leansForward)
-      }
-
-      val endPosition = selectionInfo.end
-      var newEndPosition = endPosition
-      if (endPosition != null && insStart.line <= endPosition.line) {
-        newEndPosition = BufferPosition(endPosition.line + lines, endPosition.column, endPosition.leansForward)
-      }
-
-      if (newStartPosition != startPosition || newEndPosition != endPosition) {
-        caret.lastSelectionInfo = SelectionInfo(newStartPosition, newEndPosition, selectionInfo.selectionType)
-      }
-    }
+    // No notification: this runs while the document change is still being applied, so a listener that draws in the
+    // editor would draw against a half-updated document. Marks are only shifted here, never added or removed, and
+    // anything anchored to the document shifts with it.
   }
 
   override fun updateMarksFromDelete(editor: VimEditor, delStartOffset: Int, delLength: Int) {
@@ -409,6 +409,7 @@ abstract class VimMarkServiceBase : VimMarkService {
 
     for ((caret, marks) in caretToMarks) {
       for (mark in marks.filterIsInstance<VimMark>()) {
+        if (isVisualMark(mark)) continue
         logger.debug { "mark = $mark" }
         if (delEnd.line < mark.line) {
           val lines = delEnd.line - delStart.line
@@ -433,16 +434,111 @@ abstract class VimMarkServiceBase : VimMarkService {
           } else if (delStart.line < mark.line) {
             // shift mark
             mark.line = delStart.line
-            if ((mark.key == SELECTION_START_MARK || mark.key == SELECTION_END_MARK) && caret != null) {
-              setMark(caret, mark)
-            }
             logger.debug { "Shifting mark to line " + delStart.line }
           } // The deletion only covers part of the marked line so shift the mark only if the deletion begins
           // on a line prior to the marked line (which means the deletion must end on the marked line).
         } // If the deleted text begins before the mark and ends after the mark then it may be shifted or deleted
       }
     }
+
+    // See the note in updateMarksFromInsert on why nothing is notified here.
   }
+
+  override fun updateVisualSelectionMarks(
+    editor: VimEditor,
+    changeOffset: Int,
+    oldLength: Int,
+    newFragment: CharSequence,
+  ) {
+    val changeEndOffset = changeOffset + oldLength
+    val changeStart = editor.offsetToBufferPosition(changeOffset)
+    val changeEnd = editor.offsetToBufferPosition(changeEndOffset)
+    val newLineCount = newFragment.count { it == '\n' }
+    val newEndLine = changeStart.line + newLineCount
+    // A change that leaves the line structure alone (e.g. replacing or inserting text within one line) does not move
+    // the Visual marks - Vim only adjusts them when lines are added or removed
+    if (changeEnd.line == newEndLine) return
+    // The column that the text following the change ends up in. A single line replacement pushes it along the same
+    // line, a multi line one moves it to the end of the fragment's last line.
+    val tailStartColumn = if (newLineCount == 0) {
+      changeStart.column + newFragment.length
+    } else {
+      newFragment.length - newFragment.lastIndexOf('\n') - 1
+    }
+    // Whether anything is left of the change's last line. If the change swallows it whole (e.g. deleting entire lines)
+    // nothing is merged in behind the new text, and columns stay where they are
+    val tailSurvives = changeEndOffset < editor.getLineEndOffset(changeEnd.line)
+
+    for (caret in editor.carets()) {
+      val selectionInfo = caret.lastSelectionInfo
+
+      val startPosition = selectionInfo.start
+      val newStartPosition = startPosition?.let {
+        adjustVisualMark(
+          editor, it, changeOffset, changeEndOffset, changeEnd, newEndLine, tailStartColumn, tailSurvives,
+        )
+      }
+
+      val endPosition = selectionInfo.end
+      val newEndPosition = endPosition?.let {
+        adjustVisualMark(
+          editor, it, changeOffset, changeEndOffset, changeEnd, newEndLine, tailStartColumn, tailSurvives,
+        )
+      }
+
+      if (newStartPosition != startPosition || newEndPosition != endPosition) {
+        caret.lastSelectionInfo = SelectionInfo(newStartPosition, newEndPosition, selectionInfo.selectionType)
+      }
+    }
+
+    // See the note in updateMarksFromInsert on why nothing is notified here.
+  }
+
+  private fun adjustVisualMark(
+    editor: VimEditor,
+    position: BufferPosition,
+    changeOffset: Int,
+    changeEndOffset: Int,
+    changeEnd: BufferPosition,
+    newEndLine: Int,
+    tailStartColumn: Int,
+    tailSurvives: Boolean,
+  ): BufferPosition {
+    val offset = editor.bufferPositionToOffset(position)
+    return when {
+      offset < changeOffset -> position
+      // Note that text inserted at the mark (an empty range, i.e. changeOffset == changeEndOffset) pushes the mark
+      // down, while text replacing a range that starts at the mark leaves the mark at the start of the new text
+      offset >= changeEndOffset -> if (position.line == changeEnd.line) {
+        // The mark sits on the change's last line, so it moves with that line's tail onto the line the new text ends
+        // on, keeping its distance from the end of the change
+        BufferPosition(
+          newEndLine,
+          tailStartColumn + (position.column - changeEnd.column),
+          position.leansForward,
+        )
+      } else {
+        BufferPosition(
+          position.line + (newEndLine - changeEnd.line),
+          position.column,
+          position.leansForward,
+        )
+      }
+
+      // Inside the replaced range Vim keeps the mark, but a line that no longer exists collapses onto the line the
+      // new text ends on. The column only moves if the rest of that line survives and is merged in behind the new
+      // text - if the whole line went away, there is nothing to merge into and the column is kept
+      position.line > newEndLine -> BufferPosition(
+        newEndLine,
+        if (position.line == changeEnd.line && tailSurvives) tailStartColumn + position.column else position.column,
+        position.leansForward,
+      )
+
+      else -> position
+    }
+  }
+
+  private fun isVisualMark(mark: VimMark): Boolean = mark.key == SELECTION_START_MARK || mark.key == SELECTION_END_MARK
 
   override fun editorReleased(editor: VimEditor) {
     setMark(editor.primaryCaret(), LAST_BUFFER_POSITION, editor.primaryCaret().offset)
@@ -458,6 +554,7 @@ abstract class VimMarkServiceBase : VimMarkService {
       start = null
       end = null
     }
+    injector.listenersNotifier.notifyMarksChanges(null)
   }
 
   override fun resetAllMarks() {
@@ -468,6 +565,7 @@ abstract class VimMarkServiceBase : VimMarkService {
     }
     filepathToLocalMarks.clear()
     globalMarks.clear()
+    injector.listenersNotifier.notifyMarksChanges(null)
   }
 
   override fun isValidMark(char: Char, operation: VimMarkService.Operation, isCaretPrimary: Boolean): Boolean {
@@ -575,36 +673,26 @@ abstract class VimMarkServiceBase : VimMarkService {
 
   protected fun createSelectionStartMark(caret: ImmutableVimCaret): Mark? {
     val selectionInfo = caret.lastSelectionInfo
-    val startOffset = selectionInfo.start?.let { caret.editor.bufferPositionToOffset(it) }
-    val endOffset = selectionInfo.end?.let { caret.editor.bufferPositionToOffset(it) }
-    var offset = if (startOffset != null && endOffset != null) {
-      min(startOffset, endOffset)
-    } else {
-      startOffset
-    } ?: return null
+    val (startPos, _) = selectionInfo.startEndSorted ?: return null
 
     if (selectionInfo.selectionType == SelectionType.LINE_WISE) {
-      offset = caret.editor.getLineStartForOffset(offset)
+      val offset = caret.editor.getLineStartForOffset(caret.editor.bufferPositionToOffset(startPos))
+      return createMark(caret, SELECTION_START_MARK, offset)
     }
 
-    return createMark(caret, SELECTION_START_MARK, offset)
+    return createMarkFromPosition(caret, SELECTION_START_MARK, startPos)
   }
 
   protected fun getSelectionEndMark(caret: ImmutableVimCaret): Mark? {
     val selectionInfo = caret.lastSelectionInfo
-    val startOffset = selectionInfo.start?.let { caret.editor.bufferPositionToOffset(it) }
-    val endOffset = selectionInfo.end?.let { caret.editor.bufferPositionToOffset(it) }
-    var offset = if (startOffset != null && endOffset != null) {
-      max(startOffset, endOffset)
-    } else {
-      endOffset
-    } ?: return null
+    val (_, endPos) = selectionInfo.startEndSorted ?: return null
 
     if (selectionInfo.selectionType == SelectionType.LINE_WISE) {
-      offset = caret.editor.getLineEndForOffset(offset)
+      val offset = caret.editor.getLineEndForOffset(caret.editor.bufferPositionToOffset(endPos))
+      return createMark(caret, SELECTION_END_MARK, offset)
     }
 
-    return createMark(caret, SELECTION_END_MARK, offset)
+    return createMarkFromPosition(caret, SELECTION_END_MARK, endPos)
   }
 
   private fun setSelectionStartMark(caret: ImmutableVimCaret, offset: Int) {
@@ -623,6 +711,12 @@ abstract class VimMarkServiceBase : VimMarkService {
     val editor = caret.editor
     val virtualFile = editor.getVirtualFile() ?: return null
     val position = editor.offsetToBufferPosition(offset)
+    return VimMark(char, position.line, position.column, virtualFile.path, virtualFile.protocol)
+  }
+
+  private fun createMarkFromPosition(caret: ImmutableVimCaret, char: Char, position: BufferPosition): Mark? {
+    val editor = caret.editor
+    val virtualFile = editor.getVirtualFile() ?: return null
     return VimMark(char, position.line, position.column, virtualFile.path, virtualFile.protocol)
   }
 

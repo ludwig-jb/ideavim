@@ -371,4 +371,40 @@ $c("("")")
     """.trimIndent()
     )
   }
+
+  @Test
+  fun `test percent match ignores apostrophes that are not string delimiters`() {
+    configureByXmlText("<a>$c(it's) y's</a>")
+    typeText("%")
+    assertState("<a>(it's$c) y's</a>")
+  }
+
+  @Test
+  fun `test percent match ignores apostrophes that are not string delimiters backwards`() {
+    configureByXmlText("<a>(it's$c) y's</a>")
+    typeText("%")
+    assertState("<a>$c(it's) y's</a>")
+  }
+
+  @Test
+  fun `test percent match skips single quoted attribute value`() {
+    configureByXmlText("<a>$c(<b c=')'/>)</a>")
+    typeText("%")
+    assertState("<a>(<b c=')'/>$c)</a>")
+  }
+
+  @Test
+  fun `test percent in empty document does not crash`() {
+    configureByText("")
+    typeText("%")
+    assertState("")
+    assertMode(Mode.NORMAL())
+  }
+
+  @Test
+  fun `test percent on empty last line does not jump to previous line`() {
+    configureByText("foo(bar)\n$c")
+    typeText("%")
+    assertState("foo(bar)\n$c")
+  }
 }

@@ -11,6 +11,7 @@ package com.maddyhome.idea.vim.command
 import com.maddyhome.idea.vim.KeyHandler
 import com.maddyhome.idea.vim.KeyProcessResult
 import com.maddyhome.idea.vim.api.ExecutionContext
+import com.maddyhome.idea.vim.api.Options
 import com.maddyhome.idea.vim.api.VimEditor
 import com.maddyhome.idea.vim.api.injector
 import com.maddyhome.idea.vim.api.options
@@ -19,9 +20,12 @@ import com.maddyhome.idea.vim.diagnostic.trace
 import com.maddyhome.idea.vim.diagnostic.vimLogger
 import com.maddyhome.idea.vim.impl.state.toMappingMode
 import com.maddyhome.idea.vim.key.KeyConsumer
-import com.maddyhome.idea.vim.key.KeyMappingLayer
-import com.maddyhome.idea.vim.key.MappingInfoLayer
+import com.maddyhome.idea.vim.key.KeyMapping
+import com.maddyhome.idea.vim.key.KeySource
+import com.maddyhome.idea.vim.key.MappingInfo
+import com.maddyhome.idea.vim.options.OptionAccessScope
 import com.maddyhome.idea.vim.state.KeyHandlerState
+import com.maddyhome.idea.vim.state.mode.Mode
 import javax.swing.KeyStroke
 
 /**
@@ -51,15 +55,15 @@ internal object MappingProcessor : KeyConsumer {
   override fun isApplicable(
     key: KeyStroke,
     editor: VimEditor,
-    allowKeyMappings: Boolean,
+    keySource: KeySource,
     keyProcessResultBuilder: KeyProcessResult.KeyProcessResultBuilder,
   ): Boolean {
-    if (!allowKeyMappings) {
-      log.trace("Mapping not allowed for key")
+    if (!keySource.allowsKeyMapping) {
+      log.trace { "Mapping not allowed for key: $key (source: $keySource)" }
       return false
     }
     if (!isMappingApplicable(keyProcessResultBuilder.state.commandBuilder, key, keyProcessResultBuilder.state)) {
-      log.trace { "Mapping not applicable for key: $key" }
+      log.trace { "Mapping not applicable for key: $key (source: $keySource)" }
       return false
     }
     return true
@@ -68,7 +72,7 @@ internal object MappingProcessor : KeyConsumer {
   override fun consumeKey(
     key: KeyStroke,
     editor: VimEditor,
-    allowKeyMappings: Boolean,
+    keySource: KeySource,
     keyProcessResultBuilder: KeyProcessResult.KeyProcessResultBuilder,
   ): Boolean {
     log.trace { "Entered MappingProcessor with key $key" }
@@ -82,26 +86,42 @@ internal object MappingProcessor : KeyConsumer {
 
     val mappingMode = editor.mode.toMappingMode()
     log.trace { "Get keys for mapping mode. mode = $mappingMode" }
-    val mapping = injector.keyGroup.getKeyMappingLayer(mappingMode)
+    val mapping = getMapping(editor, mappingMode)
 
     // Try to handle the key as part of an unfinished mapping sequence, completing a sequence or a key that terminates
     // an in-progress sequence
     val mappingProcessed =
-      tryHandleUnfinishedMappingSequence(editor, keyProcessResultBuilder, mapping)
-        || tryHandleCompletedMappingSequence(keyProcessResultBuilder, mapping)
-        || tryHandleAbandonedMappingSequence(keyProcessResultBuilder)
+      tryHandleUnfinishedMappingSequence(editor, keyProcessResultBuilder, mapping) || tryHandleCompletedMappingSequence(
+        keyProcessResultBuilder,
+        mapping
+      ) || tryHandleAbandonedMappingSequence(keyProcessResultBuilder)
     log.debug { "Finish mapping processing. Return $mappingProcessed" }
 
     return mappingProcessed
   }
 
+  private fun getMapping(
+    editor: VimEditor,
+    mappingMode: MappingMode,
+  ): KeyMapping =
+    if (isLangMapApplicable(editor)) injector.keyGroup.getKeyMapping(MappingMode.LANG) else injector.keyGroup.getKeyMapping(
+      mappingMode
+    )
+
+  private fun isLangMapApplicable(editor: VimEditor): Boolean =
+    (editor.mode == Mode.INSERT || editor.mode == Mode.REPLACE) && isIminsertEnabled(editor)
+
+  private fun isIminsertEnabled(editor: VimEditor): Boolean = injector.optionGroup.getOptionValue(
+    Options.iminsert, OptionAccessScope.LOCAL(editor)
+  ).value == 1
+
   private fun isMappingApplicable(commandBuilder: CommandBuilder, key: KeyStroke, keyState: KeyHandlerState): Boolean {
     // Mapping is not applied to character/digraph arguments (e.g. `f{char}` or register names).
     // It's also not applied partway through an existing command - e.g. `<C-W>s` does not apply any maps for `s`.
-    return !commandBuilder.isAwaitingCharOrDigraphArgument()
-      && !commandBuilder.isBuildingMultiKeyCommand()
-      && !commandBuilder.isRegisterPending
-      && !isTypingZeroInCommandCount(key, keyState)
+    return !commandBuilder.isAwaitingCharacterBasedArgument() && !commandBuilder.isBuildingMultiKeyCommand() && !commandBuilder.isRegisterPending && !isTypingZeroInCommandCount(
+      key,
+      keyState
+    )
   }
 
   private fun isTypingZeroInCommandCount(key: KeyStroke, keyState: KeyHandlerState): Boolean {
@@ -123,7 +143,7 @@ internal object MappingProcessor : KeyConsumer {
   private fun tryHandleUnfinishedMappingSequence(
     editor: VimEditor,
     keyProcessResultBuilder: KeyProcessResult.KeyProcessResultBuilder,
-    mapping: KeyMappingLayer,
+    mapping: KeyMapping,
   ): Boolean {
     log.trace("Try processing unfinished mappings...")
 
@@ -140,17 +160,16 @@ internal object MappingProcessor : KeyConsumer {
     }
 
     // If the 'timeout' option is set, start a timer that will abandon the sequence and replay the unhandled keys
-    // unmapped. Every time a key is pressed and handled, the timer is stopped. E.g. if there is a mapping for "dweri",
-    // and the user has typed "dw" wait for the timeout, and then replay "d" and "w" without any mapping (which will of
-    // course delete a word)
+    // unmapped. Every time a key is pressed and handled, the timer is stopped. E.g., if there is a mapping for "dweri",
+    // and the user has typed "dw" wait for the timeout, and then replay "d" and "w" without any mapping (which will, of
+    // course, delete a word)
     if (injector.options(editor).timeout) {
       log.trace("'timeout' is set. Scheduling the mapping timer")
 
-      keyProcessResultBuilder.addExecutionStep { ks, e, c ->
+      keyProcessResultBuilder.addExecutionStep { ks, _, c ->
         ks.mappingState.startMappingTimer { onUnfinishedMappingSequenceTimeout(editor, ks, c) }
       }
-    }
-    else {
+    } else {
       log.trace("'timeout' is not set. Waiting for the next keystroke")
     }
     return true
@@ -175,7 +194,9 @@ internal object MappingProcessor : KeyConsumer {
         return@invokeLater
       }
 
-      replayUnhandledKeys(unhandledKeys, editor, context, keyState)
+      KeyHandler.getInstance().withoutRecording {
+        replayUnhandledKeys(unhandledKeys, editor, context, keyState)
+      }
     }
   }
 
@@ -186,12 +207,12 @@ internal object MappingProcessor : KeyConsumer {
    */
   private fun tryHandleCompletedMappingSequence(
     keyProcessResultBuilder: KeyProcessResult.KeyProcessResultBuilder,
-    mapping: KeyMappingLayer,
+    mapping: KeyMapping,
   ): Boolean {
     log.trace("Try processing complete mapping sequence...")
 
     val mappingState = keyProcessResultBuilder.state.mappingState
-    val mappingInfo = mapping.getLayer(mappingState.keys as? List<KeyStroke> ?: mappingState.keys.toList())
+    val mappingInfo = mapping[mappingState.keys as? List<KeyStroke> ?: mappingState.keys.toList()]
     if (mappingInfo == null) {
       log.trace("Cannot find any mapping info for the sequence. Mapping processor will not handle further.")
       return false
@@ -210,7 +231,7 @@ internal object MappingProcessor : KeyConsumer {
   }
 
   private fun executeMappingInfo(
-    mappingInfo: MappingInfoLayer,
+    mappingInfo: MappingInfo,
     editor: VimEditor,
     context: ExecutionContext,
     keyState: KeyHandlerState,
@@ -228,8 +249,7 @@ internal object MappingProcessor : KeyConsumer {
         """
                   Caught exception during ${mappingInfo.getPresentableString()}
                   ${e.message}
-          """.trimIndent(),
-        e
+          """.trimIndent(), e
       )
     } catch (e: NotImplementedError) {
       injector.messages.showErrorMessage(editor, e.message)
@@ -237,8 +257,7 @@ internal object MappingProcessor : KeyConsumer {
         """
                   Caught exception during ${mappingInfo.getPresentableString()}
                   ${e.message}
-          """.trimIndent(),
-        e
+          """.trimIndent(), e
       )
     } finally {
       mappingState.stopMapExecution()
@@ -266,7 +285,10 @@ internal object MappingProcessor : KeyConsumer {
 
     keyProcessResultBuilder.addExecutionStep { ks, e, c ->
       log.trace("Replaying abandoned keys")
-      replayUnhandledKeys(unhandledKeyStrokes, e, c, ks)
+      val keyHandler = KeyHandler.getInstance()
+      keyHandler.withoutRecording {
+        replayUnhandledKeys(unhandledKeyStrokes, e, c, ks)
+      }
       log.trace("Abandoned keys processed. Returning true.")
     }
     return true
@@ -282,7 +304,7 @@ internal object MappingProcessor : KeyConsumer {
    * remaining keys, with mapping enabled, as though they were typed.
    *
    * If there are no subsequences matching a mapping, replay all the keys. The first key should not allow mappings, or
-   * we'll try to map the same prefix again, and fail again. Subsequent keys should allow mapping, also as though they
+   * we'll try to map the same prefix again and fail again. Subsequent keys should allow mapping, also as though they
    * were typed.
    */
   private fun replayUnhandledKeys(
@@ -292,24 +314,24 @@ internal object MappingProcessor : KeyConsumer {
     keyState: KeyHandlerState,
   ) {
     log.trace("Replaying unhandled keys. Looking for mapping in subsequence")
-    val mappingLayer = injector.keyGroup.getKeyMappingLayer(editor.mode.toMappingMode())
+    val keyMapping = injector.keyGroup.getKeyMapping(editor.mode.toMappingMode())
 
-    val subsequence = unhandledKeys.toMutableList()
-    while (subsequence.isNotEmpty()) {
-      val mappingInfo = mappingLayer.getLayer(subsequence)
+    val keys = unhandledKeys.toMutableList()
+    while (keys.isNotEmpty()) {
+      val mappingInfo = keyMapping[keys]
       if (mappingInfo != null) {
         log.trace("Found mapping. Executing it and replaying the rest of the keys")
 
         executeMappingInfo(mappingInfo, editor, context, keyState)
 
-        // Replay the rest of the keys, with mapping applied, as though they were typed
-        unhandledKeys.subList(subsequence.size, unhandledKeys.size).forEach {
-          KeyHandler.getInstance().handleKey(editor, it, context, allowKeyMappings = true, keyState)
+        // If we have any keys left unprocessed, replay them, with mappings, as though they were typed
+        unhandledKeys.subList(keys.size, unhandledKeys.size).forEach {
+          KeyHandler.getInstance().handleKey(editor, it, KeySource.MAPPING_REPLAY, context, keyState)
         }
         return
       }
 
-      subsequence.removeLast()
+      keys.removeLast()
     }
 
     log.trace("Replaying unhandled keys. There is no mapping in subsequence. Replaying all keys")
@@ -319,7 +341,8 @@ internal object MappingProcessor : KeyConsumer {
     // though they were typed.
     val keyHandler = KeyHandler.getInstance()
     unhandledKeys.forEachIndexed { index, it ->
-      keyHandler.handleKey(editor, it, context, allowKeyMappings = index != 0, keyState)
+      val keySource = if (index == 0) KeySource.MAPPING_PREFIX_REPLAY else KeySource.MAPPING_REPLAY
+      keyHandler.handleKey(editor, it, keySource, context, keyState)
     }
   }
 }

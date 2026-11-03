@@ -115,6 +115,12 @@ class MotionQuoteActionTest : VimTestCase() {
   }
 
   @Test
+  fun `test outer quote with trailing tab includes the tab`() {
+    // Vim's in_quote uses vim_iswhite, so a tab counts as trailing white space and the leading space is kept
+    doTest("da\"", "foo \"b${c}ar\"\tbaz", "foo ${c}baz")
+  }
+
+  @Test
   fun `test outer quote without trailing whitespace includes leading whitespace`() {
     // No trailing whitespace (quote at end), so leading whitespace should be included
     doTest(
@@ -352,5 +358,25 @@ class MotionQuoteActionTest : VimTestCase() {
       "outer \"${s}first 'second' thir${c}d${se}\" end",
       Mode.VISUAL(SelectionType.CHARACTER_WISE),
     )
+  }
+
+  @Test
+  fun `test inner quote with count of 2 includes the quotes`() {
+    doTest("d2i\"", "foo \"b${c}ar\" baz", "foo ${c} baz")
+  }
+
+  @Test
+  fun `test inner quote with count of 2 does not include white space`() {
+    doTest("d2i'", "foo 'b${c}ar'   baz", "foo ${c}   baz")
+  }
+
+  @Test
+  fun `test inner quote with a count greater than 2 includes the quotes`() {
+    doTest("d3i\"", "foo \"b${c}ar\" baz", "foo ${c} baz")
+  }
+
+  @Test
+  fun `test inner quote without a count does not include the quotes`() {
+    doTest("di\"", "foo \"b${c}ar\" baz", "foo \"${c}\" baz")
   }
 }

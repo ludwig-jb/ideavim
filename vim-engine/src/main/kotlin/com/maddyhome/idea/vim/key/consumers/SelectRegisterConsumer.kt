@@ -10,10 +10,12 @@ package com.maddyhome.idea.vim.key.consumers
 
 import com.maddyhome.idea.vim.KeyHandler
 import com.maddyhome.idea.vim.KeyProcessResult
+import com.maddyhome.idea.vim.action.change.VimRedoBuffer
 import com.maddyhome.idea.vim.api.VimEditor
 import com.maddyhome.idea.vim.api.injector
 import com.maddyhome.idea.vim.diagnostic.vimLogger
 import com.maddyhome.idea.vim.key.KeyConsumer
+import com.maddyhome.idea.vim.key.KeySource
 import java.awt.event.KeyEvent
 import javax.swing.KeyStroke
 
@@ -31,7 +33,7 @@ internal class SelectRegisterConsumer : KeyConsumer {
   override fun isApplicable(
     key: KeyStroke,
     editor: VimEditor,
-    allowKeyMappings: Boolean,
+    keySource: KeySource,
     keyProcessResultBuilder: KeyProcessResult.KeyProcessResultBuilder,
   ): Boolean {
     return keyProcessResultBuilder.state.commandBuilder.isRegisterPending
@@ -40,13 +42,14 @@ internal class SelectRegisterConsumer : KeyConsumer {
   override fun consumeKey(
     key: KeyStroke,
     editor: VimEditor,
-    allowKeyMappings: Boolean,
+    keySource: KeySource,
     keyProcessResultBuilder: KeyProcessResult.KeyProcessResultBuilder,
   ): Boolean {
     logger.trace("Entered SelectRegisterConsumer")
 
     val commandBuilder = keyProcessResultBuilder.state.commandBuilder
     commandBuilder.addTypedKeyStroke(key)
+    VimRedoBuffer.markRegisterKey(key)
 
     val chKey = if (key.keyChar == KeyEvent.CHAR_UNDEFINED) 0.toChar() else key.keyChar
     handleSelectRegister(chKey, keyProcessResultBuilder)

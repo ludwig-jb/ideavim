@@ -22,12 +22,14 @@ import com.maddyhome.idea.vim.handler.Motion
 import com.maddyhome.idea.vim.handler.MotionActionHandler
 import java.util.*
 
-@CommandOrMotion(keys = ["`"], modes = [Mode.NORMAL])
+@CommandOrMotion(
+  keys = ["`"],
+  modes = [Mode.NORMAL],
+  description = "Jump to the exact position (line and column) of mark {mark}."
+)
 class MotionGotoMarkAction : MotionActionHandler.ForEachCaret() {
   override val motionType: MotionType = MotionType.EXCLUSIVE
-
-  override val argumentType: Argument.Type = Argument.Type.CHARACTER
-
+  override val argumentType: Argument.Type = Argument.Type.MARK
   override val flags: EnumSet<CommandFlags> = EnumSet.of(CommandFlags.FLAG_SAVE_JUMP)
 
   override fun getOffset(
@@ -44,11 +46,14 @@ class MotionGotoMarkAction : MotionActionHandler.ForEachCaret() {
   }
 }
 
-@CommandOrMotion(keys = ["g`"], modes = [Mode.NORMAL])
+@CommandOrMotion(
+  keys = ["g`"],
+  modes = [Mode.NORMAL],
+  description = "Jump to the exact position (line and column) of mark {mark} without changing the jump list."
+)
 class MotionGotoMarkNoSaveJumpAction : MotionActionHandler.ForEachCaret() {
   override val motionType: MotionType = MotionType.EXCLUSIVE
-
-  override val argumentType: Argument.Type = Argument.Type.CHARACTER
+  override val argumentType: Argument.Type = Argument.Type.MARK
 
   override fun getOffset(
     editor: VimEditor,
@@ -64,11 +69,19 @@ class MotionGotoMarkNoSaveJumpAction : MotionActionHandler.ForEachCaret() {
   }
 }
 
-@CommandOrMotion(keys = ["]`"], modes = [Mode.NORMAL, Mode.VISUAL, Mode.OP_PENDING])
+@CommandOrMotion(
+  keys = ["]`"],
+  modes = [Mode.NORMAL, Mode.VISUAL, Mode.OP_PENDING],
+  description = "Move to the [count]th next lowercase mark."
+)
 class MotionGotoNextMarkAction: MotionGotoRelativeMarkAction(countMultiplier = 1) {
 }
 
-@CommandOrMotion(keys = ["[`"], modes = [Mode.NORMAL, Mode.VISUAL, Mode.OP_PENDING])
+@CommandOrMotion(
+  keys = ["[`"],
+  modes = [Mode.NORMAL, Mode.VISUAL, Mode.OP_PENDING],
+  description = "Move to the [count]th previous lowercase mark."
+)
 class MotionGotoPreviousMarkAction: MotionGotoRelativeMarkAction(countMultiplier = -1) {
 }
 

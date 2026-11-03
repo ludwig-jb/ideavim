@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2023 The IdeaVim authors
+ * Copyright 2003-2026 The IdeaVim authors
  *
  * Use of this source code is governed by an MIT-style
  * license that can be found in the LICENSE.txt file or at
@@ -17,9 +17,11 @@ import com.intellij.codeInsight.template.Template
 import com.intellij.codeInsight.template.TemplateEditingAdapter
 import com.intellij.codeInsight.template.TemplateManagerListener
 import com.intellij.codeInsight.template.impl.TemplateImpl
+import com.intellij.codeInsight.template.impl.TemplateManagerImpl
 import com.intellij.codeInsight.template.impl.TemplateState
 import com.intellij.find.FindModelListener
 import com.intellij.ide.actions.ApplyIntentionAction
+import com.intellij.openapi.Disposable
 import com.intellij.openapi.actionSystem.ActionManager
 import com.intellij.openapi.actionSystem.ActionUpdateThread
 import com.intellij.openapi.actionSystem.AnAction
@@ -27,27 +29,41 @@ import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.actionSystem.AnActionResult
 import com.intellij.openapi.actionSystem.AnActionWrapper
 import com.intellij.openapi.actionSystem.CommonDataKeys
+import com.intellij.openapi.actionSystem.IdeActions
 import com.intellij.openapi.actionSystem.ex.AnActionListener
 import com.intellij.openapi.actionSystem.impl.ProxyShortcutSet
+import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.editor.Editor
 import com.intellij.openapi.editor.RangeMarker
 import com.intellij.openapi.editor.actions.EnterAction
+import com.intellij.openapi.editor.event.CaretEvent
+import com.intellij.openapi.editor.event.CaretListener
+import com.intellij.openapi.editor.ex.util.EditorUtil
+import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.keymap.KeymapManager
 import com.intellij.openapi.project.DumbAwareToggleAction
+import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.util.TextRange
 import com.maddyhome.idea.vim.KeyHandler
 import com.maddyhome.idea.vim.VimPlugin
 import com.maddyhome.idea.vim.action.VimShortcutKeyAction
+import com.maddyhome.idea.vim.action.change.VimRedoBuffer
 import com.maddyhome.idea.vim.api.VimEditor
+import com.maddyhome.idea.vim.api.VimKeyGroupBase
 import com.maddyhome.idea.vim.api.injector
+import com.maddyhome.idea.vim.api.normalizeOffset
 import com.maddyhome.idea.vim.api.options
 import com.maddyhome.idea.vim.group.NotificationService
-import com.maddyhome.idea.vim.group.RegisterGroup
 import com.maddyhome.idea.vim.group.visual.IdeaSelectionControl
 import com.maddyhome.idea.vim.helper.exitSelectMode
 import com.maddyhome.idea.vim.helper.exitVisualMode
 import com.maddyhome.idea.vim.helper.hasVisualSelection
+import com.maddyhome.idea.vim.helper.isEndAllowed
 import com.maddyhome.idea.vim.helper.isIdeaVimDisabledHere
+import com.maddyhome.idea.vim.helper.isPossiblyDelegatingToBackend
+import com.maddyhome.idea.vim.helper.vimInitialised
+import com.maddyhome.idea.vim.ide.isClionNova
+import com.maddyhome.idea.vim.ide.isRider
 import com.maddyhome.idea.vim.newapi.globalIjOptions
 import com.maddyhome.idea.vim.newapi.initInjector
 import com.maddyhome.idea.vim.newapi.vim
@@ -57,6 +73,7 @@ import com.maddyhome.idea.vim.vimscript.model.options.helpers.IdeaRefactorModeHe
 import com.maddyhome.idea.vim.vimscript.model.options.helpers.isIdeaRefactorModeKeep
 import com.maddyhome.idea.vim.vimscript.model.options.helpers.isIdeaRefactorModeSelect
 import org.jetbrains.annotations.NonNls
+import java.awt.AWTEvent
 import java.awt.event.KeyEvent
 import javax.swing.KeyStroke
 
@@ -64,6 +81,14 @@ import javax.swing.KeyStroke
  * @author Alex Plate
  */
 internal object IdeaSpecifics {
+
+  /**
+   * The Vim mode captured in [VimActionListener.beforeActionPerformed], before the action runs and (potentially) churns
+   * the editor selection. [VimTemplateManagerListener] restores it in `currentVariableChanged` while navigating a
+   * "keep" template, so the mode survives IntelliJ's selecting/deselecting. Cleared once the action is done.
+   */
+  private var modeBeforeAction: Mode? = null
+
   class VimActionListener : AnActionListener {
     @NonNls
     private val surrounderItems = listOf("if", "if / else", "for")
@@ -71,6 +96,8 @@ internal object IdeaSpecifics {
       "com.intellij.codeInsight.generation.surroundWith.SurroundWithHandler\$InvokeSurrounderAction"
     private var editor: Editor? = null
     private var completionData: CompletionData? = null
+    private var editorStateBeforeAction: EditorState? = null
+    private val caretNormalizer = CaretNormalizer()
 
     override fun beforeActionPerformed(action: AnAction, event: AnActionEvent) {
       if (VimPlugin.isNotEnabled()) return
@@ -79,14 +106,27 @@ internal object IdeaSpecifics {
       if (hostEditor != null) {
         editor = hostEditor
       }
+      editorStateBeforeAction = editor?.let { EditorState(it) }
 
-      val isVimAction = (action as? AnActionWrapper)?.delegate is VimShortcutKeyAction
-      if (!isVimAction && injector.vimState.mode == Mode.INSERT && action !is EnterAction) {
+      // Remember the mode before the action runs, while it is still correct. For 'idearefactormode' = "keep" the mode
+      // must be preserved across the template's selection churn; VimTemplateManagerListener restores this value in
+      // currentVariableChanged (which runs synchronously during the action, so the mode is not yet corrupted here).
+      if (hostEditor != null && hostEditor.vimInitialised && hostEditor.vim.isIdeaRefactorModeKeep) {
+        modeBeforeAction = hostEditor.vim.mode
+      }
+
+      val actionId = ActionManager.getInstance().getId(action)
+      if (isGotoAction(actionId)) {
+        saveJumpBeforeGoto(event, editor)
+      }
+
+      val isVimAction = isVimAction(action)
+      if (!isVimAction && injector.vimState.mode is Mode.INSERT && action !is EnterAction) {
         val undoService = injector.undo as VimTimestampBasedUndoService
         val nanoTime = System.nanoTime()
         editor?.vim?.nativeCarets()?.forEach { undoService.endInsertSequence(it, it.offset, nanoTime) }
       }
-      if (!isVimAction && injector.globalIjOptions().trackactionids) {
+      if (!isVimAction && injector.globalIjOptions().ideatrackactionids) {
         if (action !is NotificationService.ActionIdNotifier.CopyActionId && action !is NotificationService.ActionIdNotifier.StopTracking) {
           val id: String? =
             ActionManager.getInstance().getId(action) ?: (action.shortcutSet as? ProxyShortcutSet)?.actionId
@@ -103,18 +143,18 @@ internal object IdeaSpecifics {
           } else {
             emptyList()
           }
-         val intentionName = if (action is ApplyIntentionAction) {
+          val intentionName = if (action is ApplyIntentionAction) {
             action.name
-          }
-          else null
+          } else null
 
           // We can still get empty ID and empty candidates. Notably, for the tool window toggle buttons on the new UI.
           // We could filter out action events with `place == ActionPlaces.TOOLWINDOW_TOOLBAR_BAR`
-          VimPlugin.getNotifications(event.dataContext.getData(CommonDataKeys.PROJECT)).notifyActionId(id, candidates, intentionName)
+          VimPlugin.getNotifications(event.dataContext.getData(CommonDataKeys.PROJECT))
+            .notifyActionId(id, candidates, intentionName)
         }
       }
 
-      if (hostEditor != null && action is ChooseItemAction && injector.registerGroup.isRecording) {
+      if (hostEditor != null && action is ChooseItemAction) {
         val lookup = LookupManager.getActiveLookup(hostEditor)
         val lookupItem = lookup?.currentItem
         if (lookup is LookupImpl && lookupItem != null) {
@@ -124,13 +164,9 @@ internal object IdeaSpecifics {
           val documentLength = hostEditor.document.textLength
           val charsToRemove = caretOffset - completionStartOffset
 
-          val register = VimPlugin.getRegister()
-
           if (charsToRemove > 0) {
             val backSpaceKey = KeyStroke.getKeyStroke(KeyEvent.VK_BACK_SPACE, 0)
-            repeat(charsToRemove) {
-              register.recordKeyStroke(backSpaceKey)
-            }
+            recordSynthesizedKeys(List(charsToRemove) { backSpaceKey })
           }
 
           val completionStartMarker = hostEditor.document.createRangeMarker(
@@ -151,11 +187,15 @@ internal object IdeaSpecifics {
     }
 
     override fun afterActionPerformed(action: AnAction, event: AnActionEvent, result: AnActionResult) {
+      // Release the selection listener suppression acquired in beforeActionPerformed (if any). Done before any early
+      // return so the lock can never leak - a leaked lock would silently disable selection handling everywhere.
+      modeBeforeAction = null
+
       if (VimPlugin.isNotEnabled()) return
 
       val editor = editor
-      if (editor != null && action is ChooseItemAction && injector.registerGroup.isRecording) {
-        completionData?.recordCompletion(editor, VimPlugin.getRegister())
+      if (editor != null && action is ChooseItemAction) {
+        completionData?.recordCompletion(editor)
       }
 
       //region Enter insert mode after surround with if
@@ -173,41 +213,140 @@ internal object IdeaSpecifics {
       }
       //endregion
 
+      // Do not normalize carets after native undo/redo. The platform undo (UndoRedo.execute) treats caret movement as a
+      // separate undo step by default ('ide.undo.transparent.caret.movement' = false): before reverting the document it
+      // checks whether the caret matches the state recorded with the edit, and if not, it only restores that caret and
+      // consumes the keypress. Moving the caret here, in afterActionPerformed of the undo action itself, keeps the caret
+      // perpetually mismatched, so every subsequent Ctrl+Z is spent restoring the caret and the text is never reverted
+      // (VIM-4287). Vim's own `u` is unaffected because it calls UndoManager directly with that registry flag forced on.
+      if (!isVimAction(action) && !isUndoRedoAction(ActionManager.getInstance().getId(action))) {
+        if (editor != null && isAwaitingBackend(action, editor)) {
+          caretNormalizer.normalizeAfterNextCaretMove(editor)
+        } else {
+          caretNormalizer.normalize(editor)
+        }
+      }
+
       this.editor = null
 
       this.completionData?.dispose()
       this.completionData = null
     }
 
+    private fun isVimAction(action: AnAction): Boolean = (action as? AnActionWrapper)?.delegate is VimShortcutKeyAction
+
+    /**
+     * Rider and remote development frontends (JetBrains Client) replace some actions (e.g. `CommentByLineComment` for
+     * C#) with ones that just send a request to the backend, whose changes arrive later. Such an action might still run
+     * on the frontend instead, in which case it has already changed the editor.
+     */
+    private fun isAwaitingBackend(action: AnAction, editor: Editor): Boolean =
+      action.isPossiblyDelegatingToBackend() && editorStateBeforeAction?.isUnchangedIn(editor) == true
+
+    private fun isGotoAction(actionId: String?): Boolean =
+      actionId == IdeActions.ACTION_GOTO_BACK || actionId == IdeActions.ACTION_GOTO_FORWARD
+
+    private fun isUndoRedoAction(actionId: String?): Boolean =
+      actionId == IdeActions.ACTION_UNDO || actionId == IdeActions.ACTION_REDO
+
+    private fun saveJumpBeforeGoto(event: AnActionEvent, editor: Editor?) {
+      val project = event.dataContext.getData(CommonDataKeys.PROJECT)
+      val currentEditor = editor
+        ?: event.dataContext.getData(CommonDataKeys.EDITOR)
+        ?: project?.let { VimListenerManager.VimLastSelectedEditorTracker.getLastSelectedEditor(it) }
+        ?: project?.let { FileEditorManager.getInstance(it).selectedTextEditor }
+      if (currentEditor != null && !currentEditor.isIdeaVimDisabledHere) {
+        injector.jumpService.saveJumpLocation(currentEditor.vim)
+      }
+    }
+
+    private class EditorState(editor: Editor) {
+      private val documentStamp = editor.document.modificationStamp
+      private val caretOffset = editor.caretModel.offset
+
+      fun isUnchangedIn(editor: Editor): Boolean =
+        editor.document.modificationStamp == documentStamp && editor.caretModel.offset == caretOffset
+    }
+
+    /**
+     * IDE actions might leave the caret on the line break, which is not a valid position in Normal mode (VIM-4245).
+     */
+    private class CaretNormalizer {
+      private var pendingNormalization: Disposable? = null
+
+      fun normalize(editor: Editor?) {
+        if (editor == null || !editor.vimInitialised) return
+        val vimEditor = editor.vim
+        if (vimEditor.isEndAllowed) return
+
+        for (caret in editor.caretModel.allCarets) {
+          val normalized = vimEditor.normalizeOffset(caret.offset, false)
+          if (normalized != caret.offset) {
+            caret.moveToOffset(normalized)
+          }
+        }
+      }
+
+      /**
+       * Waits for the caret move made by the backend before normalizing (VIM-4336).
+       *
+       * Moving the caret while the backend request is pending would undo the backend's caret move. The frontend treats
+       * our move as a user change made in the meantime, and replays it on top of the backend's changes once they
+       * arrive. E.g. repeated `CommentByLineComment` would keep the caret on the just commented line.
+       */
+      fun normalizeAfterNextCaretMove(editor: Editor) {
+        cancelPendingNormalization()
+        val disposable = Disposer.newDisposable("IdeaVim caret normalization after backend action")
+        EditorUtil.disposeWithEditor(editor, disposable)
+        pendingNormalization = disposable
+        editor.caretModel.addCaretListener(object : CaretListener {
+          override fun caretPositionChanged(event: CaretEvent) {
+            cancelPendingNormalization()
+            // The backend's changes are applied together, and a caret move made while they're being applied might not
+            // be sent to the backend
+            ApplicationManager.getApplication().invokeLater({
+              if (VimPlugin.isEnabled()) normalize(editor)
+            }, { editor.isDisposed })
+          }
+        }, disposable)
+      }
+
+      private fun cancelPendingNormalization() {
+        pendingNormalization?.let { Disposer.dispose(it) }
+        pendingNormalization = null
+      }
+    }
+
     private data class CompletionData(
       val completionStartMarker: RangeMarker,
       val originalStartOffset: Int,
       val originalCaretOffset: Int,
-      val originalDocumentLength: Int
+      val originalDocumentLength: Int,
     ) {
-      fun recordCompletion(editor: Editor, register: RegisterGroup) {
+      fun recordCompletion(editor: Editor) {
         if (!completionStartMarker.isValid) {
           return
         }
 
         val completionStartOffset = completionStartMarker.startOffset
         val caretOffset = editor.caretModel.primaryCaret.offset
-        val completedCharCount = editor.document.textLength - originalDocumentLength - (completionStartOffset - originalStartOffset)
+        val completedCharCount =
+          editor.document.textLength - originalDocumentLength - (completionStartOffset - originalStartOffset)
         val completionEndOffset = completionStartOffset + completedCharCount
 
-        val completedText = editor.document.getText(TextRange(
-          completionStartOffset,
-          completionEndOffset
-        ))
+        val completedText = editor.document.getText(
+          TextRange(
+            completionStartOffset,
+            completionEndOffset
+          )
+        )
 
-        register.recordText(completedText)
+        recordSynthesizedKeys(injector.parser.stringToKeys(completedText))
 
         val caretShift = completedCharCount - (caretOffset - completionStartOffset)
         if (caretShift > 0) {
           val leftArrowKey = KeyStroke.getKeyStroke(KeyEvent.VK_LEFT, 0)
-          repeat(caretShift) {
-            register.recordKeyStroke(leftArrowKey)
-          }
+          recordSynthesizedKeys(List(caretShift) { leftArrowKey })
         }
       }
 
@@ -283,9 +422,15 @@ internal object IdeaSpecifics {
           // $END$ (which is treated as a segment, but not a variable). If there are no variables, it is called with
           // oldIndex == newIndex == -1.
           if (vimEditor.isIdeaRefactorModeKeep) {
+            // Restore the mode captured before the current action (see IdeaSpecifics.modeBeforeAction) in case the
+            // template's selection churn drifted it. Must run before correctEditorSelection, which syncs the editor
+            // selection to whatever the current Vim mode is.
+            modeBeforeAction?.let { savedMode ->
+              if (vimEditor.mode != savedMode) vimEditor.mode = savedMode
+            }
             IdeaRefactorModeHelper.correctEditorSelection(templateState.editor)
-          }
-          else {
+            adjustCaretIntoTemplateRange(vimEditor)
+          } else {
             // The editor places the caret at the exclusive end of the variable. For Visual, unless we've enabled
             // exclusive selection, move it to the inclusive end.
             // Note that "keep" does this as part of IdeaRefactorModeHelper
@@ -325,6 +470,17 @@ internal object IdeaSpecifics {
             }
           }
         }
+
+        private fun adjustCaretIntoTemplateRange(vimEditor: VimEditor) {
+          ApplicationManager.getApplication().invokeLater {
+            if (editor.isDisposed) return@invokeLater
+            if (vimEditor.mode !is Mode.NORMAL) return@invokeLater
+            val range = TemplateManagerImpl.getTemplateState(editor)?.currentVariableRange ?: return@invokeLater
+            if (!range.isEmpty && editor.caretModel.offset >= range.endOffset) {
+              editor.caretModel.moveToOffset(range.endOffset - 1)
+            }
+          }
+        }
       })
     }
   }
@@ -339,7 +495,16 @@ internal object IdeaSpecifics {
       if (oldLookup == null && newLookup is LookupImpl) {
         if (newLookup.editor.isIdeaVimDisabledHere) return
 
-        VimPlugin.getKey().registerShortcutsForLookup(newLookup)
+        (VimPlugin.getKey() as VimKeyGroupBase).registerShortcutsForLookup(newLookup)
+
+        // In Rider/CLion Nova, the popup manager (due to LookupSummaryInfo parameter info popup)
+        // consumes Escape before the action system runs, so IdeaVim never sees it.
+        // Listen for explicit lookup cancellation (Escape) to exit insert mode.
+        // Note: this listener must NOT be attached in JetBrains Client (split mode), because
+        // isCanceledExplicitly can be true for non-Escape keys (e.g. space) there.
+        if (isRider() || isClionNova()) {
+          newLookup.addLookupListener(RiderEscLookupListener(newLookup.editor))
+        }
       }
 
       // Lookup closed
@@ -348,6 +513,44 @@ internal object IdeaSpecifics {
         if (editor.isIdeaVimDisabledHere) return
         // VIM-1858
         KeyHandler.getInstance().partialReset(editor.vim)
+      }
+    }
+  }
+
+  /**
+   * Tracks whether the last KEY_PRESSED was Escape. Needed because [LookupEvent.isCanceledExplicitly]
+   * is also true for non-Esc keys in Rider/CLion Nova (e.g. space), so it can't be used on its own
+   * to decide whether to exit insert mode. Wired up as an IdeEventQueue preprocessor in
+   * [VimListenerManager.GlobalListeners.enable].
+   */
+  internal object RiderEscAwtKeyTracker {
+    private val LOG = com.intellij.openapi.diagnostic.Logger.getInstance(RiderEscAwtKeyTracker::class.java)
+
+    @Volatile
+    var lastKeyPressedWasEscape: Boolean = false
+      private set
+
+    fun onAwtEvent(event: AWTEvent) {
+      if (event is KeyEvent && event.id == KeyEvent.KEY_PRESSED) {
+        val isEsc = event.keyCode == KeyEvent.VK_ESCAPE
+        lastKeyPressedWasEscape = isEsc
+        if (LOG.isTraceEnabled) {
+          LOG.trace("RiderEscAwtKeyTracker KEY_PRESSED keyCode=${event.keyCode} isEsc=$isEsc")
+        }
+      }
+    }
+  }
+
+  /**
+   * In Rider/CLion Nova, the popup manager (due to LookupSummaryInfo parameter info popup)
+   * consumes Escape before the action system runs, so IdeaVim never sees it.
+   * This listener exits insert mode when the lookup is explicitly cancelled (Escape).
+   */
+  private class RiderEscLookupListener(private val editor: Editor) : com.intellij.codeInsight.lookup.LookupListener {
+    override fun lookupCanceled(event: com.intellij.codeInsight.lookup.LookupEvent) {
+      if (RiderEscAwtKeyTracker.lastKeyPressedWasEscape && editor.vim.mode is Mode.INSERT) {
+        editor.vim.exitInsertMode(injector.executionContextManager.getEditorExecutionContext(editor.vim))
+        KeyHandler.getInstance().reset(editor.vim)
       }
     }
   }
@@ -367,14 +570,26 @@ internal object IdeaSpecifics {
 internal class FindActionIdAction : DumbAwareToggleAction() {
   override fun isSelected(e: AnActionEvent): Boolean {
     initInjector()
-    return injector.globalIjOptions().trackactionids
+    return injector.globalIjOptions().ideatrackactionids
   }
 
   override fun setSelected(e: AnActionEvent, state: Boolean) {
     initInjector()
-    injector.globalIjOptions().trackactionids = !injector.globalIjOptions().trackactionids
+    injector.globalIjOptions().ideatrackactionids = !injector.globalIjOptions().ideatrackactionids
   }
 
   override fun getActionUpdateThread(): ActionUpdateThread = ActionUpdateThread.BGT
 }
 //endregion
+
+/**
+ * Records keys that stand in for something the IDE did rather than something the user typed.
+ *
+ * Accepting a completion item is an IDE action, not a Vim command, so both a macro and `.` would otherwise replay
+ * only the typed prefix. Both are given the keys that would have produced the same text instead.
+ */
+private fun recordSynthesizedKeys(keys: List<KeyStroke>) {
+  val register = injector.registerGroup
+  if (register.isRecording) keys.forEach { register.recordKeyStroke(it) }
+  VimRedoBuffer.recordSynthesizedKeys(keys)
+}

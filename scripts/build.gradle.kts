@@ -16,30 +16,29 @@ plugins {
 // version 'SNAPSHOT'
 
 repositories {
-  mavenCentral()
+  maven { url = uri("https://cache-redirector.jetbrains.com/repo.maven.apache.org/maven2") }
   maven { url = uri("https://jitpack.io") }
 }
 
 dependencies {
-  compileOnly("org.jetbrains.kotlin:kotlin-stdlib:2.3.10")
+  compileOnly("org.jetbrains.kotlin:kotlin-stdlib:2.4.20")
 
-  testImplementation("org.junit.jupiter:junit-jupiter:6.0.1")
+  testImplementation("org.junit.jupiter:junit-jupiter:6.1.3")
   testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 
-  implementation("io.ktor:ktor-client-core:3.4.0")
-  implementation("io.ktor:ktor-client-cio:3.4.0")
-  implementation("io.ktor:ktor-client-content-negotiation:3.4.0")
-  implementation("io.ktor:ktor-serialization-kotlinx-json:3.4.0")
-  implementation("io.ktor:ktor-client-auth:3.4.0")
+  implementation("io.ktor:ktor-client-core:3.6.0")
+  implementation("io.ktor:ktor-client-cio:3.6.0")
+  implementation("io.ktor:ktor-client-content-negotiation:3.6.0")
+  implementation("io.ktor:ktor-serialization-kotlinx-json:3.6.0")
+  implementation("io.ktor:ktor-client-auth:3.6.0")
   implementation("org.eclipse.jgit:org.eclipse.jgit:6.6.0.202305301015-r")
 
   // This is needed for jgit to connect to ssh
-  implementation("org.eclipse.jgit:org.eclipse.jgit.ssh.apache:7.4.0.202509020913-r")
+  implementation("org.eclipse.jgit:org.eclipse.jgit.ssh.apache:7.8.0.202609011348-r")
   implementation("com.vdurmont:semver4j:3.1.0")
 }
 
 val releaseType: String? by project
-val youtrackToken: String by project
 
 kotlin {
   compilerOptions {
@@ -47,32 +46,11 @@ kotlin {
   }
 }
 
-tasks.register("generateIdeaVimConfigurations", JavaExec::class) {
-  group = "verification"
-  description = "This job tracks if there are any new plugins in marketplace we don't know about"
-  mainClass.set("scripts.MainKt")
-  classpath = sourceSets["main"].runtimeClasspath
-}
-
 tasks.register("calculateNewVersion", JavaExec::class) {
   group = "release"
   mainClass.set("scripts.release.CalculateNewVersionKt")
   classpath = sourceSets["main"].runtimeClasspath
   args = listOf("${rootProject.rootDir}", releaseType ?: "")
-}
-
-tasks.register("changelogUpdateUnreleased", JavaExec::class) {
-  group = "release"
-  mainClass.set("scripts.release.ChangelogUpdateUnreleasedKt")
-  classpath = sourceSets["main"].runtimeClasspath
-  args = listOf(project.version.toString(), rootProject.rootDir.toString(), releaseType ?: "")
-}
-
-tasks.register("commitChanges", JavaExec::class) {
-  group = "release"
-  mainClass.set("scripts.release.CommitChangesKt")
-  classpath = sourceSets["main"].runtimeClasspath
-  args = listOf(project.version.toString(), rootProject.rootDir.toString(), releaseType ?: "")
 }
 
 tasks.register("addReleaseTag", JavaExec::class) {
@@ -89,14 +67,6 @@ tasks.register("selectBranch", JavaExec::class) {
   args = listOf(project.version.toString(), rootProject.rootDir.toString(), releaseType ?: "")
 }
 
-tasks.register("eapReleaseActions", JavaExec::class) {
-  group = "release"
-  mainClass.set("scripts.releaseEap.EapReleaseActionsKt")
-  classpath = sourceSets["main"].runtimeClasspath
-  args = listOf(project.version.toString(), rootProject.rootDir.toString(), releaseType ?: "")
-  environment("YOUTRACK_TOKEN", youtrackToken)
-}
-
 tasks.register("calculateNewEapVersion", JavaExec::class) {
   group = "release"
   mainClass.set("scripts.release.CalculateNewEapVersionKt")
@@ -111,19 +81,18 @@ tasks.register("calculateNewDevVersion", JavaExec::class) {
   args = listOf("${rootProject.rootDir}")
 }
 
-tasks.register("setTeamCityBuildNumber", JavaExec::class) {
-  group = "release"
-  mainClass.set("scripts.release.SetTeamCityBuildNumberKt")
-  classpath = sourceSets["main"].runtimeClasspath
-  args = listOf(project.version.toString(), rootProject.rootDir.toString(), releaseType ?: "")
-}
-
-tasks.register("releaseActions", JavaExec::class) {
+tasks.register("generateHelp", JavaExec::class) {
   group = "other"
-  mainClass.set("scripts.ReleaseActionsKt")
+  description = "Generates the help file that :help opens from the descriptions of the commands"
+  // The descriptions are collected by HelpProcessor while running KSP over the modules that declare commands
+  dependsOn(":vim-engine:kspKotlin", ":kspKotlin")
+  mainClass.set("scripts.help.GenerateHelpKt")
   classpath = sourceSets["main"].runtimeClasspath
-  args = listOf(project.version.toString(), releaseType ?: "")
-  environment("YOUTRACK_TOKEN", youtrackToken)
+  args = listOf(
+    "${rootProject.rootDir}/src/main/resources/help/ideavim.txt",
+    "${rootProject.rootDir}/vim-engine/build/help/engine_help.json",
+    "${rootProject.rootDir}/build/help/frontend_help.json",
+  )
 }
 
 tasks.test {

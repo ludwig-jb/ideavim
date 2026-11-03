@@ -9,6 +9,7 @@ package com.maddyhome.idea.vim.action.change.insert
 
 import com.intellij.vim.annotations.CommandOrMotion
 import com.intellij.vim.annotations.Mode
+import com.maddyhome.idea.vim.api.CommandLineType
 import com.maddyhome.idea.vim.api.ExecutionContext
 import com.maddyhome.idea.vim.api.VimEditor
 import com.maddyhome.idea.vim.api.injector
@@ -24,11 +25,14 @@ import com.maddyhome.idea.vim.register.Register
 import com.maddyhome.idea.vim.state.mode.SelectionType
 import com.maddyhome.idea.vim.vimscript.model.Script
 
-@CommandOrMotion(keys = ["<C-R>"], modes = [Mode.INSERT])
+@CommandOrMotion(
+  keys = ["<C-R>"],
+  modes = [Mode.INSERT],
+  description = "In Insert mode, insert the contents of {register}. With = as the register, evaluate an expression and insert the result."
+)
 class InsertRegisterAction : VimActionHandler.SingleExecution() {
   override val type: Command.Type = Command.Type.OTHER_SELF_SYNCHRONIZED
-
-  override val argumentType: Argument.Type = Argument.Type.CHARACTER
+  override val argumentType: Argument.Type = Argument.Type.REGISTER
 
   override fun execute(
     editor: VimEditor,
@@ -38,7 +42,7 @@ class InsertRegisterAction : VimActionHandler.SingleExecution() {
   ): Boolean {
     val argument = cmd.argument as? Argument.Character ?: return false
     if (argument.character == '=') {
-      injector.commandLine.readInputAndProcess(editor, context, "=", finishOn = null) { input ->
+      injector.commandLine.readInputAndProcess(editor, context, CommandLineType.Expression, "=", finishOn = null) { input ->
         try {
           if (input.isNotEmpty()) {
             val expression =
@@ -74,7 +78,8 @@ private fun insertRegister(editor: VimEditor, context: ExecutionContext, key: Ch
     val textData = PutData.TextData(
       register.name,
       injector.clipboardManager.dumbCopiedText(register.text),
-      SelectionType.CHARACTER_WISE
+      SelectionType.CHARACTER_WISE,
+      register.printableString
     )
     val putData =
       PutData(textData, null, 1, insertTextBeforeCaret = true, rawIndent = true, caretAfterInsertedText = true)

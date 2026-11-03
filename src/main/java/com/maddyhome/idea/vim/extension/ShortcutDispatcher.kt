@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2025 The IdeaVim authors
+ * Copyright 2003-2026 The IdeaVim authors
  *
  * Use of this source code is governed by an MIT-style
  * license that can be found in the LICENSE.txt file or at
@@ -14,14 +14,14 @@ import com.intellij.openapi.actionSystem.CustomShortcutSet
 import com.intellij.openapi.actionSystem.KeyboardShortcut
 import com.intellij.openapi.actionSystem.ShortcutSet
 import com.intellij.openapi.project.DumbAwareAction
-import com.intellij.ui.KeyStrokeAdapter
 import com.maddyhome.idea.vim.api.injector
+import com.maddyhome.idea.vim.helper.ActionEventKeyStrokeExtractor
 import com.maddyhome.idea.vim.key.KeyStrokeTrie
 import java.awt.event.KeyEvent
 import javax.swing.JComponent
 import javax.swing.KeyStroke
 
-internal open class ShortcutDispatcher<T>(
+open class ShortcutDispatcher<T>(
   name: String,
   data: Map<List<KeyStroke>, T>,
   private val listener: Listener<T>,
@@ -49,9 +49,23 @@ internal open class ShortcutDispatcher<T>(
   })
 
   protected val trie = KeyStrokeTrie<T>(name)
-  private val shortcutSet: ShortcutSet
+  private var shortcutSet: ShortcutSet = CustomShortcutSet.EMPTY
+
+  protected val keyStrokes: MutableList<KeyStroke> = mutableListOf()
 
   init {
+    setMappings(data)
+  }
+
+  /**
+   * Replaces all the mappings of this dispatcher.
+   *
+   * The new keys start to reach the dispatcher once [register] is called again. The shortcut set belongs to the action,
+   * so a single [register] call updates the keys for every component this dispatcher is registered on.
+   */
+  protected fun setMappings(data: Map<List<KeyStroke>, T>) {
+    keyStrokes.clear()
+    trie.clear()
     val keys: MutableList<KeyStroke> = mutableListOf()
     for ((k, v) in data) {
       keys.addAll(k)
@@ -60,8 +74,6 @@ internal open class ShortcutDispatcher<T>(
     val shortcuts = keys.map { KeyboardShortcut(it, null) }
     shortcutSet = CustomShortcutSet(*shortcuts.toTypedArray())
   }
-
-  protected val keyStrokes: MutableList<KeyStroke> = mutableListOf()
 
   final override fun actionPerformed(e: AnActionEvent) {
     var keyStroke = getKeyStroke(e) ?: return
@@ -87,32 +99,7 @@ internal open class ShortcutDispatcher<T>(
   fun register(component: JComponent?, parentDisposable: Disposable?) =
     registerCustomShortcutSet(shortcutSet, component, parentDisposable)
 
-  /**
-   * getDefaultKeyStroke is needed for NEO layout keyboard VIM-987
-   * but we should cache the value because on the second call (isEnabled -> actionPerformed)
-   * the event is already consumed
-   *
-   * @author Alex Plate
-   */
-  private var keyStrokeCache: Pair<KeyEvent?, KeyStroke?> = null to null
+  private val keyStrokeExtractor = ActionEventKeyStrokeExtractor()
 
-  /**
-   * @author Alex Plate
-   */
-  private fun getKeyStroke(e: AnActionEvent): KeyStroke? {
-    val inputEvent = e.inputEvent
-    if (inputEvent is KeyEvent) {
-      val defaultKeyStroke = KeyStrokeAdapter.getDefaultKeyStroke(inputEvent)
-      val strokeCache = keyStrokeCache
-      if (defaultKeyStroke != null) {
-        keyStrokeCache = inputEvent to defaultKeyStroke
-        return defaultKeyStroke
-      } else if (strokeCache.first === inputEvent) {
-        keyStrokeCache = null to null
-        return strokeCache.second
-      }
-      return KeyStroke.getKeyStrokeForEvent(inputEvent)
-    }
-    return null
-  }
+  private fun getKeyStroke(e: AnActionEvent): KeyStroke? = keyStrokeExtractor.getKeyStroke(e)
 }

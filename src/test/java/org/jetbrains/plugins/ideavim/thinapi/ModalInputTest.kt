@@ -36,6 +36,7 @@ import org.mockito.kotlin.eq
 import org.mockito.kotlin.mock
 import org.mockito.kotlin.spy
 import org.mockito.kotlin.verify
+import kotlinx.coroutines.runBlocking
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
@@ -59,7 +60,7 @@ class ModalInputTest : MockTestCase() {
 
     val listenerOwner = ListenerOwner.Plugin.get("test")
     val mappingOwner = MappingOwner.Plugin.get("test")
-    myVimApi = VimApiImpl(listenerOwner, mappingOwner)
+    myVimApi = VimApiImpl(listenerOwner, mappingOwner, null)
 
     mockInjector = spy(injector)
 
@@ -75,8 +76,8 @@ class ModalInputTest : MockTestCase() {
     executionContext = mock()
 
     editorGroup = mock()
-    Mockito.`when`(editorGroup.getFocusedEditor()).thenReturn(vimEditor)
     Mockito.`when`(mockInjector.editorGroup).thenReturn(editorGroup)
+    Mockito.`when`(mockInjector.fallbackWindow).thenReturn(vimEditor)
 
     executionContextManager = mock()
     Mockito.`when`(executionContextManager.getEditorExecutionContext(vimEditor)).thenReturn(executionContext)
@@ -90,6 +91,10 @@ class ModalInputTest : MockTestCase() {
 
   @AfterEach
   override fun tearDown(testInfo: TestInfo) {
+    // Restore real injector before tearDown to avoid EDT access violations
+    // (mocked fallbackWindow returns the fixture editor which requires EDT for option resets)
+    injector = realInjector
+
     super.tearDown(testInfo)
     // reset mocks
     Mockito.reset(modalInputService)
@@ -99,8 +104,6 @@ class ModalInputTest : MockTestCase() {
     Mockito.reset(editorGroup)
     Mockito.reset(executionContextManager)
     Mockito.reset(mockInjector)
-
-    injector = realInjector
   }
 
   fun assertEqualsEditor(expected: VimEditor, actual: VimEditor) {
@@ -130,7 +133,7 @@ class ModalInputTest : MockTestCase() {
 
     Mockito.`when`(modalInput.label).thenReturn(label)
 
-    myVimApi.modalInput()
+    runBlocking { myVimApi.modalInput() }
       .repeat(2)
       .updateLabel { newLabel ->
         currentLabel = "$newLabel - Updated"
@@ -169,7 +172,7 @@ class ModalInputTest : MockTestCase() {
 
     Mockito.`when`(modalInput.label).thenReturn(label)
 
-    myVimApi.modalInput()
+    runBlocking { myVimApi.modalInput() }
       .repeatWhile {
         handlerCalledCount < 1
       }
@@ -205,7 +208,7 @@ class ModalInputTest : MockTestCase() {
 
     Mockito.`when`(modalInput.label).thenReturn(label)
 
-    myVimApi.modalInput()
+    runBlocking { myVimApi.modalInput() }
       .repeat(3)
       .inputChar(label) { char ->
         handlerCalledCount++
@@ -239,7 +242,7 @@ class ModalInputTest : MockTestCase() {
 
     Mockito.`when`(modalInput.label).thenReturn(label)
 
-    myVimApi.modalInput()
+    runBlocking { myVimApi.modalInput() }
       .inputString(label) { string ->
         handlerCalledCount++
         receivedString = string
@@ -272,7 +275,7 @@ class ModalInputTest : MockTestCase() {
 
     Mockito.`when`(modalInput.label).thenReturn(label)
 
-    myVimApi.modalInput()
+    runBlocking { myVimApi.modalInput() }
       .inputChar(label) { char ->
         handlerCalledCount++
         receivedChar = char
@@ -301,7 +304,7 @@ class ModalInputTest : MockTestCase() {
   fun `test closeCurrentInput with existing input`() {
     Mockito.`when`(modalInputService.getCurrentModalInput()).thenReturn(modalInput)
 
-    val result = myVimApi.modalInput().closeCurrentInput()
+    val result = runBlocking { myVimApi.modalInput() }.closeCurrentInput()
 
     verify(modalInput).deactivate(eq(true), eq(true))
 
@@ -312,7 +315,7 @@ class ModalInputTest : MockTestCase() {
   fun `test closeCurrentInput with no existing input`() {
     Mockito.`when`(modalInputService.getCurrentModalInput()).thenReturn(null)
 
-    val result = myVimApi.modalInput().closeCurrentInput()
+    val result = runBlocking { myVimApi.modalInput() }.closeCurrentInput()
 
     assertFalse(result)
   }
@@ -321,7 +324,7 @@ class ModalInputTest : MockTestCase() {
   fun `test closeCurrentInput with refocusEditor false`() {
     Mockito.`when`(modalInputService.getCurrentModalInput()).thenReturn(modalInput)
 
-    myVimApi.modalInput().closeCurrentInput(refocusEditor = false)
+    runBlocking { myVimApi.modalInput() }.closeCurrentInput(refocusEditor = false)
 
     verify(modalInput).deactivate(eq(false), eq(true))
   }

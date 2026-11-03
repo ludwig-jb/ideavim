@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2022 The IdeaVim authors
+ * Copyright 2003-2026 The IdeaVim authors
  *
  * Use of this source code is governed by an MIT-style
  * license that can be found in the LICENSE.txt file or at
@@ -137,11 +137,26 @@ interface VimMarkService {
    */
   fun updateMarksFromDelete(editor: VimEditor, delStartOffset: Int, delLength: Int)
 
+  fun updateVisualSelectionMarks(editor: VimEditor, changeOffset: Int, oldLength: Int, newFragment: CharSequence)
+
   fun editorReleased(editor: VimEditor)
 
   fun resetAllMarksForCaret(caret: ImmutableVimCaret)
 
   fun resetAllMarks()
+
+  /**
+   * Loads legacy mark state from an XML element for version migration.
+   * Default no-op; overridden by implementations that support PersistentStateComponent.
+   */
+  fun loadLegacyState(element: Any) {}
+
+  /**
+   * Sets the BEFORE_JUMP_MARK directly from a position, without requiring an open editor or caret.
+   * Used by jump listeners that receive position data from the IDE navigation history.
+   * Default no-op; implementations that maintain local mark state should override this.
+   */
+  fun setJumpMark(filepath: String, protocol: String, line: Int, col: Int) {}
 
   fun isValidMark(char: Char, operation: Operation, isCaretPrimary: Boolean): Boolean
 

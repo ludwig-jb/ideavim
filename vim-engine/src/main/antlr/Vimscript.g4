@@ -6,7 +6,7 @@ grammar Vimscript;
 //
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 script:
-    augroup? blockMember* EOF;
+    blockMember* EOF;
 
 forLoop:
     (WS | COLON)* FOR WS+ ((variableScope COLON)? variableName | (L_BRACKET argumentsDeclaration R_BRACKET)) WS+ IN WS* expr WS* ((inline_comment NEW_LINE) | (NEW_LINE | BAR)+)
@@ -58,6 +58,7 @@ catchBlock:             (WS | COLON)* CATCH WS* pattern? WS* ((inline_comment NE
                             blockMember*
 ;
 pattern:                DIV patternBody DIV;
+// TODO: This seems wrong - BAR is part of a valid pattern
 patternBody:            ~(NEW_LINE | BAR)*?;
 finallyBlock:           (WS | COLON)* FINALLY WS* ((inline_comment NEW_LINE) | (NEW_LINE | BAR))
                             blockMember*
@@ -66,15 +67,39 @@ finallyBlock:           (WS | COLON)* FINALLY WS* ((inline_comment NEW_LINE) | (
 functionDefinition:
                         (WS | COLON)* FUNCTION (replace = BANG)? WS+ (SID | SNR)? (anyCaseNameWithDigitsAndUnderscores NUM)* (functionScope COLON)? (functionName | (literalDictionaryKey (DOT literalDictionaryKey)+)) WS* L_PAREN WS* argumentsDeclaration WS* R_PAREN WS* (functionFlag WS*)* ((inline_comment NEW_LINE) | (NEW_LINE | BAR)+)
                             blockMember*
-                        (WS | COLON)* ENDFUNCTION WS* ((inline_comment NEW_LINE) | (NEW_LINE | BAR))
+                        // Vim reads lines into the function's body until it finds `:endfunction`. If it reaches the end
+                        // of the input without finding it, it reports `E126` and doesn't define the function. We can
+                        // parse this by allowing the definition to end at EOF. See
+                        // ExecutableVisitor.visitFunctionDefinition
+                        // Note that we can't simply make `:endfunction` optional. That would allow the definition to
+                        // end at any point, which would require ANTLR to use (very slow) full context prediction for
+                        // every line in the body, in order to decide if the definition has ended
+                        (((WS | COLON)* ENDFUNCTION WS* ((inline_comment NEW_LINE) | (NEW_LINE | BAR))) | EOF)
 ;
 functionFlag:           RANGE | ABORT | DICT | CLOSURE;
 argumentsDeclaration:   (ETC | defaultValue (WS* COMMA WS* defaultValue)* (WS* COMMA WS* ETC WS*)? | (variableName (WS* COMMA WS* variableName)* (WS* COMMA WS* defaultValue)* (WS* COMMA WS* ETC WS*)?))?;
 defaultValue:           variableName WS* ASSIGN WS* expr;
 
-autoCmd:                (WS | COLON)* AUTOCMD commandArgument = ~(NEW_LINE)*? NEW_LINE;
+autoCmd
+  : (WS | COLON)* AUTOCMD bang=BANG? WS+ auEvents WS+ auPattern WS+ auCommand NEW_LINE
+  | (WS | COLON)* AUTOCMD bang=BANG? WS* NEW_LINE
+  ;
 
-augroup:                (WS | COLON)* AUGROUP .*? AUGROUP WS+ END WS* NEW_LINE;
+auEvents
+  : auEventName (WS* COMMA WS* auEventName)*
+  ;
+
+auEventName
+  : anyCaseNameWithDigitsAndUnderscores
+  ;
+
+auPattern
+  : ~(WS | NEW_LINE)+
+  ;
+
+auCommand
+  : ~(NEW_LINE)+
+  ;
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 //
@@ -92,8 +117,15 @@ command:
     (WS | COLON)* range? (WS | COLON)* ECHO (WS* expr)* WS* (NEW_LINE | BAR)+
     #EchoCommand|
 
-    (WS | COLON)* range? (WS | COLON)* DELFUNCTION (replace = BANG)? WS+ (functionScope COLON)? functionName ((inline_comment NEW_LINE+) | (NEW_LINE | BAR)+)
+    // TODO: delfunction should take a curlyBracesFunctionName
+    (WS | COLON)* range? (WS | COLON)* DELFUNCTION (replace = BANG)? WS+ (anyCaseNameWithDigitsAndUnderscores NUM)* (functionScope COLON)? functionName ((inline_comment NEW_LINE+) | (NEW_LINE | BAR)+)
     #DelfunctionCommand|
+
+    // Note that `function() ... endfunction` is handled as a separate construct, as is a function definition
+    // that is missing its `:endfunction` (which is reported as an error by this command)
+    // This matches the `:function {name}` and `:function /{pattern}` commands
+    (WS | COLON)* range? (WS | COLON)* FUNCTION BANG? functionCommandArgument? (WS* inline_comment? NEW_LINE | BAR)+
+    #FunctionCommand|
 
     (WS | COLON)* range? (WS | COLON)* CALL WS+ expr WS* ((inline_comment NEW_LINE+) | (NEW_LINE | BAR)+)
     #CallCommand|
@@ -113,7 +145,7 @@ command:
 
     (WS | COLON)* range? (WS | COLON)*
       name = (
-          ACTIONLIST | ACTION | ASCII | AT
+          ACTIONLIST | ACTION | ASCII | AT | AUGROUP
         | ASSIGN    // `:=` print last line number
         | B_LOWERCASE | BUFFER| BUFFER_CLOSE | BUFFER_LIST
         | CLASS | CLEARJUMPS | CMD_CLEAR | COPY
@@ -124,16 +156,15 @@ command:
         | HISTORY
         | J_LOWERCASE | JOIN | JUMPS
         | K_LOWERCASE
-        | LOCKVAR
         | M_LOWERCASE | MARK | MARKS | MOVE_TEXT
         | N_LOWERCASE | N_UPPERCASE | NEXT_FILE | NOHLSEARCH
         | ONLY
         | P_LOWERCASE | P_UPPERCASE | PACKADD | PLUG | PREVIOUS_FILE | PRINT | PROMPT_REPLACE | PROMPTFIND | PUT
         | Q_LOWERCASE | QUIT
         | R_LOWERCASE | REDO
-        | SET | SELECT_LAST_FILE | SELECT_FIRST_FILE | SELECT_FILE | SETGLOBAL | SETHANDLER | SETLOCAL | SHELL | SOURCE | SPLIT | SYMBOL
+        | SET | SELECT_LAST_FILE | SELECT_FIRST_FILE | SELECT_FILE | SETGLOBAL | SETHANDLER | SETLOCAL | SHELL | SCRIPT_ENCODING | SOURCE | SPLIT | SYMBOL
         | T_LOWERCASE | TABCLOSE | TABMOVE | TABNEXT | TABONLY | TABPREVIOUS
-        | U_LOWERCASE | UNDO | UNLOCKVAR
+        | U_LOWERCASE | UNDO
         | VSPLIT
         | W_LOWERCASE | WRITE | WRITE_ALL | WRITE_NEXT | WRITE_PREVIOUS | WRITE_QUIT
         | X_LOWERCASE
@@ -145,24 +176,30 @@ command:
 
     (WS | COLON)* range? (WS | COLON)*
       name = (
-          CMD
-        | H_LOWERCASE | HELP
-        | MAP | MAP_CLEAR
-        | NORMAL
+          MAP | MAP_CLEAR
         | REGISTERS
-        | SORT
         | UNMAP
+        | ABBREV
+        | UNABBREV
+        | ABBREV_CLEAR
       )
       bangModifier = BANG?
     WS* commandArgumentWithoutBars? (NEW_LINE | BAR)+
     #CommandWithoutComments|
 
+    // Commands whose argument can hold a '|', so the parser must not split them. Whether one still separates them,
+    // and where, comes from their `@ExCommand` annotation - see CommandVisitor.splitOffNextCommand
     (WS | COLON)* range? (WS | COLON)*
       name = (
           AMPERSAND
         | BANG
+        | CMD
         | G_LOWERCASE | GLOBAL
+        | H_LOWERCASE | HELP
+        | LOCKVAR | UNLOCKVAR
+        | NORMAL
         | R_LOWERCASE | READ
+        | SORT
         | V_LOWERCASE | VGLOBAL
         | S_LOWERCASE | SUBSTITUTE
         | TILDE
@@ -171,6 +208,9 @@ command:
     WS* commandArgumentWithBars? NEW_LINE+
     #CommandWithBars|
 
+    (WS | COLON)* range? (WS | COLON)* LOADKEYMAP
+    #LoadKeymapCommand|
+
     (WS | COLON)* range? (WS | COLON)* commandName (bangModifier = BANG?) WS* commandArgumentWithBars? (NEW_LINE | BAR)+
     #OtherCommand
 ;
@@ -178,6 +218,11 @@ commandArgumentWithBars: ~(NEW_LINE)+;
 commandArgumentWithoutBars: ~(NEW_LINE | BAR)+;
 lShift: LESS+;
 rShift: GREATER+;
+
+functionCommandArgument: (WS* DIV functionCommandPattern) | functionCommandName;
+functionCommandName: WS+ functionCommandPrefix? curlyBracesFunctionName (DOT literalDictionaryKey)* trailing+=~(QUOTE|L_PAREN)*?;
+functionCommandPrefix: SID | SNR | LESS anyCaseNameWithDigitsAndUnderscores* GREATER;
+functionCommandPattern: ~(NEW_LINE)*;
 
 letCommands:
     (WS | COLON)* range? (WS | COLON)* LET WS+ (unpack = unpackLValue | lvalue = expr) WS* assignmentOperator WS* rvalue = expr
@@ -331,7 +376,9 @@ variableName:           curlyBracesName;
 variableScope:          anyScope;
 
 curlyBracesName:        element+;
-element:                anyCaseNameWithDigitsAndUnderscores | unsignedInt | L_CURLY WS* expr WS* R_CURLY;
+curlyBracesExpression:  L_CURLY WS* expr WS* R_CURLY;
+element:                anyCaseNameWithDigitsAndUnderscores | unsignedInt | curlyBracesExpression;
+
 
 option:                 AMPERSAND (optionScope COLON)? optionName;
 optionName:             anyCaseNameWithDigitsAndUnderscores;
@@ -339,6 +386,13 @@ optionScope:            anyScope;
 
 envVariable:            DOLLAR envVariableName;
 envVariableName:        anyCaseNameWithDigitsAndUnderscores;
+
+curlyBracesFunctionName: curlyBracesFunctionNamePart+;
+curlyBracesFunctionNamePart: functionNamePart | curlyBracesExpression;
+// TODO: anyCaseNameWithDigitsAndUnderscores might need to be changed to accept a name that starts with an underscore
+// We should also be able to *define* a function that begins with an underscore
+// The `:function` command accepts a name that begins with one or more digits, but treats it as an error (not a parse error)
+functionNamePart:       DIGIT | INT | UNDERSCORE | COLON | anyCaseNameWithDigitsAndUnderscores | NUM;
 
 functionCall:           (functionScope COLON)? (anyCaseNameWithDigitsAndUnderscores NUM)* functionName WS* L_PAREN WS* functionArguments WS* R_PAREN;
 functionName:           curlyBracesName;
@@ -469,7 +523,6 @@ lowercaseAlphabeticChar:
 ;
 
 keyword:                ABORT
-                    |   AUGROUP
                     |   AUTOCMD
                     |   BREAK
                     |   CATCH
@@ -497,7 +550,9 @@ keyword:                ABORT
 operator:               IS
                     |   IS_NOT
 ;
-existingCommands:       ACTION
+existingCommands:       ABBREV
+                    |   ABBREV_CLEAR
+                    |   ACTION
                     |   ACTIONLIST
                     |   ASCII
                     |   BUFFER
@@ -527,6 +582,7 @@ existingCommands:       ACTION
                     |   JOIN
                     |   JUMPS
                     |   LET
+                    |   LOADKEYMAP
                     |   MAP
                     |   MAP_CLEAR
                     |   MARK
@@ -566,6 +622,7 @@ existingCommands:       ACTION
                     |   TABNEXT
                     |   TABONLY
                     |   TABPREVIOUS
+                    |   UNABBREV
                     |   UNDO
                     |   UNMAP
                     |   VGLOBAL
@@ -706,6 +763,10 @@ HISTORY:                'his' | 'hist' | 'histo' | 'histor' | 'history';
 JOIN:                   'jo' | 'joi' | 'join';
 JUMPS:                  'ju' | 'jum' | 'jump' | 'jumps';
 LET:                    'let';
+// `:loadkeymap` consumes the rest of the sourced script (the keymap table) as part of a single
+// token, so the following `from<Tab>to` lines are not parsed as their own commands. The command
+// name and the table are separated by the first newline. See LoadKeymapCommand.
+LOADKEYMAP:             ('loadk' | 'loadke' | 'loadkey' | 'loadkeym' | 'loadkeyma' | 'loadkeymap') .*? EOF;
 LOCKVAR:                'lockv' | 'lockva' | 'lockvar';
 MARK:                   'ma' | 'mar' | 'mark';
 MARKS:                  'marks';
@@ -735,6 +796,7 @@ SETHANDLER:             'sethandler';
 SHELL:                  'sh' | 'she' | 'shel' | 'shell';
 SORT:                   'sor' | 'sort';
 SOURCE:                 'so' | 'sou' | 'sour' | 'sourc' | 'source';
+SCRIPT_ENCODING:        'scripte' | 'scripten' | 'scriptenc' | 'scriptenco' | 'scriptencod' | 'scriptencodi' | 'scriptencodin' | 'scriptencoding';
 SPLIT:                  'sp' | 'spl' | 'spli' | 'split';
 SUBSTITUTE:             'su' | 'sub' | 'subs' | 'subst' | 'substi' | 'substit' | 'substitu' | 'substitut' | 'substitute';
 SYMBOL:                 'sym' | 'symb' | 'symbo' | 'symbol';
@@ -755,27 +817,39 @@ WRITE_QUIT:             'wq' | 'exi' | 'exit' | 'xi' | 'xit';
 YANK:                   'ya' | 'yan' | 'yank';
 MAP:                    'map'
                     |   'smap'
-                    |   'nm' | 'vm' | 'xm' | 'om' | 'im' | 'cm'
-                    |   (('nm' | 'vm' | 'xm' | 'om' | 'im' | 'cm') 'a')
-                    |   (('nm' | 'vm' | 'xm' | 'om' | 'im' | 'cm') 'ap')
-                    |   'no' | 'nn' | 'vn' | 'xn' | 'ono' | 'ino' | 'cno'
-                    |   'nno' | 'vno' | 'xno'
-                    |   (('no' | 'nno' | 'vno' | 'xno' | 'ono' | 'ino' | 'cno') 'r')
-                    |   (('no' | 'nno' | 'vno' | 'xno' | 'ono' | 'ino' | 'cno') 're')
-                    |   (('no' | 'nno' | 'vno' | 'xno' | 'ono' | 'ino' | 'cno') 'rem')
-                    |   (('no' | 'nno' | 'vno' | 'xno' | 'ono' | 'ino' | 'cno') 'rema')
-                    |   (('no' | 'nno' | 'vno' | 'xno' | 'ono' | 'ino' | 'cno') 'remap')
+                    |   'nm' | 'vm' | 'xm' | 'om' | 'im' | 'cm' | 'lm'
+                    |   (('nm' | 'vm' | 'xm' | 'om' | 'im' | 'cm' | 'lm') 'a')
+                    |   (('nm' | 'vm' | 'xm' | 'om' | 'im' | 'cm' | 'lm') 'ap')
+                    |   'no' | 'nn' | 'vn' | 'xn' | 'ono' | 'ino' | 'cno' | 'ln'
+                    |   'nno' | 'vno' | 'xno' | 'lno'
+                    |   (('no' | 'nno' | 'vno' | 'xno' | 'ono' | 'ino' | 'cno' | 'lno') 'r')
+                    |   (('no' | 'nno' | 'vno' | 'xno' | 'ono' | 'ino' | 'cno' | 'lno') 're')
+                    |   (('no' | 'nno' | 'vno' | 'xno' | 'ono' | 'ino' | 'cno' | 'lno') 'rem')
+                    |   (('no' | 'nno' | 'vno' | 'xno' | 'ono' | 'ino' | 'cno' | 'lno') 'rema')
+                    |   (('no' | 'nno' | 'vno' | 'xno' | 'ono' | 'ino' | 'cno' | 'lno') 'remap')
                     |   ('snor' | 'snore' | 'snorem' | 'snorema' | 'snoremap');
-MAP_CLEAR:              ('mapc' | 'nmapc' | 'vmapc' | 'xmapc' | 'smapc' | 'omapc' | 'imapc' | 'cmapc')
-                    |   (('mapc' | 'nmapc' | 'vmapc' | 'xmapc' | 'smapc' | 'omapc' | 'imapc' | 'cmapc') 'l')
-                    |   (('mapc' | 'nmapc' | 'vmapc' | 'xmapc' | 'smapc' | 'omapc' | 'imapc' | 'cmapc') 'le')
-                    |   (('mapc' | 'nmapc' | 'vmapc' | 'xmapc' | 'smapc' | 'omapc' | 'imapc' | 'cmapc') 'lea')
-                    |   (('mapc' | 'nmapc' | 'vmapc' | 'xmapc' | 'smapc' | 'omapc' | 'imapc' | 'cmapc') 'lear');
-UNMAP:                  'unm' | 'nun' | 'vu' | 'xu' | 'sunm' | 'ou' | 'iu' | 'cu'
-                    |   'vun' | 'xun' | 'oun' | 'iun' | 'cun'
-                    |   'nunm' | 'vunm' | 'xunm' | 'ounm' | 'iunm' | 'cunm'
-                    |   'unma' | 'nunma' | 'vunma' | 'xunma' | 'sunma' | 'ounma' | 'iunma' | 'cunma'
-                    |   'unmap' | 'nunmap' | 'vunmap' | 'xunmap' | 'sunmap' | 'ounmap' | 'iunmap' | 'cunmap';
+MAP_CLEAR:              ('mapc' | 'nmapc' | 'vmapc' | 'xmapc' | 'smapc' | 'omapc' | 'imapc' | 'cmapc' | 'lmapc')
+                    |   (('mapc' | 'nmapc' | 'vmapc' | 'xmapc' | 'smapc' | 'omapc' | 'imapc' | 'cmapc' | 'lmapc') 'l')
+                    |   (('mapc' | 'nmapc' | 'vmapc' | 'xmapc' | 'smapc' | 'omapc' | 'imapc' | 'cmapc' | 'lmapc') 'le')
+                    |   (('mapc' | 'nmapc' | 'vmapc' | 'xmapc' | 'smapc' | 'omapc' | 'imapc' | 'cmapc' | 'lmapc') 'lea')
+                    |   (('mapc' | 'nmapc' | 'vmapc' | 'xmapc' | 'smapc' | 'omapc' | 'imapc' | 'cmapc' | 'lmapc') 'lear');
+UNMAP:                  'unm' | 'nun' | 'vu' | 'xu' | 'sunm' | 'ou' | 'iu' | 'cu' | 'lu'
+                    |   'vun' | 'xun' | 'oun' | 'iun' | 'cun' | 'lun'
+                    |   'nunm' | 'vunm' | 'xunm' | 'ounm' | 'iunm' | 'cunm' | 'lunm'
+                    |   'unma' | 'nunma' | 'vunma' | 'xunma' | 'sunma' | 'ounma' | 'iunma' | 'cunma' | 'lunma'
+                    |   'unmap' | 'nunmap' | 'vunmap' | 'xunmap' | 'sunmap' | 'ounmap' | 'iunmap' | 'cunmap' | 'lunmap';
+ABBREV:                 'ab' | 'abb' | 'abbr' | 'abbre' | 'abbrev' | 'abbrevi' | 'abbrevia' | 'abbreviat' | 'abbreviate'
+                    |   'ia' | 'iab' | 'iabb' | 'iabbr' | 'iabbre' | 'iabbrev'
+                    |   'ca' | 'cab' | 'cabb' | 'cabbr' | 'cabbre' | 'cabbrev'
+                    |   'norea' | 'noreab' | 'noreabb' | 'noreabbr' | 'noreabbre' | 'noreabbrev'
+                    |   'inorea' | 'inoreab' | 'inoreabb' | 'inoreabbr' | 'inoreabbre' | 'inoreabbrev'
+                    |   'cnorea' | 'cnoreab' | 'cnoreabb' | 'cnoreabbr' | 'cnoreabbre' | 'cnoreabbrev';
+UNABBREV:               'una' | 'unab' | 'unabb' | 'unabbr' | 'unabbre' | 'unabbrev' | 'unabbrevi' | 'unabbrevia' | 'unabbreviat' | 'unabbreviate'
+                    |   'iuna' | 'iunab' | 'iunabb' | 'iunabbr' | 'iunabbre' | 'iunabbrev'
+                    |   'cuna' | 'cunab' | 'cunabb' | 'cunabbr' | 'cunabbre' | 'cunabbrev';
+ABBREV_CLEAR:           'abc' | 'abcl' | 'abcle' | 'abclea' | 'abclear'
+                    |   'iabc' | 'iabcl' | 'iabcle' | 'iabclea' | 'iabclear'
+                    |   'cabc' | 'cabcl' | 'cabcle' | 'cabclea' | 'cabclear';
 
 // Types
 DIGIT:                  [0-9];
@@ -894,7 +968,6 @@ INLINE_SEPARATOR:       '\n' (' ' | '\t')* BACKSLASH -> skip;
 LUA_CODE:               'lua' WS* '<<' WS* 'EOF' .*? 'EOF' -> skip;
 LUA_CODE2:              'lua' WS* '<<' WS* 'END' .*? 'END' -> skip;
 IDEAVIM_IGNORE:         ('ideavim' | 'ideaVim' | 'IdeaVim') WS 'ignore' .*? ('ideavim' | 'ideaVim' | 'IdeaVim') WS 'ignore end' NEW_LINE -> skip;
-AUGROUP_SKIP:           NEW_LINE (WS|COLON)* AUGROUP .*? AUGROUP WS+ END -> skip;
 
 // All the other symbols
 UNICODE_CHAR:           '\u0000'..'\uFFFE';

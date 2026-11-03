@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2023 The IdeaVim authors
+ * Copyright 2003-2026 The IdeaVim authors
  *
  * Use of this source code is governed by an MIT-style
  * license that can be found in the LICENSE.txt file or at
@@ -11,18 +11,33 @@ package com.maddyhome.idea.vim.common
 import com.maddyhome.idea.vim.api.ImmutableVimCaret
 import com.maddyhome.idea.vim.api.VimEditor
 import com.maddyhome.idea.vim.api.injector
+import com.maddyhome.idea.vim.diagnostic.vimLogger
 import com.maddyhome.idea.vim.state.mode.Mode
+import com.maddyhome.idea.vim.state.mode.SelectionType
 import org.jetbrains.annotations.ApiStatus.Internal
 import java.util.concurrent.ConcurrentLinkedDeque
+import javax.swing.KeyStroke
+import kotlin.coroutines.cancellation.CancellationException
+
+private val logger = vimLogger<VimListenersNotifier>()
 
 @Internal // please do not use this class in your plugins, API is not final and will be changed in future releases
 class VimListenersNotifier {
   val modeChangeListeners: MutableCollection<ModeChangeListener> = ConcurrentLinkedDeque()
+  val modeWillChangeListeners: MutableCollection<ModeWillChangeListener> = ConcurrentLinkedDeque()
   val myEditorListeners: MutableCollection<EditorListener> = ConcurrentLinkedDeque()
   val macroRecordingListeners: MutableCollection<MacroRecordingListener> = ConcurrentLinkedDeque()
   val vimPluginListeners: MutableCollection<VimPluginListener> = ConcurrentLinkedDeque()
   val isReplaceCharListeners: MutableCollection<IsReplaceCharListener> = ConcurrentLinkedDeque()
   val yankListeners: MutableCollection<VimYankListener> = ConcurrentLinkedDeque()
+  val registerListeners: MutableCollection<VimRegisterListener> = ConcurrentLinkedDeque()
+  val markListeners: MutableCollection<VimMarkListener> = ConcurrentLinkedDeque()
+  val keyTypedListeners: MutableCollection<VimKeyTypedListener> = ConcurrentLinkedDeque()
+
+  fun notifyModeWillChange(editor: VimEditor, oldMode: Mode, newMode: Mode) {
+    if (!injector.enabler.isEnabled()) return
+    modeWillChangeListeners.forEach { it.modeWillChange(editor, oldMode, newMode) }
+  }
 
   fun notifyModeChanged(editor: VimEditor, oldMode: Mode) {
     if (!injector.enabler.isEnabled()) return // we remove all the listeners when turning the plugin off, but let's do it just in case
@@ -59,6 +74,15 @@ class VimListenersNotifier {
     macroRecordingListeners.forEach { it.recordingFinished() }
   }
 
+  /**
+   * @param markChar the mark that changed. Pass `null` only when an unknown number of marks may have changed, because
+   * listeners cannot filter on it and have to assume the worst.
+   */
+  fun notifyMarksChanges(markChar: Char?) {
+    if (!injector.enabler.isEnabled()) return
+    markListeners.forEach { it.marksChanged(markChar) }
+  }
+
   fun notifyPluginTurnedOn() {
     vimPluginListeners.forEach { it.turnedOn() }
   }
@@ -77,6 +101,31 @@ class VimListenersNotifier {
     yankListeners.forEach { it.yankPerformed(caretToRange) }
   }
 
+  fun notifyRegisterStored(register: Char, copiedText: VimCopiedText, type: SelectionType, isDelete: Boolean) {
+    if (!injector.enabler.isEnabled()) return // we remove all the listeners when turning the plugin off, but let's do it just in case
+    registerListeners.forEach { it.registerStored(register, copiedText, type, isDelete) }
+  }
+
+  /**
+   * Reports a key the user typed
+   *
+   * Keys passed to the key handler are reported by [com.maddyhome.idea.vim.KeyHandler.handleUserKey]. Call this
+   * directly only for a typed key that IdeaVim handles without the key handler, such as a key typed in the output panel.
+   */
+  fun notifyKeyTyped(editor: VimEditor, key: KeyStroke) {
+    if (!injector.enabler.isEnabled()) return // we remove all the listeners when turning the plugin off, but let's do it just in case
+    // A broken listener must not stop the key from being handled
+    keyTypedListeners.forEach {
+      try {
+        it.keyTyped(editor, key)
+      } catch (e: CancellationException) {
+        throw e
+      } catch (e: Exception) {
+        logger.error("Key typed listener failed", e)
+      }
+    }
+  }
+
   /**
    * Removes listeners with a given listener owner.
    */
@@ -87,19 +136,26 @@ class VimListenersNotifier {
   fun unloadListeners(listenerOwner: ListenerOwner) {
     arrayOf(
       modeChangeListeners,
+      modeWillChangeListeners,
       myEditorListeners,
       macroRecordingListeners,
       vimPluginListeners,
       isReplaceCharListeners,
-      yankListeners
+      yankListeners,
+      registerListeners,
+      keyTypedListeners,
     ).forEach { unloadListeners(listenerOwner, it) }
   }
 
   fun reset() {
     modeChangeListeners.clear()
+    modeWillChangeListeners.clear()
     myEditorListeners.clear()
     macroRecordingListeners.clear()
     vimPluginListeners.clear()
     isReplaceCharListeners.clear()
+    yankListeners.clear()
+    registerListeners.clear()
+    keyTypedListeners.clear()
   }
 }

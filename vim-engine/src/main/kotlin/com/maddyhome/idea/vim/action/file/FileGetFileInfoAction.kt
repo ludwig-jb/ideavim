@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2023 The IdeaVim authors
+ * Copyright 2003-2026 The IdeaVim authors
  *
  * Use of this source code is governed by an MIT-style
  * license that can be found in the LICENSE.txt file or at
@@ -16,7 +16,11 @@ import com.maddyhome.idea.vim.command.Command
 import com.maddyhome.idea.vim.command.OperatorArguments
 import com.maddyhome.idea.vim.handler.VimActionHandler
 
-@CommandOrMotion(keys = ["<C-G>"], modes = [Mode.NORMAL])
+@CommandOrMotion(
+  keys = ["<C-G>"],
+  modes = [Mode.NORMAL],
+  description = "Display the current file name, cursor position and file status. With a [count], show the full path of the file."
+)
 class FileGetFileInfoAction : VimActionHandler.SingleExecution() {
   override val type: Command.Type = Command.Type.OTHER_READONLY
 
@@ -26,7 +30,10 @@ class FileGetFileInfoAction : VimActionHandler.SingleExecution() {
     cmd: Command,
     operatorArguments: OperatorArguments,
   ): Boolean {
-    injector.file.displayFileInfo(editor, cmd.rawCount > 0)
+    val message = injector.file.displayFileInfo(editor, cmd.rawCount > 0)
+    if (message != null) {
+      injector.messages.showMessage(editor, message)
+    }
     return true
   }
 }

@@ -15,20 +15,20 @@ import com.intellij.openapi.editor.Caret
 import com.intellij.openapi.editor.Editor
 import com.intellij.openapi.editor.RangeMarker
 import com.intellij.openapi.editor.VisualPosition
-import com.intellij.openapi.editor.markup.RangeHighlighter
 import com.intellij.openapi.util.Key
 import com.intellij.openapi.util.UserDataHolder
 import com.maddyhome.idea.vim.api.CaretRegisterStorageBase
 import com.maddyhome.idea.vim.api.LocalMarkStorage
 import com.maddyhome.idea.vim.api.SelectionInfo
+import com.maddyhome.idea.vim.api.VimOutputPanel
 import com.maddyhome.idea.vim.common.InsertSequence
+import com.maddyhome.idea.vim.common.TextRange
 import com.maddyhome.idea.vim.common.VimEditorReplaceMask
 import com.maddyhome.idea.vim.group.visual.VisualChange
 import com.maddyhome.idea.vim.group.visual.vimLeadSelectionOffset
 import com.maddyhome.idea.vim.newapi.vim
 import com.maddyhome.idea.vim.state.mode.Mode
 import com.maddyhome.idea.vim.state.mode.SelectionType
-import com.maddyhome.idea.vim.ui.OutputPanel
 import kotlin.properties.ReadWriteProperty
 import kotlin.reflect.KProperty
 
@@ -57,7 +57,7 @@ var Caret.vimSelectionStart: Int
     _vimSelectionStart = value
   }
 
-internal fun Caret.vimSelectionStartClear() {
+fun Caret.vimSelectionStartClear() {
   this._vimSelectionStart = null
 }
 
@@ -69,7 +69,7 @@ private var Caret._vimSelectionStart: Int? by userDataCaretToEditor()
 // the value is set, if it's not the same during get, we've been moved by IJ and so no longer valid. We also invalidate
 // the cached value through a caret listener handler, to prevent issues with the caret being moved and returned before
 // the cache is checked/invalidated
-internal var Caret.vimLastColumn: Int
+var Caret.vimLastColumn: Int
   get() {
     if (visualPosition != _vimLastColumnPos) {
       vimLastColumn = inlayAwareVisualColumn
@@ -81,7 +81,7 @@ internal var Caret.vimLastColumn: Int
     _vimLastColumnPos = visualPosition
   }
 
-internal fun Caret.resetVimLastColumn() {
+fun Caret.resetVimLastColumn() {
   _vimLastColumnPos = null
 }
 
@@ -89,52 +89,58 @@ private var Caret._vimLastColumn: Int by userDataCaretToEditorOr { (this as Care
 private var Caret._vimLastColumnPos: VisualPosition? by userDataCaretToEditor()
 
 // TODO: Is this a per-caret setting? This data is non-transient, so could be lost during visual block motion
-internal var Caret.vimLastVisualOperatorRange: VisualChange? by userDataCaretToEditor()
+var Caret.vimLastVisualOperatorRange: VisualChange? by userDataCaretToEditor()
 
 // Transient data. Does not need to be restored during visual block motion
-internal var Caret.vimInsertStart: RangeMarker by userDataOr {
+var Caret.vimInsertStart: RangeMarker by userDataOr {
   (this as Caret).editor.document.createRangeMarker(this.offset, this.offset)
 }
 
 // TODO: Data could be lost during visual block motion
-internal var Caret.registerStorage: CaretRegisterStorageBase? by userDataCaretToEditor()
-internal var Caret.markStorage: LocalMarkStorage? by userDataCaretToEditor()
-internal var Caret.lastSelectionInfo: SelectionInfo? by userDataCaretToEditor()
+var Caret.registerStorage: CaretRegisterStorageBase? by userDataCaretToEditor()
+var Caret.markStorage: LocalMarkStorage? by userDataCaretToEditor()
+var Caret.lastSelectionInfo: SelectionInfo? by userDataCaretToEditor()
 
-internal var Editor.vimInitialised: Boolean by userDataOr { false }
+var Editor.vimInitialised: Boolean by userDataOr { false }
 
 // ------------------ Editor
-internal fun unInitializeEditor(editor: Editor) {
+fun unInitializeEditor(editor: Editor) {
   editor.vimLastSelectionType = null
   editor.vimMorePanel = null
-  editor.vimLastHighlighters = null
+  editor.vimSearchHighlights.clear()
   editor.vimInitialised = false
 }
 
-internal var Editor.vimLastSearch: String? by userData()
-internal var Editor.vimLastHighlighters: MutableCollection<RangeHighlighter>? by userData()
-internal var Editor.vimIncsearchCurrentMatchOffset: Int? by userData()
+var Editor.vimLastSearch: String? by userData()
+
+/** The match the in-progress `'incsearch'` preview is showing, or null when there is no search in progress. */
+var Editor.vimIncsearchCurrentMatch: TextRange? by userData()
+
+/**
+ * The editor's search highlights. Created on first use - see [SearchHighlights], which owns every search highlighter
+ * in this editor.
+ */
+internal var Editor.vimSearchHighlights: SearchHighlights by userDataOr { SearchHighlights(this as Editor) }
 
 /***
  * @see :help visualmode()
  */
-internal var Editor.vimLastSelectionType: SelectionType? by userData()
-internal var Editor.vimEditorGroup: Boolean by userDataOr { false }
-internal var Editor.vimHasRelativeLineNumbersInstalled: Boolean by userDataOr { false }
-internal var Editor.vimMorePanel: OutputPanel? by userData()
-internal var Editor.vimTestInputModel: TestInputModel? by userData()
+var Editor.vimLastSelectionType: SelectionType? by userData()
+var Editor.vimEditorGroup: Boolean by userDataOr { false }
+var Editor.vimHasRelativeLineNumbersInstalled: Boolean by userDataOr { false }
+var Editor.vimMorePanel: VimOutputPanel? by userData()
 
-internal var Editor.vimChangeActionSwitchMode: Mode? by userData()
-internal var Editor.replaceMask: VimEditorReplaceMask? by userData()
+var Editor.vimChangeActionSwitchMode: Mode? by userData()
+var Editor.replaceMask: VimEditorReplaceMask? by userData()
 
-internal var Caret.currentInsert: InsertSequence? by userData()
-internal val Caret.insertHistory: MutableList<InsertSequence> by userDataOr { mutableListOf() }
+var Caret.currentInsert: InsertSequence? by userData()
+val Caret.insertHistory: MutableList<InsertSequence> by userDataOr { mutableListOf() }
 
 /**
  * Function for delegated properties.
  * The property will be delegated to UserData and has nullable type.
  */
-internal fun <T> userData(): ReadWriteProperty<UserDataHolder, T?> =
+fun <T> userData(): ReadWriteProperty<UserDataHolder, T?> =
   object : UserDataReadWriteProperty<UserDataHolder, T?>() {
     override fun getValue(thisRef: UserDataHolder, property: KProperty<*>): T? {
       return thisRef.getUserData(getKey(property))

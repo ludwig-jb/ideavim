@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2024 The IdeaVim authors
+ * Copyright 2003-2026 The IdeaVim authors
  *
  * Use of this source code is governed by an MIT-style
  * license that can be found in the LICENSE.txt file or at
@@ -13,6 +13,7 @@ import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.editor.Editor
 import com.maddyhome.idea.vim.KeyHandler
 import com.maddyhome.idea.vim.VimPlugin
+import com.maddyhome.idea.vim.api.VimSearchGroupBase
 import com.maddyhome.idea.vim.newapi.vim
 import org.jetbrains.jetCheck.Generator
 import org.jetbrains.jetCheck.ImperativeCommand
@@ -33,11 +34,13 @@ abstract class VimPropertyTestBase : VimTestCase() {
     keyState.mappingState.resetMappingSequence()
     VimPlugin.getKey().resetKeyMappings()
 
-    KeyHandler.getInstance().fullReset(editor.vim)
+    if (!editor.isDisposed) {
+      KeyHandler.getInstance().fullReset(editor.vim)
+      editor.caretModel.runForEachCaret { it.moveToOffset(0) }
+    }
     VimPlugin.getRegister().resetRegisters()
-    editor.caretModel.runForEachCaret { it.moveToOffset(0) }
 
-    VimPlugin.getSearch().resetState()
+    (VimPlugin.getSearch() as VimSearchGroupBase).resetState()
     VimPlugin.getChange().reset()
   }
 

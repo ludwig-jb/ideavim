@@ -19,6 +19,7 @@ import com.maddyhome.idea.vim.helper.enumSetOf
 import com.maddyhome.idea.vim.key.MappingOwner
 import com.maddyhome.idea.vim.newapi.vim
 import com.maddyhome.idea.vim.thinapi.VimApiImpl
+import kotlinx.coroutines.runBlocking
 import org.jetbrains.plugins.ideavim.mock.MockTestCase
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.BeforeEach
@@ -45,7 +46,7 @@ class ReadTest : MockTestCase() {
 
     val listenerOwner = ListenerOwner.Plugin.get("test")
     val mappingOwner = MappingOwner.Plugin.get("test")
-    myVimApi = VimApiImpl(listenerOwner, mappingOwner)
+    myVimApi = VimApiImpl(listenerOwner, mappingOwner, null)
 
     mockInjector = spy(injector)
 
@@ -53,6 +54,7 @@ class ReadTest : MockTestCase() {
     Mockito.`when`(mockInjector.searchHelper).thenReturn(mockSearchHelper)
 
     vimEditor = fixture.editor.vim
+    Mockito.`when`(mockInjector.fallbackWindow).thenReturn(vimEditor)
 
     realInjector = injector
     injector = mockInjector
@@ -60,12 +62,12 @@ class ReadTest : MockTestCase() {
 
   @AfterEach
   override fun tearDown(testInfo: TestInfo) {
+    injector = realInjector
+
     super.tearDown(testInfo)
     // reset mocks
     Mockito.reset(mockSearchHelper)
     Mockito.reset(mockInjector)
-
-    injector = realInjector
   }
 
   fun assertEqualsEditor(expected: VimEditor, actual: VimEditor) {
@@ -81,9 +83,11 @@ class ReadTest : MockTestCase() {
     val count = 2
     val includeWhitespaceLines = true
 
-    myVimApi.editor {
-      read {
-        getNextParagraphBoundOffset(startLine, count, includeWhitespaceLines)
+    runBlocking {
+      myVimApi.editor {
+        read {
+          getNextParagraphBoundOffset(startLine, count, includeWhitespaceLines)
+        }
       }
     }
 
@@ -105,9 +109,11 @@ class ReadTest : MockTestCase() {
     val includeCurrent = true
     val requireAll = false
 
-    myVimApi.editor {
-      read {
-        getNextSentenceStart(startOffset, count, includeCurrent, requireAll)
+    runBlocking {
+      myVimApi.editor {
+        read {
+          getNextSentenceStart(startOffset, count, includeCurrent, requireAll)
+        }
       }
     }
 
@@ -129,9 +135,11 @@ class ReadTest : MockTestCase() {
     val marker = '{'
     val count = 3
 
-    myVimApi.editor {
-      read {
-        getNextSectionStart(startLine, marker, count)
+    runBlocking {
+      myVimApi.editor {
+        read {
+          getNextSectionStart(startLine, marker, count)
+        }
       }
     }
 
@@ -153,9 +161,11 @@ class ReadTest : MockTestCase() {
     val marker = '}'
     val count = 2
 
-    myVimApi.editor {
-      read {
-        getPreviousSectionStart(startLine, marker, count)
+    runBlocking {
+      myVimApi.editor {
+        read {
+          getPreviousSectionStart(startLine, marker, count)
+        }
       }
     }
 
@@ -178,9 +188,11 @@ class ReadTest : MockTestCase() {
     val includeCurrent = false
     val requireAll = true
 
-    myVimApi.editor {
-      read {
-        getNextSentenceEnd(startOffset, count, includeCurrent, requireAll)
+    runBlocking {
+      myVimApi.editor {
+        read {
+          getNextSentenceEnd(startOffset, count, includeCurrent, requireAll)
+        }
       }
     }
 
@@ -202,9 +214,11 @@ class ReadTest : MockTestCase() {
     val count = 3
     val isBigWord = true
 
-    myVimApi.editor {
-      read {
-        getNextWordStartOffset(startOffset, count, isBigWord)
+    runBlocking {
+      myVimApi.editor {
+        read {
+          getNextWordStartOffset(startOffset, count, isBigWord)
+        }
       }
     }
 
@@ -226,9 +240,11 @@ class ReadTest : MockTestCase() {
     val isBigWord = false
     val stopOnEmptyLine = true
 
-    myVimApi.editor {
-      read {
-        getNextWordEndOffset(startOffset, count, isBigWord)
+    runBlocking {
+      myVimApi.editor {
+        read {
+          getNextWordEndOffset(startOffset, count, isBigWord)
+        }
       }
     }
 
@@ -250,9 +266,11 @@ class ReadTest : MockTestCase() {
     val count = 2
     val char = 'a'
 
-    myVimApi.editor {
-      read {
-        getNextCharOnLineOffset(startOffset, count, char)
+    runBlocking {
+      myVimApi.editor {
+        read {
+          getNextCharOnLineOffset(startOffset, count, char)
+        }
       }
     }
 
@@ -272,9 +290,11 @@ class ReadTest : MockTestCase() {
     val startOffset = 12
     val isBigWord = true
 
-    myVimApi.editor {
-      read {
-        getWordAtOrFollowingOffset(startOffset, isBigWord)
+    runBlocking {
+      myVimApi.editor {
+        read {
+          getWordAtOrFollowingOffset(startOffset, isBigWord)
+        }
       }
     }
 
@@ -290,9 +310,11 @@ class ReadTest : MockTestCase() {
     val count = 1
     val isOuter = true
 
-    myVimApi.editor {
-      read {
-        getParagraphRange(line, count, isOuter)
+    runBlocking {
+      myVimApi.editor {
+        read {
+          getParagraphRange(line, count, isOuter)
+        }
       }
     }
 
@@ -313,9 +335,11 @@ class ReadTest : MockTestCase() {
     val quote = '"'
     val isOuter = false
 
-    myVimApi.editor {
-      read {
-        getBlockQuoteInLineRange(startOffset, quote, isOuter)
+    runBlocking {
+      myVimApi.editor {
+        read {
+          getBlockQuoteInLineRange(startOffset, quote, isOuter)
+        }
       }
     }
 
@@ -324,7 +348,8 @@ class ReadTest : MockTestCase() {
       editorCaptor.capture(),
       eq(startOffset),
       eq(quote),
-      eq(isOuter)
+      eq(isOuter),
+      eq(false)
     )
 
     assertEqualsEditor(vimEditor, editorCaptor.firstValue)
@@ -337,9 +362,11 @@ class ReadTest : MockTestCase() {
     val endLine = 10
     val ignoreCase = true
 
-    myVimApi.editor {
-      read {
-        findAll(pattern, startLine, endLine, ignoreCase)
+    runBlocking {
+      myVimApi.editor {
+        read {
+          findAll(pattern, startLine, endLine, ignoreCase)
+        }
       }
     }
 
@@ -349,7 +376,7 @@ class ReadTest : MockTestCase() {
       eq(pattern),
       eq(startLine),
       eq(endLine),
-      eq(ignoreCase)
+      eq(ignoreCase),
     )
 
     assertEqualsEditor(vimEditor, editorCaptor.firstValue)
@@ -363,9 +390,11 @@ class ReadTest : MockTestCase() {
     val backwards = false
     val vimSearchOptions = enumSetOf<SearchOptions>()
 
-    myVimApi.editor {
-      read {
-        findPattern(pattern, startOffset, count, backwards)
+    runBlocking {
+      myVimApi.editor {
+        read {
+          findPattern(pattern, startOffset, count, backwards)
+        }
       }
     }
 
@@ -389,9 +418,11 @@ class ReadTest : MockTestCase() {
     val backwards = true
     val vimSearchOptions = enumSetOf(SearchOptions.BACKWARDS)
 
-    myVimApi.editor {
-      read {
-        findPattern(pattern, startOffset, count, backwards)
+    runBlocking {
+      myVimApi.editor {
+        read {
+          findPattern(pattern, startOffset, count, backwards)
+        }
       }
     }
 

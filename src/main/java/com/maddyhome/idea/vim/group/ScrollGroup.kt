@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2023 The IdeaVim authors
+ * Copyright 2003-2026 The IdeaVim authors
  *
  * Use of this source code is governed by an MIT-style
  * license that can be found in the LICENSE.txt file or at
@@ -25,13 +25,16 @@ import com.maddyhome.idea.vim.helper.getNormalizedScrollOffset
 import com.maddyhome.idea.vim.helper.getNormalizedSideScrollOffset
 import com.maddyhome.idea.vim.newapi.ij
 import com.maddyhome.idea.vim.newapi.vim
-import com.maddyhome.idea.vim.options.EffectiveOptionValueChangeListener
 import kotlin.math.abs
 import kotlin.math.max
 
 internal class ScrollGroup : VimScrollGroup {
   override fun scrollCaretIntoView(editor: VimEditor) {
-    ScrollViewHelper.scrollCaretIntoView(editor.ij)
+    scrollCaretIntoView(editor, caretChangedLine = false)
+  }
+
+  override fun scrollCaretIntoView(editor: VimEditor, caretChangedLine: Boolean) {
+    ScrollViewHelper.scrollCaretIntoView(editor.ij, caretChangedLine)
   }
 
   override fun scrollFullPage(editor: VimEditor, caret: VimCaret, pages: Int): Boolean {
@@ -254,14 +257,12 @@ internal class ScrollGroup : VimScrollGroup {
     return true
   }
 
-  private enum class ScreenLocation {
-    TOP, MIDDLE, BOTTOM
+  override fun onScrollOptionChanged(editor: VimEditor) {
+    ScrollViewHelper.scrollCaretIntoView(editor.ij)
   }
 
-  object ScrollOptionsChangeListener : EffectiveOptionValueChangeListener {
-    override fun onEffectiveValueChanged(editor: VimEditor) {
-      editor.ij.apply { ScrollViewHelper.scrollCaretIntoView(this) }
-    }
+  private enum class ScreenLocation {
+    TOP, MIDDLE, BOTTOM
   }
 
   companion object {

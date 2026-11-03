@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2023 The IdeaVim authors
+ * Copyright 2003-2026 The IdeaVim authors
  *
  * Use of this source code is governed by an MIT-style
  * license that can be found in the LICENSE.txt file or at
@@ -12,7 +12,6 @@ import com.intellij.openapi.actionSystem.DataContext
 import com.intellij.openapi.actionSystem.PlatformDataKeys
 import com.intellij.openapi.command.CommandProcessor
 import com.intellij.openapi.command.undo.UndoManager
-import com.intellij.openapi.components.Service
 import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.editor.Editor
 import com.intellij.openapi.fileEditor.TextEditor
@@ -29,13 +28,14 @@ import com.maddyhome.idea.vim.common.InsertSequence
 import com.maddyhome.idea.vim.newapi.IjVimCaret
 import com.maddyhome.idea.vim.newapi.globalIjOptions
 import com.maddyhome.idea.vim.newapi.ij
+import com.maddyhome.idea.vim.state.mode.Mode
 import com.maddyhome.idea.vim.undo.VimTimestampBasedUndoService
 
 /**
  * @author oleg
  */
-@Service
-internal class UndoRedoHelper : VimTimestampBasedUndoService {
+
+class UndoRedoHelper : VimTimestampBasedUndoService {
   companion object {
     private val logger = logger<UndoRedoHelper>()
   }
@@ -52,12 +52,15 @@ internal class UndoRedoHelper : VimTimestampBasedUndoService {
     val textEditor = getTextEditor(editor.ij)
     val undoManager = UndoManager.getInstance(project)
     if (undoManager.isUndoAvailable(textEditor)) {
+      val caretCountBeforeUndo = editor.ij.caretModel.allCarets.size
       val scrollingModel = editor.getScrollingModel()
       scrollingModel.accumulateViewportChanges()
 
       performUndo(editor, undoManager, textEditor)
 
       scrollingModel.flushViewportChanges()
+
+      collapseRestoredBlockVisualCarets(editor, caretCountBeforeUndo)
 
       return true
     }
@@ -78,7 +81,7 @@ internal class UndoRedoHelper : VimTimestampBasedUndoService {
     undoManager: UndoManager,
     fileEditor: TextEditor,
   ) {
-    if (injector.globalIjOptions().oldundo) {
+    if (injector.globalIjOptions().ideaoldundo) {
       // TODO refactor me after VIM-308 when restoring selection and caret movement will be ignored by undo
       editor.runWithChangeTracking {
         undoManager.undo(fileEditor)
@@ -155,7 +158,7 @@ internal class UndoRedoHelper : VimTimestampBasedUndoService {
     fileEditor: TextEditor,
     editor: VimEditor,
   ) {
-    if (injector.globalIjOptions().oldundo) {
+    if (injector.globalIjOptions().ideaoldundo) {
       undoManager.redo(fileEditor)
       CommandProcessor.getInstance().runUndoTransparentAction {
         editor.carets().forEach { it.ij.removeSelection() }
@@ -195,6 +198,23 @@ internal class UndoRedoHelper : VimTimestampBasedUndoService {
         removeSelections(editor)
       }
     }
+  }
+
+  /**
+   * VIM-4112. IntelliJ's undo restores the pre-edit `CaretState`; for a block-visual edit that
+   * means one caret per block row. A 1 → N caret-count jump across undo uniquely identifies
+   * this, since [com.maddyhome.idea.vim.helper.exitVisualMode] is the only flow that collapses
+   * multi-carets to one. The remaining caret is placed at the block's top-left, matching Vim's
+   * convention of cursor-at-start-of-undone-change.
+   */
+  private fun collapseRestoredBlockVisualCarets(editor: VimEditor, caretCountBeforeUndo: Int) {
+    val caretModel = editor.ij.caretModel
+    val restoredExtraCarets = caretCountBeforeUndo == 1 && caretModel.allCarets.size > 1
+    if (!restoredExtraCarets || editor.mode !is Mode.NORMAL) return
+
+    val blockTopOffset = caretModel.allCarets.minOf { it.offset }
+    caretModel.removeSecondaryCarets()
+    caretModel.primaryCaret.moveToOffset(blockTopOffset)
   }
 
   private fun removeSelections(editor: VimEditor) {

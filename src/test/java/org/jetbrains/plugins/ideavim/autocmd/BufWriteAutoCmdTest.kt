@@ -1,0 +1,153 @@
+/*
+ * Copyright 2003-2026 The IdeaVim authors
+ *
+ * Use of this source code is governed by an MIT-style
+ * license that can be found in the LICENSE.txt file or at
+ * https://opensource.org/licenses/MIT.
+ */
+
+package org.jetbrains.plugins.ideavim.autocmd
+
+import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.command.WriteCommandAction
+import com.intellij.openapi.editor.Editor
+import com.intellij.openapi.fileEditor.FileDocumentManager
+import com.maddyhome.idea.vim.listener.BufNewFileTracker
+import com.maddyhome.idea.vim.state.mode.Mode
+import org.jetbrains.plugins.ideavim.SkipNeovimReason
+import org.jetbrains.plugins.ideavim.TestWithoutNeovim
+import org.jetbrains.plugins.ideavim.VimTestCase
+import org.junit.jupiter.api.AfterEach
+import org.junit.jupiter.api.BeforeEach
+import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.TestInfo
+
+@TestWithoutNeovim(reason = SkipNeovimReason.NOT_VIM_TESTING)
+class BufWriteAutoCmdTest : VimTestCase() {
+
+  @BeforeEach
+  override fun setUp(testInfo: TestInfo) {
+    super.setUp(testInfo)
+    ApplicationManager.getApplication().invokeAndWait {
+      configureByText("\n")
+    }
+    enterCommand("autocmd!")
+  }
+
+  @AfterEach
+  override fun tearDown(testInfo: TestInfo) {
+    try {
+      enterCommand("autocmd!")
+    } finally {
+      super.tearDown(testInfo)
+    }
+  }
+
+  @Test
+  fun `should fire BufWritePre on save`() {
+    enterCommand("autocmd BufWritePre * echo \"pre\"")
+    modifyAndSave(openFile("hello.txt"))
+    assertExOutput("pre")
+  }
+
+  @Test
+  fun `should fire BufWritePost on save`() {
+    enterCommand("autocmd BufWritePost * echo \"post\"")
+    modifyAndSave(openFile("hello.txt"))
+    assertExOutput("post")
+  }
+
+  @Test
+  fun `BufWrite should be alias for BufWritePre`() {
+    enterCommand("autocmd BufWrite * echo \"write\"")
+    modifyAndSave(openFile("hello.txt"))
+    assertExOutput("write")
+  }
+
+  @Test
+  fun `should fire BufWritePre before BufWritePost`() {
+    enterCommand("autocmd BufWritePre * echo \"1-pre\"")
+    enterCommand("autocmd BufWritePost * echo \"2-post\"")
+    modifyAndSave(openFile("hello.txt"))
+    assertExOutput("1-pre\n2-post")
+  }
+
+  @Test
+  fun `should not fire for non-matching pattern`() {
+    enterCommand("autocmd BufWritePre *.py echo \"py\"")
+    modifyAndSave(openFile("hello.txt"))
+    assertNoExOutput()
+  }
+
+  @Test
+  fun `should match pattern against file extension`() {
+    enterCommand("autocmd BufWritePre *.txt echo \"txt\"")
+    modifyAndSave(openFile("hello.txt"))
+    assertExOutput("txt")
+  }
+
+  @Test
+  fun `should fire autocmd against saved document, not focused editor`() {
+    // a.py: 1 line. b.py: 5 lines. Opening b.py last makes it the focused editor.
+    val aEditor = openFile("a.py", "one-line")
+    openFile("b.py", "l1\nl2\nl3\nl4\nl5")
+
+    // line('$') reports the line count of the editor the autocmd runs against.
+    enterCommand("autocmd BufWritePre * echo line('$')")
+    modifyAndSave(aEditor)
+
+    // If the handler mistakenly ran against the focused b.py, output would be "5".
+    assertExOutput("1")
+  }
+
+  /**
+   * IntelliJ auto-saves while the user is typing, which Vim never does - `:w` can only be issued from Normal or
+   * Command-line mode. Handlers for write events must not run against a live insert session. See VIM-4257.
+   */
+  @Test
+  fun `should return to normal mode before running handler`() {
+    val editor = openFile("hello.txt")
+    enterCommand("autocmd BufWritePre * echo \"pre\"")
+
+    typeText("i")
+    assertMode(Mode.INSERT)
+
+    modifyAndSave(editor)
+
+    assertMode(Mode.NORMAL())
+    assertExOutput("pre")
+  }
+
+  @Test
+  fun `should return to normal mode from replace mode before running handler`() {
+    val editor = openFile("hello.txt")
+    enterCommand("autocmd BufWritePre * echo \"pre\"")
+
+    typeText("R")
+    assertMode(Mode.REPLACE)
+
+    modifyAndSave(editor)
+
+    assertMode(Mode.NORMAL())
+    assertExOutput("pre")
+  }
+
+  private fun openFile(filename: String, content: String = "initial content"): Editor {
+    ApplicationManager.getApplication().invokeAndWait {
+      val file = fixture.createFile(filename, content)
+      // Clear newly-created marker so this isn't treated as BufNewFile.
+      BufNewFileTracker.consumeIfNew(file.path)
+      fixture.openFileInEditor(file)
+    }
+    return fixture.editor
+  }
+
+  private fun modifyAndSave(editor: Editor) {
+    ApplicationManager.getApplication().invokeAndWait {
+      WriteCommandAction.runWriteCommandAction(fixture.project) {
+        editor.document.insertString(0, "x")
+      }
+      FileDocumentManager.getInstance().saveDocument(editor.document)
+    }
+  }
+}

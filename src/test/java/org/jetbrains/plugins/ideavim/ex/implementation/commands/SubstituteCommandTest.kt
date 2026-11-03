@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2023 The IdeaVim authors
+ * Copyright 2003-2026 The IdeaVim authors
  *
  * Use of this source code is governed by an MIT-style
  * license that can be found in the LICENSE.txt file or at
@@ -1339,7 +1339,7 @@ class SubstituteCommandTest : VimTestCase() {
 
   @Test
   @TestWithoutNeovim(reason = SkipNeovimReason.OPTION)
-  fun `test substitute and undo with oldundo`() {
+  fun `test substitute and undo with ideaoldundo`() {
     configureByText(
       """
       |Hello ${c}world
@@ -1349,7 +1349,7 @@ class SubstituteCommandTest : VimTestCase() {
     )
 
     try {
-      enterCommand("set oldundo")
+      enterCommand("set ideaoldundo")
       typeText(commandToKeys("s/world/universe/"))
       assertState(
         """
@@ -1368,13 +1368,13 @@ class SubstituteCommandTest : VimTestCase() {
       """.trimMargin()
       )
     } finally {
-      enterCommand("set nooldundo")
+      enterCommand("set noideaoldundo")
     }
   }
 
   @Test
   @TestWithoutNeovim(reason = SkipNeovimReason.OPTION)
-  fun `test substitute global and undo with oldundo`() {
+  fun `test substitute global and undo with ideaoldundo`() {
     configureByText(
       """
       |${c}Hello world world world
@@ -1383,7 +1383,7 @@ class SubstituteCommandTest : VimTestCase() {
     )
 
     try {
-      enterCommand("set oldundo")
+      enterCommand("set ideaoldundo")
       typeText(commandToKeys("s/world/universe/g"))
       assertState(
         """
@@ -1400,13 +1400,13 @@ class SubstituteCommandTest : VimTestCase() {
       """.trimMargin()
       )
     } finally {
-      enterCommand("set nooldundo")
+      enterCommand("set noideaoldundo")
     }
   }
 
   @Test
   @TestWithoutNeovim(reason = SkipNeovimReason.OPTION)
-  fun `test substitute with range and undo with oldundo`() {
+  fun `test substitute with range and undo with ideaoldundo`() {
     configureByText(
       """
       |First line
@@ -1418,7 +1418,7 @@ class SubstituteCommandTest : VimTestCase() {
     )
 
     try {
-      enterCommand("set oldundo")
+      enterCommand("set ideaoldundo")
       typeText(commandToKeys("2,4s/world/universe/"))
       assertState(
         """
@@ -1441,13 +1441,13 @@ class SubstituteCommandTest : VimTestCase() {
       """.trimMargin()
       )
     } finally {
-      enterCommand("set nooldundo")
+      enterCommand("set noideaoldundo")
     }
   }
 
   @Test
   @TestWithoutNeovim(reason = SkipNeovimReason.OPTION)
-  fun `test substitute all lines and undo with oldundo`() {
+  fun `test substitute all lines and undo with ideaoldundo`() {
     configureByText(
       """
       |${c}Hello world
@@ -1457,7 +1457,7 @@ class SubstituteCommandTest : VimTestCase() {
     )
 
     try {
-      enterCommand("set oldundo")
+      enterCommand("set ideaoldundo")
       typeText(commandToKeys("%s/world/universe/"))
       assertState(
         """
@@ -1476,7 +1476,201 @@ class SubstituteCommandTest : VimTestCase() {
       """.trimMargin()
       )
     } finally {
-      enterCommand("set nooldundo")
+      enterCommand("set noideaoldundo")
     }
+  }
+
+  @Test
+  @TestWithoutNeovim(reason = SkipNeovimReason.OPTION)
+  fun `test substitute with e flag suppresses pattern not found error`() {
+    configureByText("${c}Hello world\n")
+    enterCommand("s/missing//e")
+    assertPluginError(false)
+    assertStatusLineCleared()
+  }
+
+  @Test
+  @TestWithoutNeovim(reason = SkipNeovimReason.OPTION)
+  fun `test substitute without e flag reports pattern not found error`() {
+    configureByText("${c}Hello world\n")
+    enterCommand("s/missing//")
+    assertPluginError(true)
+    assertPluginErrorMessage("E486: Pattern not found: missing")
+  }
+
+  @Test
+  @TestWithoutNeovim(reason = SkipNeovimReason.OPTION)
+  fun `test substitute with e flag and trailing whitespace pattern`() {
+    // The classic autocmd use case: %s/\s\+$//e should not produce errors when there is no trailing whitespace
+    configureByText("${c}Hello world\n")
+    enterCommand("%s/\\s\\+$//e")
+    assertPluginError(false)
+    assertStatusLineCleared()
+  }
+
+  @Test
+  @TestWithoutNeovim(reason = SkipNeovimReason.OPTION)
+  fun `test substitute with e flag combined with g flag`() {
+    configureByText("${c}Hello world\n")
+    enterCommand("s/missing//ge")
+    assertPluginError(false)
+    assertStatusLineCleared()
+  }
+
+  @Test
+  @TestWithoutNeovim(reason = SkipNeovimReason.OPTION)
+  fun `test substitute with e flag still performs substitution when pattern matches`() {
+    doTest(
+      exCommand("s/world/universe/e"),
+      "${c}Hello world\n",
+      "${c}Hello universe\n",
+    )
+    assertPluginError(false)
+  }
+
+  @Test
+  @TestWithoutNeovim(reason = SkipNeovimReason.OPTION)
+  fun `test substitute e flag does not persist to next substitute`() {
+    // :h :&& - flags are not kept between substitute commands
+    configureByText("${c}Hello world\n")
+    enterCommand("s/missing//e")
+    assertPluginError(false)
+    enterCommand("s/missing//")
+    assertPluginError(true)
+    assertPluginErrorMessage("E486: Pattern not found: missing")
+  }
+
+  @Test
+  @TestWithoutNeovim(reason = SkipNeovimReason.OPTION)
+  fun `test substitute all occurrences on tab-indented line with g flag`() {
+    // Regression test: matches after the first must not be skipped on tab-indented lines. The bug was that the resume
+    // position came from a tab-expanded logical column but was reused as a raw character offset by the next search.
+    configureByText(
+      "public class TestMapper\n" +
+        "{\n" +
+        "\tpublic static Cinema ToCinema(this CinemaEntity cinemaEntity)\n" +
+        "\t{\n" +
+        "\t\treturn new Cinema(new Cinema.CinemaConstructModel\n" +
+        "\t}\n" +
+        "}\n",
+    )
+    enterCommand("%s/Cinema/Other/g")
+    assertState(
+      "public class TestMapper\n" +
+        "{\n" +
+        "\tpublic static Other ToOther(this OtherEntity cinemaEntity)\n" +
+        "\t{\n" +
+        "\t\treturn new Other(new Other.OtherConstructModel\n" +
+        "\t}\n" +
+        "}\n",
+    )
+  }
+
+  @Test
+  @TestWithoutNeovim(reason = SkipNeovimReason.OPTION)
+  fun `test backslash delimiter reuses the last search pattern`() {
+    configureByText("${c}foo and bar")
+    enterSearch("and")
+    enterCommand("""s\/or/""")
+    assertPluginError(false)
+    assertState("${c}foo or bar")
+  }
+
+  @Test
+  @TestWithoutNeovim(reason = SkipNeovimReason.OPTION)
+  fun `test backslash ampersand delimiter reuses the last substitute pattern`() {
+    configureByText("${c}foo and and bar")
+    enterCommand("s/and/or/")
+    enterCommand("""s\&maybe&""")
+    assertPluginError(false)
+    assertState("${c}foo or maybe bar")
+  }
+
+  @Test
+  @TestWithoutNeovim(reason = SkipNeovimReason.OPTION)
+  fun `test backslash delimiter without a previous search reports E35`() {
+    configureByText("${c}foo and bar")
+    enterCommand("""s\/or/""")
+    assertPluginErrorMessage("E35: No previous regular expression")
+  }
+
+  @Test
+  @TestWithoutNeovim(reason = SkipNeovimReason.OPTION)
+  fun `test n flag reports the number of matches without substituting`() {
+    configureByText("${c}axa\naxa\n")
+    enterCommand("%s/a/b/n")
+    assertPluginError(false)
+    assertState("${c}axa\naxa\n")
+    assertStatusLineMessageContains("2 matches on 2 lines")
+  }
+
+  @Test
+  @TestWithoutNeovim(reason = SkipNeovimReason.OPTION)
+  fun `test n flag with g flag counts every match on a line`() {
+    configureByText("${c}axa\naxa\n")
+    enterCommand("%s/a/b/gn")
+    assertPluginError(false)
+    assertState("${c}axa\naxa\n")
+    assertStatusLineMessageContains("4 matches on 2 lines")
+  }
+
+  @Test
+  @TestWithoutNeovim(reason = SkipNeovimReason.OPTION)
+  fun `test n flag uses the singular form for a single match`() {
+    configureByText("${c}axa\nbbb\n")
+    enterCommand("%s/x/y/n")
+    assertPluginError(false)
+    assertState("${c}axa\nbbb\n")
+    assertStatusLineMessageContains("1 match on 1 line")
+  }
+
+  @Test
+  @TestWithoutNeovim(reason = SkipNeovimReason.OPTION)
+  fun `test n flag reports pattern not found`() {
+    configureByText("${c}axa\n")
+    enterCommand("%s/zzz/y/n")
+    assertStatusLineMessageContains("E486: Pattern not found: zzz")
+  }
+
+  @Test
+  @TestWithoutNeovim(reason = SkipNeovimReason.OPTION)
+  fun `test g flag replaces all hyphens on every line of visual selection`() {
+    configureByText(
+      "log := fh.log.With(\n" +
+        "    ${c}zap.String(\"foo1-bar1-baz1-buzz1-\", x),\n" +
+        "    zap.String(\"foo2-bar2-baz2-buzz2-\", y),\n" +
+        "    zap.String(\"foo3-bar3-baz3-buzz3-\", z),\n" +
+        ")\n",
+    )
+    typeText("V", "jj", ":'<,'>s/-/_/g<Enter>")
+    assertPluginError(false)
+    assertState(
+      "log := fh.log.With(\n" +
+        "    zap.String(\"foo1_bar1_baz1_buzz1_\", x),\n" +
+        "    zap.String(\"foo2_bar2_baz2_buzz2_\", y),\n" +
+        "    ${c}zap.String(\"foo3_bar3_baz3_buzz3_\", z),\n" +
+        ")\n",
+    )
+  }
+
+  @Test
+  @TestWithoutNeovim(reason = SkipNeovimReason.OPTION)
+  fun `test g flag replaces all hyphens on every line of numeric range`() {
+    configureByText(
+      "${c}log := fh.log.With(\n" +
+        "    zap.String(\"foo1-bar1-baz1-buzz1-\", x),\n" +
+        "    zap.String(\"foo2-bar2-baz2-buzz2-\", y),\n" +
+        "    zap.String(\"foo3-bar3-baz3-buzz3-\", z),\n" +
+        ")\n",
+    )
+    enterCommand("2,4s/-/_/g")
+    assertPluginError(false)
+    assertState(
+      "log := fh.log.With(\n" +
+        "    zap.String(\"foo1_bar1_baz1_buzz1_\", x),\n" +
+        "    zap.String(\"foo2_bar2_baz2_buzz2_\", y),\n" +
+        "    ${c}zap.String(\"foo3_bar3_baz3_buzz3_\", z),\n" +
+        ")\n",
+    )
   }
 }

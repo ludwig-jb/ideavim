@@ -11,9 +11,17 @@ package com.maddyhome.idea.vim.api
 import com.maddyhome.idea.vim.common.LiveRange
 import com.maddyhome.idea.vim.common.TextRange
 import com.maddyhome.idea.vim.common.VimEditorReplaceMask
+import com.maddyhome.idea.vim.group.visual.VimBlockSelection
+import com.maddyhome.idea.vim.group.visual.VimSelection
+import com.maddyhome.idea.vim.group.visual.VimSimpleSelection
+import com.maddyhome.idea.vim.group.visual.VisualOperation
 import com.maddyhome.idea.vim.helper.VimLockLabel
 import com.maddyhome.idea.vim.state.mode.Mode
 import com.maddyhome.idea.vim.state.mode.SelectionType
+import com.maddyhome.idea.vim.state.mode.SelectionType.CHARACTER_WISE
+import com.maddyhome.idea.vim.state.mode.inBlockSelection
+import com.maddyhome.idea.vim.state.mode.inVisualMode
+import com.maddyhome.idea.vim.state.mode.selectionType
 
 /**
  * Every line in [VimEditor] ends with a new line TODO <- this is probably not true already
@@ -80,6 +88,58 @@ interface VimEditor {
    */
   fun text(): CharSequence
 
+  fun collectSelections(): Map<VimCaret, VimSelection>? {
+    return when {
+      !this.inVisualMode && injector.vimState.isDotRepeatInProgress -> {
+        if (this.vimLastSelectionType == SelectionType.BLOCK_WISE) {
+          val primaryCaret = primaryCaret()
+          val range = primaryCaret.vimLastVisualOperatorRange ?: return null
+          val end = VisualOperation.calculateRange(this, range, 1, primaryCaret)
+          mapOf(
+            primaryCaret to VimBlockSelection(
+              primaryCaret.offset,
+              end,
+              this,
+              range.columns >= VimMotionGroupBase.LAST_COLUMN,
+            ),
+          )
+        } else {
+          val carets = mutableMapOf<VimCaret, VimSelection>()
+          this.nativeCarets().forEach { caret ->
+            val range = caret.vimLastVisualOperatorRange ?: return@forEach
+            val end = VisualOperation.calculateRange(this, range, 1, caret)
+            carets += caret to VimSelection.create(caret.offset, end, range.type, this)
+          }
+          carets.toMap()
+        }
+      }
+
+      this.inBlockSelection -> {
+        val primaryCaret = primaryCaret()
+        mapOf(
+          primaryCaret to VimBlockSelection(
+            primaryCaret.vimSelectionStart,
+            primaryCaret.offset,
+            this,
+            primaryCaret.vimLastColumn >= VimMotionGroupBase.LAST_COLUMN,
+          ),
+        )
+      }
+
+      else -> this.nativeCarets().associateWith { caret ->
+        val mode = this.mode
+        VimSimpleSelection.createWithNative(
+          caret.vimSelectionStart,
+          caret.offset,
+          caret.selectionStart,
+          caret.selectionEnd,
+          mode.selectionType ?: CHARACTER_WISE,
+          this,
+        )
+      }
+    }
+  }
+
   /**
    * Vim has always at least one line. When we need to understand that there are no lines, it has a flag "ML_EMPTY"
    *   which indicated that the buffer is empty. However, the line count is still 1.
@@ -130,6 +190,22 @@ interface VimEditor {
   fun isOneLineMode(): Boolean
 
   /**
+   * If this editor is one of IdeaVim's virtual buffers — the command-line / search history windows
+   * (opened by `q:`, `q/`, `q?`) or the control-chars editor — returns its kind. Otherwise null.
+   */
+  fun getVirtualBufferKind(): VirtualBufferKind? = null
+
+  /** True if this editor is the command-line / search history window opened by `q:`, `q/` or `q?`. */
+  fun isInHistoryWindow(): Boolean =
+    getVirtualBufferKind().let { it is VirtualBufferKind.Command || it is VirtualBufferKind.Search }
+
+  /**
+   * If this editor is a command-line / search history window, returns the editor that was active
+   * when it was opened. Null otherwise (or if the original editor has since been closed).
+   */
+  fun getCmdwinOriginalEditor(): VimEditor? = null
+
+  /**
    * function for refactoring, get rid of it
    */
   fun search(
@@ -153,6 +229,7 @@ interface VimEditor {
   }
 
   fun getVirtualFile(): VimVirtualFile?
+
   @VimLockLabel.RequiresWriteLock
   fun deleteString(range: TextRange)
 
@@ -168,6 +245,34 @@ interface VimEditor {
   fun addCaret(offset: Int): VimCaret?
   fun removeSecondaryCarets()
   fun vimSetSystemBlockSelectionSilently(start: BufferPosition, end: BufferPosition)
+
+  /**
+   * Run a bulk caret-modifying operation. On IntelliJ this delegates to
+   * `CaretModel.runBatchCaretOperation`, which defers caret-merging until the runnable returns
+   * — useful when replacing many carets at once (e.g. block-visual `setBlockSelection`).
+   * Default is to just invoke the runnable; non-IDE editors don't need merging semantics.
+   *
+   * Safe to use around IDE-action replay (e.g. `repeatInsert`).
+   */
+  fun runBatchCaretOperation(runnable: () -> Unit) {
+    runnable()
+  }
+
+  /**
+   * Run a bulk caret-modifying operation inside an "all-carets-action" lifecycle. On IntelliJ
+   * this piggy-backs on `CaretModel.runForEachCaret` so the `beforeAllCaretsAction` /
+   * `afterAllCaretsAction` listener pair fires around the runnable. Split-mode's caret
+   * synchronizer uses that pair as a batching window — without it, every per-caret event ships
+   * a separate RD-protocol message, giving O(N²) per block-visual motion.
+   *
+   * IMPORTANT: the runnable must NOT execute IntelliJ actions that themselves call
+   * `runForEachCaret` (e.g. `EditorActionExecutor.executeAction(<BS>)`). Such nested calls
+   * throw `IllegalStateException("Recursive runForEachCaret invocations are not allowed")`.
+   * Use [runBatchCaretOperation] for IDE-action replay.
+   */
+  fun runAsAllCaretsAction(runnable: () -> Unit) {
+    runnable()
+  }
 
   fun getLineStartOffset(line: Int): Int
   fun getLineEndOffset(line: Int): Int
@@ -242,6 +347,17 @@ interface VimEditor {
    * @return the fold region starting at the line, or null if no fold starts on that line
    */
   fun getFoldRegionAtLine(line: Int): VimFoldRegion?
+
+  /**
+   * Returns the collapsed fold region whose visual start line is [line], if any.
+   *
+   * IDE fold regions may start after the visual header line (e.g. the newline after `{`), so
+   * [getFoldRegionAtLine] and [getFoldRegionsAtOffset] are not sufficient for this lookup.
+   *
+   * @param line the visual start line of the fold (0-based)
+   * @return the collapsed fold region, or null if no matching collapsed fold exists
+   */
+  fun getCollapsedFoldRegionAtVisualStartLine(line: Int): VimFoldRegion?
 
   /**
    * Returns all fold regions in the editor.
@@ -324,6 +440,8 @@ interface VimEditor {
     }
   }
 
+  val jumpListId: String get() = projectId
+
   /**
    * Toggles the insert/overwrite state. If currently insert, goto replace mode. If currently replace, goto insert
    * mode.
@@ -331,7 +449,7 @@ interface VimEditor {
   fun toggleInsertOverwrite() {
     val oldMode = this.mode
     var newMode = oldMode
-    if (oldMode == Mode.INSERT) {
+    if (oldMode is Mode.INSERT) {
       newMode = Mode.REPLACE
     } else if (oldMode == Mode.REPLACE) {
       newMode = Mode.INSERT
@@ -344,8 +462,10 @@ interface VimEditor {
 
 interface MutableVimEditor : VimEditor {
   fun addLine(atPosition: Int): Int?
+
   @VimLockLabel.RequiresWriteLock
   fun insertText(caret: VimCaret, atPosition: Int, text: CharSequence)
+
   @VimLockLabel.RequiresWriteLock
   fun replaceString(start: Int, end: Int, newString: String)
 }

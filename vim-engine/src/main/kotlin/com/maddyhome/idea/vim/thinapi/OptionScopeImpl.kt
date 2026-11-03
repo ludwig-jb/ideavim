@@ -18,14 +18,16 @@ import com.maddyhome.idea.vim.vimscript.model.datatypes.VimInt
 import com.maddyhome.idea.vim.vimscript.model.datatypes.VimString
 import kotlin.reflect.KType
 
-object OptionScopeImpl: OptionScope {
+class OptionScopeImpl(
+  private val projectId: String?,
+) : OptionScope {
   private val vimEditor: VimEditor
-    get() = injector.editorGroup.getFocusedEditor()!!
+    get() = projectId?.let { injector.editorGroup.getSelectedEditor(it) } ?: injector.fallbackWindow
 
   private val optionGroup: VimOptionGroup
     get() = injector.optionGroup
 
-  override fun <T> getOptionValue(name: String, type: KType): T {
+  override suspend fun <T> getOptionValue(name: String, type: KType): T {
     val option = optionGroup.getOption(name) ?: throw IllegalArgumentException("Option $name not found")
 
     val optionValue = optionGroup.getOptionValue(option, OptionAccessScope.EFFECTIVE(vimEditor))
@@ -63,7 +65,7 @@ object OptionScopeImpl: OptionScope {
     return kotlinValue as T
   }
 
-  override fun <T> setOption(name: String, value: T, type: KType, scope: String) {
+  override suspend fun <T> setOption(name: String, value: T, type: KType, scope: String) {
     val option = optionGroup.getOption(name) ?: throw IllegalArgumentException("Option $name not found")
 
     val optionValue = when (type.classifier) {
@@ -86,7 +88,7 @@ object OptionScopeImpl: OptionScope {
     }
   }
 
-  override fun reset(name: String) {
+  override suspend fun reset(name: String) {
     val option = optionGroup.getOption(name) ?: throw IllegalArgumentException("Option $name not found")
     optionGroup.resetToDefaultValue(option, OptionAccessScope.EFFECTIVE(vimEditor))
   }

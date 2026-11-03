@@ -9,41 +9,40 @@
 package com.maddyhome.idea.vim.extension.replacewithregister
 
 import com.intellij.vim.api.VimApi
+import com.intellij.vim.api.VimInitApi
 import com.intellij.vim.api.VimPlugin
 import com.intellij.vim.api.getVariable
 import com.intellij.vim.api.models.Mode
 import com.intellij.vim.api.models.Range
 import com.intellij.vim.api.models.TextType
 import com.intellij.vim.api.scopes.editor.caret.CaretTransaction
+import com.intellij.vim.api.scopes.nmapPluginAction
+import com.intellij.vim.api.scopes.vmapPluginAction
 
 private const val PLUGIN_NAME: String = "ReplaceWithRegisterNew"
 
 @VimPlugin(name = PLUGIN_NAME)
-fun VimApi.init() {
+fun VimInitApi.init() {
   mappings {
-    // Step 1: Non-recursive <Plug> → action mappings
-    nnoremap(RWR_OPERATOR) {
+    nmapPluginAction("gr", RWR_OPERATOR, keepDefaultMapping = true) {
       rewriteMotion()
     }
-    nnoremap(RWR_LINE) {
+    nmapPluginAction("grr", RWR_LINE, keepDefaultMapping = true) {
       rewriteLine()
     }
-    vnoremap(RWR_VISUAL) {
+    vmapPluginAction("gr", RWR_VISUAL, keepDefaultMapping = true) {
       rewriteVisual()
     }
-
-    // Step 2: Recursive key → <Plug> mappings
-    nmap("gr", RWR_OPERATOR)
-    nmap("grr", RWR_LINE)
-    vmap("gr", RWR_VISUAL)
   }
 
-  exportOperatorFunction(OPERATOR_FUNC_NAME) {
-    operatorFunction()
+  commands {
+    exportOperatorFunction(OPERATOR_FUNC_NAME) {
+      operatorFunction()
+    }
   }
 }
 
-internal fun VimApi.operatorFunction(): Boolean {
+internal suspend fun VimApi.operatorFunction(): Boolean {
   fun CaretTransaction.getSelection(): Range? {
     return when {
       this@operatorFunction.mode == Mode.NORMAL -> changeMarks
@@ -64,12 +63,12 @@ internal fun VimApi.operatorFunction(): Boolean {
   return true
 }
 
-internal fun VimApi.rewriteMotion() {
-  setOperatorFunction(OPERATOR_FUNC_NAME)
+internal suspend fun VimApi.rewriteMotion() {
+  commands().setOperatorFunction(OPERATOR_FUNC_NAME)
   normal("g@")
 }
 
-internal fun VimApi.rewriteLine() {
+internal suspend fun VimApi.rewriteLine() {
   val count1 = getVariable<Int>("v:count1") ?: 1
   editor {
     change {
@@ -84,7 +83,7 @@ internal fun VimApi.rewriteLine() {
   }
 }
 
-internal fun VimApi.rewriteVisual() {
+internal suspend fun VimApi.rewriteVisual() {
   editor {
     change {
       forEachCaret {
@@ -94,7 +93,7 @@ internal fun VimApi.rewriteVisual() {
       }
     }
   }
-  mode = Mode.NORMAL
+  normal("<Esc>")
 }
 
 private fun CaretTransaction.prepareRegisterData(): Pair<String, TextType>? {
@@ -150,7 +149,7 @@ private fun CaretTransaction.replaceTextAndUpdateCaret(
     } else if (selectionRange is Range.Block) {
       replaceTextBlockwise(selectionRange, text)
 
-      vimApi.mode = Mode.NORMAL
+      kotlinx.coroutines.runBlocking { vimApi.normal("<Esc>") }
       updateCaret(offset = selectionRange.start)
     }
   }

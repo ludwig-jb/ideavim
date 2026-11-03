@@ -28,6 +28,7 @@ abstract class VimScriptExecutorBase : VimscriptExecutor {
   private val logger = vimLogger<VimScriptExecutorBase>()
   override var executingVimscript = false
   override var executingIdeaVimRcConfiguration = false
+  override var executingFile = false
 
   @Throws(ExException::class)
   override fun execute(
@@ -44,6 +45,17 @@ abstract class VimScriptExecutorBase : VimscriptExecutor {
 
       val myScript = injector.vimscriptParser.parse(script)
       myScript.units.forEach { it.vimContext = vimContext ?: myScript }
+
+      // Surface syntax errors from parsing. The parser recovers from these (dropping the offending lines) instead
+      // of throwing, so the executor is the place to report them. Only shown when the caller asks for it; otherwise
+      // the parser has already logged them as warnings.
+      val parseErrors = injector.vimscriptParser.lastParseErrors
+      if (parseErrors.isNotEmpty()) {
+        finalResult = ExecutionResult.Error
+        if (indicateErrors) {
+          parseErrors.forEach { injector.messages.appendErrorMessage(editor, it) }
+        }
+      }
 
       // Record the command in the history before executing it
       if (!skipHistory) {
@@ -65,13 +77,13 @@ abstract class VimScriptExecutorBase : VimscriptExecutor {
           }
           finalResult = ExecutionResult.Error
           if (indicateErrors) {
-            injector.messages.showErrorMessage(editor, e.message)
+            injector.messages.appendErrorMessage(editor, e.message)
           } else {
             logger.warn("Failed while executing $unit. " + e.message)
           }
         } catch (e: NotImplementedError) {
           if (indicateErrors) {
-            injector.messages.showErrorMessage(editor, "Not implemented yet :(")
+            injector.messages.appendErrorMessage(editor, "Not implemented yet :(")
           }
         } catch (e: Exception) {
           logger.warn(e.toString())
@@ -94,10 +106,14 @@ abstract class VimScriptExecutorBase : VimscriptExecutor {
     }
   }
 
-  protected abstract fun enableDelayedExtensions()
+  protected open fun enableDelayedExtensions() {
+    injector.extensionRegistrator.enableDelayedExtensions()
+  }
 
   override fun executeFile(file: Path, editor: VimEditor, fileIsIdeaVimRcConfig: Boolean, indicateErrors: Boolean) {
     val context = injector.executionContextManager.getEditorExecutionContext(editor)
+    val wasExecutingFile = injector.vimscriptExecutor.executingFile
+    injector.vimscriptExecutor.executingFile = true
     try {
       if (fileIsIdeaVimRcConfig) {
         injector.vimscriptExecutor.executingIdeaVimRcConfiguration = true
@@ -111,6 +127,8 @@ abstract class VimScriptExecutorBase : VimscriptExecutor {
         logger.warn("Failed to read file ${file.pathString}: ${e.message}")
       }
     } finally {
+      // Save/restore (not just reset) so a nested `:source` inside a sourced file doesn't clear the flag too early.
+      injector.vimscriptExecutor.executingFile = wasExecutingFile
       if (fileIsIdeaVimRcConfig) {
         injector.vimrcFileState.saveFileState(file.absolutePathString())
         injector.vimscriptExecutor.executingIdeaVimRcConfiguration = false

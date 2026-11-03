@@ -13,6 +13,7 @@ import com.intellij.openapi.editor.Caret
 import com.intellij.openapi.editor.CaretVisualAttributes
 import com.intellij.openapi.editor.VisualPosition
 import com.intellij.openapi.editor.ex.EditorSettingsExternalizable
+import com.intellij.testFramework.PlatformTestUtil
 import com.maddyhome.idea.vim.VimPlugin
 import com.maddyhome.idea.vim.api.injector
 import com.maddyhome.idea.vim.newapi.vim
@@ -261,6 +262,35 @@ class CaretVisualAttributesHelperTest : VimTestCase() {
 
   @TestWithoutNeovim(SkipNeovimReason.NOT_VIM_TESTING)
   @Test
+  fun `test empty guicursor leaves caret to the ide`() {
+    configureByText("Lorem ipsum dolor sit amet,")
+    enterCommand("set guicursor=")
+    // An empty 'guicursor' should not override the caret - we use the IDE's native default caret
+    assertCaretVisualAttributes(CaretVisualAttributes.getDefault().shape, CaretVisualAttributes.getDefault().thickness)
+  }
+
+  @TestWithoutNeovim(SkipNeovimReason.NOT_VIM_TESTING)
+  @Test
+  fun `test empty guicursor leaves caret to the ide in insert mode`() {
+    configureByText("Lorem ipsum dolor sit amet,")
+    enterCommand("set guicursor=")
+    typeText("i")
+    assertCaretVisualAttributes(CaretVisualAttributes.getDefault().shape, CaretVisualAttributes.getDefault().thickness)
+  }
+
+  @TestWithoutNeovim(SkipNeovimReason.NOT_VIM_TESTING)
+  @Test
+  fun `test caret restored after clearing and resetting guicursor`() {
+    configureByText("Lorem ipsum dolor sit amet,")
+    enterCommand("set guicursor=")
+    enterCommand("set guicursor&")
+    assertCaretVisualAttributes(CaretVisualAttributes.Shape.BLOCK, 0F)
+    typeText("i")
+    assertCaretVisualAttributes(CaretVisualAttributes.Shape.BAR, 0.25F)
+  }
+
+  @TestWithoutNeovim(SkipNeovimReason.NOT_VIM_TESTING)
+  @Test
   fun `test 'all' guicursor option`() {
     configureByText("Lorem ipsum dolor sit amet,")
     enterCommand("set guicursor+=a:ver25")
@@ -306,7 +336,7 @@ class CaretVisualAttributesHelperTest : VimTestCase() {
   fun `test reset caret shape when disable plugin`() {
     configureByText("Lorem ipsum dolor sit amet,")
     typeText("i")
-    VimPlugin.setEnabled(false)
+    disablePluginAndWaitForCaretReset()
     assertCaretVisualAttributes(CaretVisualAttributes.Shape.DEFAULT, 1.0f)
   }
 
@@ -315,7 +345,7 @@ class CaretVisualAttributesHelperTest : VimTestCase() {
   fun `test reset caret shape when disable plugin 2`() {
     configureByText("Lorem ipsum dolor sit amet,")
     typeText("v2e")
-    VimPlugin.setEnabled(false)
+    disablePluginAndWaitForCaretReset()
     assertCaretVisualAttributes(CaretVisualAttributes.Shape.DEFAULT, 1.0f)
   }
 
@@ -324,7 +354,7 @@ class CaretVisualAttributesHelperTest : VimTestCase() {
   fun `test reset caret shape when disable plugin 3`() {
     configureByText("Lorem ipsum dolor sit amet,")
     typeText("r")
-    VimPlugin.setEnabled(false)
+    disablePluginAndWaitForCaretReset()
     assertCaretVisualAttributes(CaretVisualAttributes.Shape.DEFAULT, 1.0f)
   }
 
@@ -355,6 +385,13 @@ class CaretVisualAttributesHelperTest : VimTestCase() {
       )
       kotlin.test.assertEquals(2, fixture.editor.caretModel.caretCount)
       assertCaretVisualAttributes(CaretVisualAttributes.Shape.BLOCK, 0f)
+    }
+  }
+
+  private fun disablePluginAndWaitForCaretReset() {
+    VimPlugin.setEnabled(false)
+    ApplicationManager.getApplication().invokeAndWait {
+      PlatformTestUtil.dispatchAllInvocationEventsInIdeEventQueue()
     }
   }
 

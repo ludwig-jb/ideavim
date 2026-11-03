@@ -50,11 +50,16 @@ import com.intellij.util.ui.EmptyClipboardOwner
 import com.maddyhome.idea.vim.KeyHandler
 import com.maddyhome.idea.vim.VimPlugin
 import com.maddyhome.idea.vim.action.VimShortcutKeyAction
+import com.maddyhome.idea.vim.action.change.VimRedoBuffer
 import com.maddyhome.idea.vim.api.EffectiveOptions
 import com.maddyhome.idea.vim.api.GlobalOptions
 import com.maddyhome.idea.vim.api.Options
+import com.maddyhome.idea.vim.api.VimCaret
 import com.maddyhome.idea.vim.api.VimDigraphGroupBase
 import com.maddyhome.idea.vim.api.VimOptionGroup
+import com.maddyhome.idea.vim.api.VimOutputPanel
+import com.maddyhome.idea.vim.api.VimSearchGroupBase
+import com.maddyhome.idea.vim.api.getMappingInfo
 import com.maddyhome.idea.vim.api.globalOptions
 import com.maddyhome.idea.vim.api.injector
 import com.maddyhome.idea.vim.api.options
@@ -65,15 +70,18 @@ import com.maddyhome.idea.vim.ex.ExException
 import com.maddyhome.idea.vim.group.EffectiveIjOptions
 import com.maddyhome.idea.vim.group.GlobalIjOptions
 import com.maddyhome.idea.vim.group.IjOptions
-import com.maddyhome.idea.vim.group.visual.VimVisualTimer.swingTimer
-import com.maddyhome.idea.vim.handler.isOctopusEnabled
+import com.maddyhome.idea.vim.group.LastTabService
+import com.maddyhome.idea.vim.group.visual.VimVisualTimer
 import com.maddyhome.idea.vim.helper.EditorHelper
+import com.maddyhome.idea.vim.helper.SearchCountService
 import com.maddyhome.idea.vim.helper.TestInputModel
 import com.maddyhome.idea.vim.helper.getGuiCursorMode
+import com.maddyhome.idea.vim.helper.isVimCurrentSearchMatch
 import com.maddyhome.idea.vim.key.MappingOwner
 import com.maddyhome.idea.vim.key.ToKeysMappingInfo
 import com.maddyhome.idea.vim.listener.SelectionVimListenerSuppressor
 import com.maddyhome.idea.vim.listener.VimListenerManager
+import com.maddyhome.idea.vim.mark.Mark
 import com.maddyhome.idea.vim.newapi.globalIjOptions
 import com.maddyhome.idea.vim.newapi.ijOptions
 import com.maddyhome.idea.vim.newapi.vim
@@ -83,9 +91,9 @@ import com.maddyhome.idea.vim.options.helpers.GuiCursorOptionHelper
 import com.maddyhome.idea.vim.options.helpers.GuiCursorType
 import com.maddyhome.idea.vim.state.mode.Mode
 import com.maddyhome.idea.vim.state.mode.inBlockSelection
+import com.maddyhome.idea.vim.ui.OutputPanel
 import com.maddyhome.idea.vim.ui.ex.ExEntryPanel
 import com.maddyhome.idea.vim.vimscript.model.CommandLineVimLContext
-import com.maddyhome.idea.vim.vimscript.model.datatypes.VimFuncref
 import com.maddyhome.idea.vim.vimscript.parser.errors.IdeavimErrorListener
 import org.jetbrains.annotations.ApiStatus
 import org.junit.jupiter.api.AfterEach
@@ -132,14 +140,18 @@ abstract class VimTestCase(private val defaultEditorText: String? = null) {
     injector.vimState.reset()
     resetAllOptions()
     VimPlugin.getKey().resetKeyMappings()
-    VimPlugin.getSearch().resetState()
+    (VimPlugin.getSearch() as VimSearchGroupBase).resetState()
     if (VimPlugin.isNotEnabled()) VimPlugin.setEnabled(true)
     injector.globalOptions().ideastrictmode = true
     Checks.reset()
     clearClipboard()
+    clearAlternateFile()
 
     // Make sure the entry text field gets a bounds, or we won't be able to work out caret location
     ExEntryPanel.getOrCreatePanelInstance().entry.setBounds(0, 0, 100, 25)
+
+    // Always show the output panel, even for empty text. Normal behaviour is to hide it for single line, empty text
+    OutputPanel.allowHideEmptyText = false
 
     NeovimTesting.setUp(testInfo)
 
@@ -151,6 +163,10 @@ abstract class VimTestCase(private val defaultEditorText: String? = null) {
     if (defaultEditorText != null) {
       configureByText(defaultEditorText)
     }
+  }
+
+  private fun clearAlternateFile() {
+    LastTabService.getInstance(fixture.project).lastTab = null
   }
 
   private fun resetAllOptions() {
@@ -209,31 +225,38 @@ abstract class VimTestCase(private val defaultEditorText: String? = null) {
 
   @AfterEach
   open fun tearDown(testInfo: TestInfo) {
-    swingTimer?.stop()
-    swingTimer = null
+    VimVisualTimer.drop()
+    VimVisualTimer.mode = null
     val bookmarksManager = BookmarksManager.getInstance(fixture.project)
     bookmarksManager?.bookmarks?.forEach { bookmark ->
       bookmarksManager.remove(bookmark)
     }
     VimListenerManager.VimLastSelectedEditorTracker.resetLastSelectedEditor(fixture.project)
-    SelectionVimListenerSuppressor.lock().use { fixture.tearDown() }
+    SelectionVimListenerSuppressor.lock { fixture.tearDown() }
     ExEntryPanel.instance?.deactivate(false)
     VimPlugin.getVariableService().clear()
-    VimFuncref.lambdaCounter = 0
-    VimFuncref.anonymousCounter = 0
     IdeavimErrorListener.testLogger.clear()
     VimPlugin.getRegister().resetRegisters()
-    VimPlugin.getSearch().resetState()
+    (VimPlugin.getSearch() as VimSearchGroupBase).resetState()
     injector.markService.resetAllMarks()
+    injector.quickFixService.reset()
     injector.jumpService.resetJumps()
+    injector.tagService.resetTagStacks()
+    ApplicationManager.getApplication()
+      .getService(com.maddyhome.idea.vim.group.changelist.ChangeListService::class.java)
+      ?.reset()
     injector.historyGroup.resetHistory()
     VimPlugin.getChange().resetRepeat()
+    VimRedoBuffer.resetAll()
     VimPlugin.getKey().savedShortcutConflicts.clear()
     assertTrue(KeyHandler.getInstance().keyStack.isEmpty())
     injector.outputPanel.getCurrentOutputPanel()?.close()
     injector.modalInput.getCurrentModalInput()?.deactivate(refocusOwningEditor = false, resetCaret = false)
     (injector.digraphGroup as VimDigraphGroupBase).clearCustomDigraphs()
     injector.functionService.resetUserDefinedFunctions()
+
+    injector.autoCmd.endAugroup()
+    injector.autoCmd.clearEvents()
 
     // Important to reset in tearDown as well as setUp, so we reset modified test options
     resetAllOptions()
@@ -242,6 +265,8 @@ abstract class VimTestCase(private val defaultEditorText: String? = null) {
     injector.extensionLoader.getEnabledExtensions().forEach {
       injector.extensionLoader.disableExtension(it.extensionName)
     }
+
+    OutputPanel.allowHideEmptyText = true
 
     // Tear down neovim
     NeovimTesting.tearDown(testInfo)
@@ -258,9 +283,9 @@ abstract class VimTestCase(private val defaultEditorText: String? = null) {
 
   protected fun enableExtensionsNewApi(vararg extensionNames: String) {
     for (name in extensionNames) {
-      injector.jsonExtensionProvider.getBundledExtensions().find { it.extensionName == name }?.let { extension ->
-        injector.extensionLoader.enableExtension(extension)
-      }
+      val extension = injector.jsonExtensionProvider.getBundledExtensions().find { it.extensionName == name }
+        ?: error("Bundled extension '$name' not found in ksp-generated/ideavim_extensions.json")
+      injector.extensionLoader.enableExtension(extension)
     }
   }
 
@@ -679,15 +704,15 @@ abstract class VimTestCase(private val defaultEditorText: String? = null) {
 
   fun assertNoMapping(from: String) {
     val keys = injector.parser.parseKeys(from)
-    for (mode in MappingMode.ALL) {
-      assertNull(VimPlugin.getKey().getKeyMapping(mode)[keys])
+    for (mode in EnumSet.allOf(MappingMode::class.java)) {
+      assertNull(VimPlugin.getKey().getMappingInfo(keys, mode))
     }
   }
 
   fun assertNoMapping(from: String, modes: Set<MappingMode>) {
     val keys = injector.parser.parseKeys(from)
     for (mode in modes) {
-      assertNull(VimPlugin.getKey().getKeyMapping(mode)[keys], "Expected no mapping for $mode")
+      assertNull(VimPlugin.getKey().getMappingInfo(keys, mode), "Expected no mapping for $mode")
     }
   }
 
@@ -695,7 +720,7 @@ abstract class VimTestCase(private val defaultEditorText: String? = null) {
     val keys = injector.parser.parseKeys(from)
     val toKeys = injector.parser.parseKeys(to)
     for (mode in modes) {
-      val info = VimPlugin.getKey().getKeyMapping(mode)[keys]
+      val info = VimPlugin.getKey().getMappingInfo(keys, mode)
       assertNotNull<Any>(info)
       if (info is ToKeysMappingInfo) {
         assertEquals(toKeys, info.toKeys)
@@ -724,19 +749,68 @@ abstract class VimTestCase(private val defaultEditorText: String? = null) {
     assertEquals(expected, selected)
   }
 
+  /**
+   * Read a value from the current output panel, on the EDT
+   */
+  protected fun <T> readOutputPanel(getter: (VimOutputPanel) -> T): T? {
+    var value: T? = null
+    ApplicationManager.getApplication().invokeAndWait {
+      value = injector.outputPanel.getCurrentOutputPanel()?.let(getter)
+    }
+    return value
+  }
+
+  /** Clear the current output panel, on the EDT. See [readOutputPanel] */
+  protected fun clearOutputPanel() {
+    ApplicationManager.getApplication().invokeAndWait {
+      injector.outputPanel.getCurrentOutputPanel()?.clearText()
+    }
+  }
+
   fun assertCommandOutput(command: String, expected: String) {
+    clearOutputPanel()
     enterCommand(command)
     assertExOutput(expected)
   }
 
+  fun assertAllOptionsShown(command: String, header: String, singleColumn: Boolean) {
+    clearOutputPanel()
+    enterCommand(command)
+    val output = readOutputPanel { it.text }
+    assertNotNull(output, "No Ex output for command '$command'")
+
+    val lines = output.lines()
+    assertEquals(header, lines.firstOrNull(), "Unexpected header for '$command'")
+
+    // Hidden options are not shown by `:set all` (except in an internal, non-unit-test IDE), so don't expect them.
+    val shownOptions = injector.optionGroup.getAllOptions().filter { !it.isHidden }
+
+    // Each option is shown as one of: "  name", "noname", "--name" (toggles) or "  name=value" (everything else).
+    // Values never contain spaces, so splitting the body on whitespace yields one token per shown option.
+    val tokens = lines.drop(1).filter { it.isNotBlank() }.flatMap { it.trim().split(Regex("\\s+")) }.toSet()
+    for (option in shownOptions) {
+      val name = option.name
+      val shown = tokens.any { it == name || it == "no$name" || it == "--$name" || it.startsWith("$name=") }
+      assertTrue(shown, "Option '$name' is missing from the output of '$command'")
+    }
+
+    // Sanity check the column layout. ':set! all' forces one option per line; ':set all' packs them into columns.
+    val bodyLineCount = lines.drop(1).count { it.isNotBlank() }
+    val optionCount = shownOptions.size
+    if (singleColumn) {
+      assertEquals(optionCount, bodyLineCount, "Single column output should show exactly one option per line")
+    } else {
+      assertTrue(bodyLineCount < optionCount, "Multi column output should pack options into fewer lines than options")
+    }
+  }
+
   fun assertExOutput(expected: String, clear: Boolean = true) {
-    val actual = injector.outputPanel.getCurrentOutputPanel()?.text
+    val actual = readOutputPanel { it.text }
     if (actual == null) {
       // If there's no output, there's a good chance we've got an error
       val message = "No Ex output" + if (injector.messages.isError()) {
         ". Error reported: " + VimPlugin.getMessage()
-      }
-      else ""
+      } else ""
 
       assertNotNull(actual, message)
     }
@@ -746,17 +820,46 @@ abstract class VimTestCase(private val defaultEditorText: String? = null) {
       // Ex output is not cleared until the output pane is activated again (we need it to persist so that :print will
       // work when called multiple times from :global). When testing, if the previous action fails before it can
       // activate the output pane, we'll be looking at stale results.
-      injector.outputPanel.getCurrentOutputPanel()?.clearText()
+      clearOutputPanel()
     }
   }
 
   fun assertNoExOutput() {
-    val actual = injector.outputPanel.getCurrentOutputPanel()?.text ?: ""
+    val actual = readOutputPanel { it.text } ?: ""
     assertEquals("", actual)
   }
 
+  fun assertStatusLineText(expected: String) {
+    waitForSearchCount()
+    val actual = readOutputPanel { it.statusText }
+    assertEquals(expected, actual)
+  }
+
+  /** Waits until the count of the latest search has been shown. It's computed in the background */
+  fun waitForSearchCount() {
+    val searchCount = SearchCountService.getInstance()
+    val deadline = System.currentTimeMillis() + 10_000
+    while (searchCount.isSearchCountActive()) {
+      check(System.currentTimeMillis() < deadline) { "The search count was not shown within 10s" }
+      // Showing the count needs the EDT, so don't block it
+      if (ApplicationManager.getApplication().isDispatchThread) {
+        PlatformTestUtil.dispatchAllEventsInIdeEventQueue()
+      } else {
+        Thread.sleep(5)
+      }
+    }
+  }
+
   fun assertPluginError(isError: Boolean) {
-    assertEquals(isError, injector.messages.isError(), injector.messages.getStatusBarMessage() ?: "<No error message>")
+    if (!isError) {
+      assertEquals(isError, injector.messages.isError(), injector.messages.getStatusBarMessage() ?: "Unknown error")
+    } else {
+      assertEquals(
+        isError,
+        injector.messages.isError(),
+        injector.messages.getStatusBarMessage() ?: "<No error message>"
+      )
+    }
   }
 
   fun assertPluginErrorMessage(message: String) {
@@ -783,18 +886,26 @@ abstract class VimTestCase(private val defaultEditorText: String? = null) {
         assertEquals(CaretVisualAttributes.Shape.BAR, caret.visualAttributes.shape)
         assertEquals(0F, caret.visualAttributes.thickness)
       } else {
-        val shape = when (attributes.type) {
-          GuiCursorType.BLOCK -> CaretVisualAttributes.Shape.BLOCK
-          GuiCursorType.VER -> CaretVisualAttributes.Shape.BAR
-          GuiCursorType.HOR -> CaretVisualAttributes.Shape.UNDERSCORE
-        }
-        assertEquals(shape, editor.caretModel.primaryCaret.visualAttributes.shape)
-        assertEquals(
-          attributes.thickness / 100.0F,
-          editor.caretModel.primaryCaret.visualAttributes.thickness,
-        )
-        editor.caretModel.primaryCaret.visualAttributes.color?.let {
-          assertEquals(colour, it)
+        val type = attributes.type
+        if (type == null) {
+          // 'guicursor' is empty - the caret is left to the IDE (its native default caret)
+          val default = CaretVisualAttributes.getDefault()
+          assertEquals(default.shape, editor.caretModel.primaryCaret.visualAttributes.shape)
+          assertEquals(default.thickness, editor.caretModel.primaryCaret.visualAttributes.thickness)
+        } else {
+          val shape = when (type) {
+            GuiCursorType.BLOCK -> CaretVisualAttributes.Shape.BLOCK
+            GuiCursorType.VER -> CaretVisualAttributes.Shape.BAR
+            GuiCursorType.HOR -> CaretVisualAttributes.Shape.UNDERSCORE
+          }
+          assertEquals(shape, editor.caretModel.primaryCaret.visualAttributes.shape)
+          assertEquals(
+            attributes.thickness / 100.0F,
+            editor.caretModel.primaryCaret.visualAttributes.thickness,
+          )
+          editor.caretModel.primaryCaret.visualAttributes.color?.let {
+            assertEquals(colour, it)
+          }
         }
       }
     }
@@ -802,18 +913,27 @@ abstract class VimTestCase(private val defaultEditorText: String? = null) {
 
   @Suppress("DEPRECATION", "SameParameterValue")
   protected fun assertSearchHighlights(tooltip: String, expected: String) {
-    val allHighlighters = fixture.editor.markupModel.allHighlighters
+    assertSearchHighlights(fixture.editor, tooltip, expected)
+  }
 
-    thisLogger().debug("Current text: ${fixture.editor.document.text}")
-    val actual = StringBuilder(fixture.editor.document.text)
+  /**
+   * Assert the search highlights of a specific editor. Vim highlights search results in all windows, and highlights the
+   * match at each window's own cursor as the current match (`hl-CurSearch`), so tests with more than one window need to
+   * assert a given window rather than just the focused one.
+   */
+  @Suppress("DEPRECATION", "SameParameterValue")
+  protected fun assertSearchHighlights(editor: Editor, tooltip: String, expected: String) {
+    val allHighlighters = editor.markupModel.allHighlighters
+
+    thisLogger().debug("Current text: ${editor.document.text}")
+    val actual = StringBuilder(editor.document.text)
     val inserts = mutableMapOf<Int, String>()
 
     // Digraphs:
     // <C-K>3" → ‷ + <C-K>3' → ‴ (current match)
     // <C-K><< → « + <C-K>>> → » (normal match)
     allHighlighters.forEach {
-      // TODO: This is not the nicest way to check for current match. Add something to the highlight's user data?
-      if (it.textAttributes?.effectType == EffectType.ROUNDED_BOX) {
+      if (it.isVimCurrentSearchMatch) {
         inserts.compute(it.startOffset) { _, v -> if (v == null) "‷" else "$v‷" }
         inserts.compute(it.endOffset) { _, v -> if (v == null) "‴" else "$v‴" }
       } else {
@@ -847,8 +967,7 @@ abstract class VimTestCase(private val defaultEditorText: String? = null) {
         it.textAttributes?.foregroundColor,
         "Incorrect foreground colour for highlighter at $offsets",
       )
-      // TODO: Find a better way to identify the current match
-      if (it.textAttributes?.effectType == EffectType.ROUNDED_BOX) {
+      if (it.isVimCurrentSearchMatch) {
         assertEquals(
           EffectType.ROUNDED_BOX,
           it.textAttributes?.effectType,
@@ -871,7 +990,11 @@ abstract class VimTestCase(private val defaultEditorText: String? = null) {
   }
 
   protected fun assertNoSearchHighlights() {
-    assertEquals(0, fixture.editor.markupModel.allHighlighters.size)
+    assertNoSearchHighlights(fixture.editor)
+  }
+
+  protected fun assertNoSearchHighlights(editor: Editor) {
+    assertEquals(0, editor.markupModel.allHighlighters.size)
   }
 
   @JvmOverloads
@@ -1012,7 +1135,14 @@ abstract class VimTestCase(private val defaultEditorText: String? = null) {
             ActionManager.getInstance(),
             0,
           )
-          if (ActionUtil.lastUpdateAndCheckDumb(VimShortcutKeyAction.instance, e, true)) {
+          if (!VimPlugin.isEnabled()) {
+            // VimShortcutKeyAction is a no-op when the plugin is disabled, so deliver
+            // Enter/Escape to the IDE directly.
+            when {
+              key.keyCode == KeyEvent.VK_ENTER && key.modifiers == 0 -> fixture.type('\n')
+              key.keyCode == KeyEvent.VK_ESCAPE -> fixture.performEditorAction("EditorEscape")
+            }
+          } else if (ActionUtil.lastUpdateAndCheckDumb(VimShortcutKeyAction.instance, e, true)) {
             ActionUtil.performActionDumbAwareWithCallbacks(VimShortcutKeyAction.instance, e)
           }
         }
@@ -1024,14 +1154,6 @@ abstract class VimTestCase(private val defaultEditorText: String? = null) {
 
   private fun KeyStroke.getChar(editor: Editor): CharType {
     if (keyChar != KeyEvent.CHAR_UNDEFINED) return CharType.CharDetected(keyChar)
-    if (isOctopusEnabled(this, editor)) {
-      if (keyCode in setOf(KeyEvent.VK_ENTER)) {
-        if (modifiers == 0) {
-          return CharType.CharDetected(keyCode.toChar())
-        }
-      }
-      if (keyCode == KeyEvent.VK_ESCAPE) return CharType.EditorAction("EditorEscape")
-    }
     return CharType.UNDEFINED
   }
 
@@ -1044,6 +1166,17 @@ abstract class VimTestCase(private val defaultEditorText: String? = null) {
     object UNDEFINED : CharType
     class CharDetected(val char: Char) : CharType
     class EditorAction(val name: String) : CharType
+  }
+
+  /**
+   * Retrieves a mark on EDT. Global marks go through RPC which requires EDT.
+   */
+  fun getMark(caret: VimCaret, char: Char): Mark? {
+    var mark: Mark? = null
+    ApplicationManager.getApplication().invokeAndWait {
+      mark = injector.markService.getMark(caret, char)
+    }
+    return mark
   }
 
   object Checks {
@@ -1094,7 +1227,7 @@ abstract class VimTestCase(private val defaultEditorText: String? = null) {
             val inputModel = TestInputModel.getInstance(editor)
             var key = inputModel.nextKeyStroke()
             while (key != null) {
-              keyHandler.handleKey(editor.vim, key, dataContext, keyHandler.keyHandlerState)
+              keyHandler.handleUserKey(editor.vim, key, dataContext)
               key = inputModel.nextKeyStroke()
             }
           },

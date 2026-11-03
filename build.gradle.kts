@@ -6,6 +6,8 @@
  * https://opensource.org/licenses/MIT.
  */
 
+import org.jetbrains.changelog.Changelog
+import org.jetbrains.intellij.platform.gradle.IntelliJPlatformType
 import org.jetbrains.intellij.platform.gradle.TestFrameworkType
 import org.jetbrains.intellij.platform.gradle.tasks.aware.SplitModeAware
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
@@ -13,24 +15,24 @@ import org.jetbrains.kotlin.gradle.dsl.KotlinVersion
 
 buildscript {
   repositories {
-    mavenCentral()
+    maven { url = uri("https://cache-redirector.jetbrains.com/repo.maven.apache.org/maven2") }
     maven { url = uri("https://jitpack.io") }
   }
 
   dependencies {
-    classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:2.2.21")
+    classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:2.3.20")
     classpath("com.github.AlexPl292:mark-down-to-slack:1.1.2")
     classpath("org.eclipse.jgit:org.eclipse.jgit:6.6.0.202305301015-r")
 
     // This is needed for jgit to connect to ssh
-    classpath("org.eclipse.jgit:org.eclipse.jgit.ssh.apache:7.4.0.202509020913-r")
+    classpath("org.eclipse.jgit:org.eclipse.jgit.ssh.apache:7.8.0.202609011348-r")
     classpath("org.kohsuke:github-api:1.305")
 
-    classpath("io.ktor:ktor-client-core:3.4.0")
-    classpath("io.ktor:ktor-client-cio:3.4.0")
-    classpath("io.ktor:ktor-client-auth:3.4.0")
-    classpath("io.ktor:ktor-client-content-negotiation:3.4.0")
-    classpath("io.ktor:ktor-serialization-kotlinx-json:3.4.0")
+    classpath("io.ktor:ktor-client-core:3.6.0")
+    classpath("io.ktor:ktor-client-cio:3.6.0")
+    classpath("io.ktor:ktor-client-auth:3.6.0")
+    classpath("io.ktor:ktor-client-content-negotiation:3.6.0")
+    classpath("io.ktor:ktor-serialization-kotlinx-json:3.6.0")
 
     // This comes from the changelog plugin
 //        classpath("org.jetbrains:markdown:0.3.1")
@@ -39,18 +41,18 @@ buildscript {
 
 plugins {
   java
-  kotlin("jvm") version "2.2.21"
+  kotlin("jvm") version "2.3.20"
   application
   id("java-test-fixtures")
 
   // NOTE: Unignore "test block comment falls back to line comment when not available" test
   //   After changing this version. It supposed to work on the next version of the gradle plugin
   //   Or go report to the devs that this test still fails.
-  id("org.jetbrains.intellij.platform") version "2.11.0"
+  id("org.jetbrains.intellij.platform") version "2.18.0"
 
   id("org.jetbrains.changelog") version "2.5.0"
-  id("com.dorongold.task-tree") version "4.0.1"
-  id("com.google.devtools.ksp") version "2.2.21-2.0.4"
+  id("com.dorongold.task-tree") version "4.0.2"
+  id("com.google.devtools.ksp")
 }
 
 val moduleSources by configurations.registering
@@ -59,10 +61,21 @@ val moduleSources by configurations.registering
 val javaVersion: String by project
 val kotlinVersion: String by project
 val ideaVersion: String by project
+
+val ideaBranchNumber = ideaVersion.substringBefore('-').split('.').let { parts ->
+  val head = parts[0].toIntOrNull() ?: Int.MAX_VALUE // LATEST-EAP-SNAPSHOT
+  val isProductVersion = head > 1000                // 2026.2 rather than 262.8665.258
+  if (isProductVersion) (head % 100) * 10 + (parts.getOrNull(1)?.toIntOrNull() ?: 1) else head
+}
+
+// com.intellij.ide.bookmark.* left lib/app.jar for a bundled plugin in 2026.2; older
+// product-info.json files list neither the plugin id nor the module, which fails resolution.
+val bookmarksIsSeparatePlugin = ideaBranchNumber >= 262
 val ideaType: String by project
 val instrumentPluginCode: String by project
 val remoteRobotVersion: String by project
 
+val fleetRpcVersion: String by project
 val publishChannels: String by project
 val publishToken: String by project
 
@@ -72,7 +85,8 @@ val youtrackToken: String by project
 val releaseType: String? by project
 
 repositories {
-  mavenCentral()
+  maven { url = uri("https://cache-redirector.jetbrains.com/repo.maven.apache.org/maven2") }
+  maven("https://cache-redirector.jetbrains.com/packages.jetbrains.team/maven/p/ij/intellij-dependencies")
   intellijPlatform {
     defaultRepositories()
   }
@@ -81,11 +95,15 @@ repositories {
 dependencies {
   api(project(":vim-engine"))
   api(project(":api"))
+  api(project(":ideavim-common"))
+
+  compileOnly("org.jetbrains.kotlin:kotlin-stdlib:$kotlinVersion")
+  compileOnly("org.jetbrains:annotations:26.1.0")
   ksp(project(":annotation-processors"))
   compileOnly(project(":annotation-processors"))
 
-  compileOnly("org.jetbrains.kotlin:kotlin-stdlib:$kotlinVersion")
-  compileOnly("org.jetbrains:annotations:26.0.2-1")
+  kotlinCompilerPluginClasspath("org.jetbrains.kotlin:kotlin-serialization-compiler-plugin:$kotlinVersion")
+  kotlinCompilerPluginClasspath("com.jetbrains.fleet:rpc-compiler-plugin:$fleetRpcVersion")
 
   intellijPlatform {
     // Snapshots don't use installers
@@ -106,33 +124,54 @@ dependencies {
 
     testFramework(TestFrameworkType.Platform)
     testFramework(TestFrameworkType.JUnit5)
+    // Tests for diff previews that follow a tree of changes, which lives in this module (see :ideavim-vcs)
+    testBundledModule("intellij.platform.vcs.impl")
+    testBundledModule("intellij.platform.vcs.impl.shared")
 
-    pluginModule(runtimeOnly(project(":modules:ideavim-acejump")))
-    pluginModule(runtimeOnly(project(":modules:ideavim-rider")))
-    pluginModule(runtimeOnly(project(":modules:ideavim-clion-nova")))
-    pluginModule(runtimeOnly(project(":modules:ideavim-terminal")))
+    pluginComposedModule(runtimeOnly(project(":ideavim-common")))
+    pluginModule(runtimeOnly(project(":ideavim-frontend")))
+    pluginModule(runtimeOnly(project(":ideavim-backend")))
+    pluginModule(runtimeOnly(project(":ideavim-backend-bookmarks")))
+    pluginModule(runtimeOnly(project(":ideavim-backend-bookmarks-core")))
+    pluginModule(runtimeOnly(project(":ideavim-backend-git")))
+    pluginModule(runtimeOnly(project(":ideavim-backend-git-legacy")))
+    pluginModule(runtimeOnly(project(":ideavim-acejump")))
+    pluginModule(runtimeOnly(project(":ideavim-rider")))
+    pluginModule(runtimeOnly(project(":ideavim-clion-nova")))
+    pluginModule(runtimeOnly(project(":ideavim-terminal")))
+    pluginModule(runtimeOnly(project(":ideavim-vcs")))
+    pluginModule(runtimeOnly(project(":ideavim-air")))
+    pluginModule(runtimeOnly(project(":ideavim-rpc")))
 
     bundledModule("intellij.spellchecker")
+    if (bookmarksIsSeparatePlugin) bundledPlugin("intellij.bookmarks.plugin")
   }
 
   moduleSources(project(":vim-engine", "sourcesJarArtifacts"))
 
   // --------- Test dependencies ----------
 
-  testApi("com.squareup.okhttp3:okhttp:5.3.0")
+  testApi("com.squareup.okhttp3:okhttp:5.5.0")
+
+  // The AIR plugin isn't in the test IDE, so tests register the module's chat input provider themselves
+  testImplementation(project(":ideavim-air"))
 
   // https://mvnrepository.com/artifact/com.ensarsarajcic.neovim.java/neovim-api
-  testImplementation("com.ensarsarajcic.neovim.java:neovim-api:0.2.3")
-  testImplementation("com.ensarsarajcic.neovim.java:core-rpc:0.2.3")
-  testFixturesImplementation("com.ensarsarajcic.neovim.java:neovim-api:0.2.3")
-  testFixturesImplementation("com.ensarsarajcic.neovim.java:core-rpc:0.2.3")
+  // Its Jackson 2.9.10 shadows the platform's own on the flat test classpath.
+  val excludeStaleJackson: ExternalModuleDependency.() -> Unit = {
+    exclude(group = "com.fasterxml.jackson.core")
+  }
+  testImplementation("com.ensarsarajcic.neovim.java:neovim-api:0.2.3", excludeStaleJackson)
+  testImplementation("com.ensarsarajcic.neovim.java:core-rpc:0.2.3", excludeStaleJackson)
+  testFixturesImplementation("com.ensarsarajcic.neovim.java:neovim-api:0.2.3", excludeStaleJackson)
+  testFixturesImplementation("com.ensarsarajcic.neovim.java:core-rpc:0.2.3", excludeStaleJackson)
 
   // https://mvnrepository.com/artifact/org.jetbrains.kotlin/kotlin-test
   testImplementation("org.jetbrains.kotlin:kotlin-test:$kotlinVersion")
   testFixturesImplementation("org.jetbrains.kotlin:kotlin-test:$kotlinVersion")
 
   // https://mvnrepository.com/artifact/org.mockito.kotlin/mockito-kotlin
-  testImplementation("org.mockito.kotlin:mockito-kotlin:6.2.3")
+  testImplementation("org.mockito.kotlin:mockito-kotlin:6.3.0")
 
   testImplementation("org.junit.jupiter:junit-jupiter-api:6.0.0")
   testImplementation("org.junit.jupiter:junit-jupiter-engine:6.0.0")
@@ -144,7 +183,7 @@ dependencies {
   // Temp workaround suggested in https://plugins.jetbrains.com/docs/intellij/tools-intellij-platform-gradle-plugin-faq.html#junit5-test-framework-refers-to-junit4
   // Can be removed when IJPL-159134 is fixed
 //  testRuntimeOnly("junit:junit:4.13.2")
-  testImplementation("org.junit.vintage:junit-vintage-engine:6.0.1")
+  testImplementation("org.junit.vintage:junit-vintage-engine:6.1.3")
 //  testFixturesImplementation("org.junit.vintage:junit-vintage-engine:5.10.3")
 }
 
@@ -153,6 +192,20 @@ configurations {
     exclude(group = "org.antlr", module = "antlr4")
   }
 }
+
+val toolchainJavaVersion = JavaLanguageVersion.of(javaVersion)
+allprojects {
+  afterEvaluate {
+    tasks.withType<Test>().configureEach {
+      javaLauncher.set(
+        project.extensions.getByType<JavaToolchainService>().launcherFor {
+          languageVersion.set(toolchainJavaVersion)
+        }
+      )
+    }
+  }
+}
+
 
 val currentJavaVersion = javaToolchains.launcherFor {}.get().metadata.languageVersion.toString()
 if (currentJavaVersion != javaVersion) {
@@ -171,10 +224,22 @@ tasks {
   test {
     useJUnitPlatform()
 
+    // Without this the test IDE starts every plugin bundled with the product; a startup
+    // error in any of them is rethrown as a failure of whichever IdeaVim test ran first.
+    systemProperty(
+      "idea.load.plugins.id",
+      listOfNotNull(
+        "com.intellij",
+        "IdeaVIM",
+        "AceJump",
+        "intellij.bookmarks.plugin".takeIf { bookmarksIsSeparatePlugin },
+      ).joinToString(","),
+    )
+
     // Set teamcity env variable locally to run additional tests for leaks.
     println("Project leak checks: If you experience project leaks on TeamCity that doesn't reproduce locally")
     println("Uncomment the following line in build.gradle to enable leak checks (see build.gradle config)")
-//      environment("TEAMCITY_VERSION" to "X")
+    environment("TEAMCITY_VERSION" to "X")
 
     systemProperty("ideavim.nvim.test", System.getProperty("nvim") ?: false)
 
@@ -194,12 +259,6 @@ tasks {
     options.encoding = "UTF-8"
   }
 
-  // Note that this will run the plugin installed in the IDE specified in dependencies. To run in a different IDE, use
-  // a custom task (see below)
-  runIde {
-    systemProperty("octopus.handler", System.getProperty("octopus.handler") ?: true)
-  }
-
   // Uncomment to run the plugin in a custom IDE, rather than the IDE specified as a compile target in dependencies
   // Note that the version must be greater than the plugin's target version, for obvious reasons
   // You can also set splitMode and splitModeTarget here to test split mode in a custom IDE
@@ -213,7 +272,40 @@ tasks {
 //    localPath = file("/Users/{user}/Applications/WebStorm.app")
 //  }
 
+  runIde {
+    systemProperty("ideavim.use.debug.ideavimrc", "true")
+  }
+
+  // AIR is only published for 2026.2 (since-build 262.8665), so it can't run in the default IDE version.
+  // The version is pinned because the latest compatible one on Marketplace is an x86_64-only build.
+  val runIdeWithAir by intellijPlatformTesting.runIde.registering {
+    version = "2026.2.3"
+    task {
+      systemProperty("ideavim.use.debug.ideavimrc", "true")
+    }
+
+    plugins {
+      plugin("com.intellij.air", "262.8665.467")
+    }
+  }
+
+  val runPycharm by intellijPlatformTesting.runIde.registering {
+    type = IntelliJPlatformType.PyCharmProfessional
+    version = "2026.1"
+  }
+
+  val runWebstorm by intellijPlatformTesting.runIde.registering {
+    type = IntelliJPlatformType.WebStorm
+    version = "2026.1"
+  }
+
+  val runClion by intellijPlatformTesting.runIde.registering {
+    type = IntelliJPlatformType.CLion
+    version = "2026.1"
+  }
+
   val runIdeForUiTests by intellijPlatformTesting.runIde.registering {
+    version = "2026.1"
     task {
       jvmArgumentProviders += CommandLineArgumentProvider {
         listOf(
@@ -222,7 +314,6 @@ tasks {
           "-Djb.privacy.policy.text=<!--999.999-->",
           "-Djb.consents.confirmation.enabled=false",
           "-Dide.show.tips.on.startup.default.value=false",
-          "-Doctopus.handler=" + (System.getProperty("octopus.handler") ?: true),
         )
       }
     }
@@ -232,9 +323,153 @@ tasks {
     }
   }
 
-  val runIdeSplitMode by intellijPlatformTesting.runIde.registering {
+//  val runIdeSplitMode by intellijPlatformTesting.runIde.registering {
+//    version = "2026.2"
+//    splitMode = true
+//    splitModeTarget = SplitModeAware.SplitModeTarget.BOTH
+//
+//    plugins {
+//      plugin("AceJump", "3.8.22")
+//      plugin("org.jetbrains.IdeaVim-EasyMotion", "1.16")
+//    }
+//  }
+  val runWebstormSplitMode by intellijPlatformTesting.runIde.registering {
+    type = IntelliJPlatformType.WebStorm
+    version = "2025.3.2"
     splitMode = true
-    splitModeTarget = SplitModeAware.SplitModeTarget.FRONTEND
+    splitModeTarget = SplitModeAware.SplitModeTarget.BOTH
+
+    plugins {
+      plugin("AceJump", "3.8.22")
+      plugin("org.jetbrains.IdeaVim-EasyMotion", "1.16")
+    }
+  }
+  val runRider by intellijPlatformTesting.runIde.registering {
+    type = IntelliJPlatformType.Rider
+    version = "2026.2.3.1"
+    // Using Rider as a target IntelliJ Platform with `useInstaller = true` is currently not supported, please set `useInstaller = false` instead. See: https://github.com/JetBrains/intellij-platform-gradle-plugin/issues/1852
+    useInstaller = false
+    task {
+      systemProperty("idea.log.debug.categories", "com.maddyhome.idea.vim.handler.EditorHandlersChainLogger")
+    }
+    plugins {
+      plugin("AceJump", "3.8.22")
+      plugin("org.jetbrains.IdeaVim-EasyMotion", "1.16")
+    }
+  }
+  val runCLionSplitMode by intellijPlatformTesting.runIde.registering {
+    type = IntelliJPlatformType.CLion
+    version = "2026.1"
+    splitMode = true
+    splitModeTarget = SplitModeAware.SplitModeTarget.BOTH
+
+    plugins {
+      plugin("AceJump", "3.8.22")
+      plugin("org.jetbrains.IdeaVim-EasyMotion", "1.16")
+    }
+  }
+  val runPycharmSplitMode by intellijPlatformTesting.runIde.registering {
+    type = IntelliJPlatformType.PyCharmProfessional
+    version = "2026.1"
+    splitMode = true
+    splitModeTarget = SplitModeAware.SplitModeTarget.BOTH
+
+    plugins {
+      plugin("AceJump", "3.8.22")
+      plugin("org.jetbrains.IdeaVim-EasyMotion", "1.16")
+    }
+  }
+
+  // Run split mode with a JDWP debug agent on the frontend (JetBrains Client) process.
+  // After the frontend window appears, run the "Split Frontend Debugger" run configuration to attach.
+  val runIdeSplitModeDebugFrontend by intellijPlatformTesting.runIde.registering {
+    splitMode = true
+    splitModeTarget = SplitModeAware.SplitModeTarget.BOTH
+
+    plugins {
+      plugin("AceJump", "3.8.22")
+      plugin("org.jetbrains.IdeaVim-EasyMotion", "1.16")
+    }
+
+    prepareSandboxTask {
+      val sandboxDir = project.layout.buildDirectory.dir("idea-sandbox").map { it.asFile }
+      doLast {
+        val debugLine = "-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=*:5006"
+        val vmoptions = sandboxDir.get().walkTopDown()
+          .filter { it.name == "jetbrains_client64.vmoptions" && it.path.contains("runIdeSplitModeDebugFrontend") }
+          .firstOrNull()
+          ?: sandboxDir.get().walkTopDown()
+            .filter { it.name == "jetbrains_client64.vmoptions" }
+            .firstOrNull()
+
+        if (vmoptions != null) {
+          val content = vmoptions.readText()
+          if (debugLine !in content) {
+            vmoptions.appendText("\n$debugLine\n")
+            logger.lifecycle("Patched frontend vmoptions with JDWP debug agent: ${vmoptions.absolutePath}")
+          }
+          logger.lifecycle("Connect a Remote JVM Debug configuration to localhost:5006")
+        } else {
+          logger.warn(
+            "Could not find jetbrains_client64.vmoptions in sandbox. " +
+                    "Run `./gradlew runIdeSplitMode` once first to populate the sandbox, then use this task."
+          )
+        }
+      }
+    }
+  }
+
+  val runPycharmSplitModeDebugFrontend by intellijPlatformTesting.runIde.registering {
+    type = IntelliJPlatformType.PyCharmProfessional
+    version = "2026.1"
+    splitMode = true
+    splitModeTarget = SplitModeAware.SplitModeTarget.BOTH
+
+    plugins {
+      plugin("AceJump", "3.8.22")
+      plugin("org.jetbrains.IdeaVim-EasyMotion", "1.16")
+    }
+
+    prepareSandboxTask {
+      val sandboxDir = project.layout.buildDirectory.dir("idea-sandbox").map { it.asFile }
+      doLast {
+        val debugLine = "-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=*:5006"
+        val vmoptions = sandboxDir.get().walkTopDown()
+          .filter { it.name == "jetbrains_client64.vmoptions" && it.path.contains("runPycharmSplitModeDebugFrontend") }
+          .firstOrNull()
+          ?: sandboxDir.get().walkTopDown()
+            .filter { it.name == "jetbrains_client64.vmoptions" }
+            .firstOrNull()
+
+        if (vmoptions != null) {
+          val content = vmoptions.readText()
+          if (debugLine !in content) {
+            vmoptions.appendText("\n$debugLine\n")
+            logger.lifecycle("Patched frontend vmoptions with JDWP debug agent: ${vmoptions.absolutePath}")
+          }
+          logger.lifecycle("Connect a Remote JVM Debug configuration to localhost:5006")
+        } else {
+          logger.warn(
+            "Could not find jetbrains_client64.vmoptions in sandbox. " +
+                    "Run `./gradlew runPycharmSplitMode` once first to populate the sandbox, then use this task."
+          )
+        }
+      }
+    }
+  }
+
+  val testIdeSplitMode by intellijPlatformTesting.testIde.registering {
+    splitMode = true
+    splitModeTarget = SplitModeAware.SplitModeTarget.BOTH
+
+    plugins {
+      plugin("AceJump", "3.8.22")
+      plugin("org.jetbrains.IdeaVim-EasyMotion", "1.16")
+    }
+
+    task {
+      useJUnitPlatform()
+    }
   }
 
   // Add plugin open API sources to the plugin ZIP
@@ -294,36 +529,34 @@ gradle.projectsEvaluated {
 
 // --- Intellij plugin
 
+// The rendered change notes body, plus the version whose CHANGES.md section it came from.
+// Patch releases have no section of their own (promoteChangelog.ts rolls them into the parent
+// minor), so 2.45.1 resolves to 2.45.0 - and so does its YouTrack link, because releaseActions.ts
+// only ever creates fix versions for minors. Note that getLatest() returns the first section in
+// file order, not the highest version, so CHANGES.md must stay sorted and free of empty headers.
+val changeNotesParts = provider {
+  val version = project.version.toString()
+  val parentMinor = Regex("""^(\d+\.\d+)\.\d+$""").matchEntire(version)?.let { "${it.groupValues[1]}.0" }
+  with(changelog) {
+    val item = getOrNull(version)
+      ?: parentMinor?.let { getOrNull(it) }
+      ?: getLatest()
+    val rendered = renderItem(
+      item.withHeader(false).withEmptySections(false),
+      Changelog.OutputType.HTML,
+    )
+    rendered to item.version
+  }
+}
+
 intellijPlatform {
   pluginConfiguration {
     name = "IdeaVim"
-    changeNotes.set(
-      """
-        <b>Features:</b><br>
-        * New VimScript functions: <code>add()</code>, <code>call()</code>, <code>extend()</code>, <code>extendnew()</code>, <code>filter()</code>, <code>flatten()</code>, <code>flattennew()</code>, <code>foreach()</code>, <code>has_key()</code>, <code>indexof()</code>, <code>insert()</code>, <code>items()</code>, <code>keys()</code>, <code>map()</code>, <code>mapnew()</code>, <code>reduce()</code>, <code>remove()</code>, <code>slice()</code>, <code>sort()</code>, <code>uniq()</code>, <code>values()</code><br>
-        * <a href="https://youtrack.jetbrains.com/issue/VIM-1595">VIM-1595</a> Added support for <code>:read</code> command - insert file content below current line (e.g., <code>:read file.txt</code>, <code>0read file.txt</code>)<br>
-        * <a href="https://youtrack.jetbrains.com/issue/VIM-1595">VIM-1595</a> Added support for <code>:read!</code> command - insert shell command output below current line (e.g., <code>:read! echo "hello"</code>)<br>
-        * <a href="https://youtrack.jetbrains.com/issue/VIM-566">VIM-566</a> Added support for <code>zA</code> command - toggle folds recursively<br>
-        * <a href="https://youtrack.jetbrains.com/issue/VIM-566">VIM-566</a> Added support for <code>zr</code> command - increase fold level to show more folds<br>
-        * <a href="https://youtrack.jetbrains.com/issue/VIM-566">VIM-566</a> Added support for <code>zm</code> command - decrease fold level to hide more folds<br>
-        * <a href="https://youtrack.jetbrains.com/issue/VIM-566">VIM-566</a> Added support for <code>zf</code> command - create fold from selection or motion<br>
-        * <a href="https://youtrack.jetbrains.com/issue/VIM-566">VIM-566</a> Added support for <code>:set foldlevel</code> option - control fold visibility level<br>
-        <br>
-        <b>Fixes:</b><br>
-        * <a href="https://youtrack.jetbrains.com/issue/VIM-4105">VIM-4105</a> Fixed <code>a"</code> <code>a'</code> <code>a`</code> text objects to include surrounding whitespace per Vim spec<br>
-        * <a href="https://youtrack.jetbrains.com/issue/VIM-4097">VIM-4097</a> Fixed <code>&lt;A-n&gt;</code> (NextOccurrence) with text containing backslashes - e.g., selecting <code>\IntegerField</code> now works correctly<br>
-        * <a href="https://youtrack.jetbrains.com/issue/VIM-4094">VIM-4094</a> Fixed UninitializedPropertyAccessException when loading history<br>
-        * <a href="https://youtrack.jetbrains.com/issue/VIM-3948">VIM-3948</a> Improved hint generation visibility checks for better UI component detection<br>
-        * Fixed high CPU usage while showing command line<br>
-        * Fixed comparison of String and Number in VimScript expressions<br>
-        <br>
-        <b>Merged PRs:</b><br>
-        * <a href="https://github.com/JetBrains/ideavim/pull/1414">1414</a> by <a href="https://github.com/citizenmatt">Matt Ellis</a>: Refactor/functions<br>
-        * <a href="https://github.com/JetBrains/ideavim/pull/1442">1442</a> by <a href="https://github.com/citizenmatt">Matt Ellis</a>: Fix high CPU usage while showing command line<br>
-        <br>
-        <a href="https://youtrack.jetbrains.com/issues/VIM?q=State:%20Fixed%20Fix%20versions:%20${version.get()}">Changelog</a>
-        """.trimIndent()
-    )
+    changeNotes.set(changeNotesParts.map { (rendered, notesVersion) ->
+      val youtrackUrl =
+        "https://youtrack.jetbrains.com/issues/VIM?q=State:%20Fixed%20Fix%20versions:%20$notesVersion"
+      "$rendered<br>\n<a href=\"$youtrackUrl\">Changelog</a>"
+    })
 
     ideaVersion {
       // Let the Gradle plugin set the since-build version. It defaults to the version of the IDE we're building against
@@ -353,6 +586,10 @@ intellijPlatform {
     ides {
       recommended()
     }
+    // AceJump is a third-party Marketplace plugin; the verifier doesn't have it on its classpath
+    // (only bundled IDE plugins are resolved). Suppress "Package 'org.acejump' is not found" so
+    // the optional integration in :ideavim-acejump doesn't fail verification.
+    externalPrefixes.add("org.acejump")
   }
 
   instrumentCode.set(instrumentPluginCode.toBoolean())
@@ -360,17 +597,36 @@ intellijPlatform {
 
 ksp {
   arg("generated_directory", "$projectDir/src/main/resources/ksp-generated")
-  arg("vimscript_functions_file", "intellij_vimscript_functions.json")
-  arg("ex_commands_file", "intellij_ex_commands.json")
-  arg("commands_file", "intellij_commands.json")
+  arg("commands_file", "frontend_commands.json")
+  arg("ex_commands_file", "frontend_ex_commands.json")
+  arg("vimscript_functions_file", "frontend_vimscript_functions.json")
   arg("extensions_file", "ideavim_extensions.json")
+  arg("help_directory", layout.buildDirectory.dir("help").get().asFile.path)
+  arg("help_file", "frontend_help.json")
 }
 
 afterEvaluate {
-//  tasks.named("kspKotlin").configure { dependsOn("clean") }
-  tasks.named("kspTestFixturesKotlin").configure { enabled = false }
+  // Written by HelpProcessor, see the generateHelp task
+  tasks.named("kspKotlin").configure { outputs.dir(layout.buildDirectory.dir("help")) }
   tasks.named("kspTestFixturesKotlin").configure { enabled = false }
   tasks.named("kspTestKotlin").configure { enabled = false }
+}
+
+// Allow test and testFixtures sources to access `internal` members from :ideavim-common.
+// This is needed because plugin source code was split into the common module during the
+// plugin split, but tests remain in the root project. Kotlin's -Xfriend-paths compiler flag grants
+// internal visibility across module boundaries for testing purposes.
+// We add both the class directory and the JAR because the IntelliJ Platform Gradle plugin may resolve
+// classes from the composed/instrumented JAR rather than raw class files.
+val commonProject = project(":ideavim-common")
+val commonClassesDir = commonProject.layout.buildDirectory.dir("classes/kotlin/main").get().asFile
+tasks.named<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>("compileTestKotlin") {
+  friendPaths.from(commonClassesDir)
+  friendPaths.from(commonProject.layout.buildDirectory.dir("libs"))
+}
+tasks.named<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>("compileTestFixturesKotlin") {
+  friendPaths.from(commonClassesDir)
+  friendPaths.from(commonProject.layout.buildDirectory.dir("libs"))
 }
 
 
@@ -384,6 +640,30 @@ changelog {
   headerParserRegex.set("(\\d\\.\\d+(.\\d+)?)".toRegex())
 //    header = { "${project.version}" }
 //    version = "0.60"
+}
+
+tasks.named("publishPlugin") {
+  setDependsOn(dependsOn.filterNot { it == "patchChangelog" })
+}
+
+// Guard against publishing a release with no change notes. If CHANGES.md has no section for the
+// version, none for its parent minor, and the fallback section is empty, `changeNotesParts`
+// renders to nothing and the marketplace entry becomes a bare link to YouTrack — which is how
+// 2.42.1 through 2.45.1 shipped.
+tasks.named("patchPluginXml") {
+  val notes = changeNotesParts.map { it.first }
+  val version = project.version.toString()
+  // A stable release must never ship without notes. Anything else (EAP, dev, SNAPSHOT) only
+  // warns, so local builds keep working on a half-written changelog.
+  val isStableRelease = Regex("""^\d+\.\d+(\.\d+)?$""").matches(version)
+  doFirst {
+    if (notes.get().isNotBlank()) return@doFirst
+    val message = "Change notes for version '$version' are empty: CHANGES.md has no section for it " +
+            "and the fallback section has no entries. The release would be published with nothing but a " +
+            "link to YouTrack."
+    if (isStableRelease) throw GradleException(message)
+    logger.warn("WARNING: $message")
+  }
 }
 
 // Uncomment to enable FUS testing mode

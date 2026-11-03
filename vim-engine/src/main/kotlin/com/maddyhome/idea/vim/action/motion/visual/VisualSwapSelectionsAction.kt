@@ -22,7 +22,11 @@ import com.maddyhome.idea.vim.handler.VimActionHandler
 /**
  * @author vlan
  */
-@CommandOrMotion(keys = ["gv"], modes = [Mode.VISUAL])
+@CommandOrMotion(
+  keys = ["gv"],
+  modes = [Mode.VISUAL],
+  description = "Exchange the current and the previous Visual area."
+)
 class VisualSwapSelectionsAction : VimActionHandler.SingleExecution() {
   override val type: Command.Type = Command.Type.OTHER_READONLY
 
@@ -52,7 +56,8 @@ private fun swapVisualSelections(editor: VimEditor): Boolean {
   injector.markService.setVisualSelectionMarks(primaryCaret, TextRange(vimSelectionStart, primaryCaret.offset))
 
   editor.mode = mode.copy(selectionType = lastSelectionType)
-  primaryCaret.vimSetSelection(lastVisualRange.startOffset, lastVisualRange.endOffset, true)
+  // lastVisualRange.endOffset - 1 (minus one because +1 is already done in getVisualSelectionMarks above and vimSetSelection also add 1)
+  primaryCaret.vimSetSelection(lastVisualRange.startOffset, lastVisualRange.endOffset - 1, true)
 
   injector.scroll.scrollCaretIntoView(editor)
 

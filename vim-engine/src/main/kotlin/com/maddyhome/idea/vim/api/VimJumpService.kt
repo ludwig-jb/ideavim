@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2022 The IdeaVim authors
+ * Copyright 2003-2026 The IdeaVim authors
  *
  * Use of this source code is governed by an MIT-style
  * license that can be found in the LICENSE.txt file or at
@@ -9,13 +9,18 @@
 package com.maddyhome.idea.vim.api
 
 import com.maddyhome.idea.vim.mark.Jump
+import com.maddyhome.idea.vim.mark.JumpSource
 import org.jetbrains.annotations.TestOnly
 
 // todo should it be multicaret?
 // todo docs
 // todo it would be better to have some Vim scope for this purpose (p:), to store things project-wise like for buffers
 /**
- * This service manages jump lists for different projects
+ * This service manages jump lists, keyed by scope id
+ *
+ * The scope of a jump list is decided by [VimEditor.jumpListId]: project-wide by default, one per window (split) when
+ * the 'ideawindowjumps' option is set. Prefer the [VimEditor]-based extension functions below over passing a scope id
+ * directly.
  */
 interface VimJumpService {
   /**
@@ -25,63 +30,87 @@ interface VimJumpService {
    */
   var lastJumpTimeStamp: Long
 
-  fun getJump(projectId: String, count: Int): Jump?
-  fun getJumps(projectId: String): List<Jump>
-  fun getJumpSpot(projectId: String): Int
+  fun getJump(scopeId: String, count: Int): Jump?
+  fun getJumps(scopeId: String): List<Jump>
+  fun getJumpSpot(scopeId: String): Int
 
-  fun addJump(projectId: String, jump: Jump, reset: Boolean)
+  fun addJump(scopeId: String, jump: Jump, reset: Boolean)
   fun saveJumpLocation(editor: VimEditor)
 
-  fun removeJump(projectId: String, jump: Jump)
-  fun dropLastJump(projectId: String)
-  fun clearJumps(projectId: String)
+  fun removeJump(scopeId: String, jump: Jump)
+  fun dropLastJump(scopeId: String)
+  fun clearJumps(scopeId: String)
+  fun copyJumps(fromId: String, toId: String)
 
-  fun updateJumpsFromInsert(projectId: String, startOffset: Int, length: Int)
-  fun updateJumpsFromDelete(projectId: String, startOffset: Int, length: Int)
+  /**
+   * Gives a scope that has never had a list of its own a copy of another scope's list
+   *
+   * This is what happens when a window is created: in Vim the new window inherits the jump list of the window it was
+   * split from, even when that list is empty. A scope that already has a list keeps it - selecting a file in an existing
+   * window is not a new window, and must not inherit anything.
+   */
+  fun inheritJumps(fromId: String, toId: String)
+
+  fun updateJumpsFromInsert(scopeId: String, startOffset: Int, length: Int)
+  fun updateJumpsFromDelete(scopeId: String, startOffset: Int, length: Int)
 
   fun includeCurrentCommandAsNavigation(editor: VimEditor)
+
+  /**
+   * The jump to the caret of [editor], or null if the editor shows nothing a jump can bring the user back to
+   */
+  fun jumpAtCaret(editor: VimEditor): Jump?
+
+  /**
+   * Brings back the diff a [JumpSource.Diff] jump was recorded in, and moves its caret to the jump
+   *
+   * @return false if no open diff can show the jump
+   */
+  fun showInDiff(editor: VimEditor, jump: Jump): Boolean
+
+  /**
+   * Loads legacy jump state from an XML element for version migration.
+   * Default no-op; overridden by implementations that support PersistentStateComponent.
+   */
+  fun loadLegacyState(element: Any) {}
 
   @TestOnly
   fun resetJumps()
 }
 
 fun VimJumpService.addJump(editor: VimEditor, reset: Boolean) {
-  val virtualFile = editor.getVirtualFile() ?: return
-  val path = virtualFile.path
-  val protocol = virtualFile.protocol
-  val position = editor.offsetToBufferPosition(editor.currentCaret().offset)
-  val jump = Jump(position.line, position.column, path, protocol)
+  val jump = jumpAtCaret(editor) ?: return
   addJump(editor, jump, reset)
 }
 
 fun VimJumpService.getJump(editor: VimEditor, count: Int): Jump? {
-  return getJump(editor.projectId, count)
+  return getJump(editor.jumpListId, count)
 }
 
 fun VimJumpService.getJumps(editor: VimEditor): List<Jump> {
-  return getJumps(editor.projectId)
+  return getJumps(editor.jumpListId)
 }
 
 fun VimJumpService.getJumpSpot(editor: VimEditor): Int {
-  return getJumpSpot(editor.projectId)
+  return getJumpSpot(editor.jumpListId)
 }
 
 fun VimJumpService.addJump(editor: VimEditor, jump: Jump, reset: Boolean) {
-  return addJump(editor.projectId, jump, reset)
+  return addJump(editor.jumpListId, jump, reset)
 }
 
 fun VimJumpService.removeJump(editor: VimEditor, jump: Jump) {
-  return removeJump(editor.projectId, jump)
+  return removeJump(editor.jumpListId, jump)
 }
 
 fun VimJumpService.dropLastJump(editor: VimEditor) {
-  return dropLastJump(editor.projectId)
+  return dropLastJump(editor.jumpListId)
 }
 
 fun VimJumpService.updateJumpsFromInsert(editor: VimEditor, startOffset: Int, length: Int) {
-  return updateJumpsFromInsert(editor.projectId, startOffset, length)
+  return updateJumpsFromInsert(editor.jumpListId, startOffset, length)
 }
 
 fun VimJumpService.updateJumpsFromDelete(editor: VimEditor, startOffset: Int, length: Int) {
-  return updateJumpsFromDelete(editor.projectId, startOffset, length)
+  return updateJumpsFromDelete(editor.jumpListId, startOffset, length)
 }

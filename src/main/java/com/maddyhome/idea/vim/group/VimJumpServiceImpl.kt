@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2022 The IdeaVim authors
+ * Copyright 2003-2026 The IdeaVim authors
  *
  * Use of this source code is governed by an MIT-style
  * license that can be found in the LICENSE.txt file or at
@@ -8,26 +8,39 @@
 
 package com.maddyhome.idea.vim.group
 
+import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.components.PersistentStateComponent
 import com.intellij.openapi.components.RoamingType
 import com.intellij.openapi.components.State
 import com.intellij.openapi.components.Storage
-import com.intellij.openapi.fileEditor.ex.IdeDocumentHistory
-import com.intellij.openapi.fileEditor.impl.IdeDocumentHistoryImpl.PlaceInfo
-import com.intellij.openapi.fileEditor.impl.IdeDocumentHistoryImpl.RecentPlacesListener
+import com.intellij.openapi.components.service
+import com.intellij.openapi.editor.Editor
+import com.intellij.openapi.editor.EditorKind
+import com.intellij.openapi.editor.impl.editorIdOrNull
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.text.StringUtil
+import com.intellij.util.PlatformUtils
+import com.intellij.platform.project.projectId
 import com.maddyhome.idea.vim.api.VimEditor
 import com.maddyhome.idea.vim.api.VimJumpServiceBase
-import com.maddyhome.idea.vim.api.injector
+import com.maddyhome.idea.vim.api.VimWindowIdService
 import com.maddyhome.idea.vim.diagnostic.vimLogger
+import com.maddyhome.idea.vim.group.diff.DiffJumps
+import com.maddyhome.idea.vim.group.jump.DiffJump
+import com.maddyhome.idea.vim.group.jump.JumpRemoteApi
 import com.maddyhome.idea.vim.mark.Jump
 import com.maddyhome.idea.vim.newapi.IjVimEditor
-import com.maddyhome.idea.vim.newapi.globalIjOptions
 import com.maddyhome.idea.vim.newapi.ij
 import com.maddyhome.idea.vim.newapi.initInjector
+import kotlinx.coroutines.launch
 import org.jdom.Element
 
+/**
+ * Jump service with persistence and navigation integration via RPC.
+ *
+ * [includeCurrentCommandAsNavigation] delegates to the backend via [JumpRemoteApi]
+ * where [IdeDocumentHistory] is available. Works in both monolith and split mode.
+ */
 @State(
   name = "VimJumpsSettings",
   storages = [Storage(value = "\$APP_CONFIG$/vim_settings_local.xml", roamingType = RoamingType.DISABLED)]
@@ -40,20 +53,52 @@ internal class VimJumpServiceImpl : VimJumpServiceBase(), PersistentStateCompone
   override var lastJumpTimeStamp: Long = 0
 
   override fun includeCurrentCommandAsNavigation(editor: VimEditor) {
-    val project = (editor as IjVimEditor).editor.project
-    if (project != null) {
-      IdeDocumentHistory.getInstance(project).includeCurrentCommandAsNavigation()
+    val project = (editor as IjVimEditor).editor.project ?: return
+    val projectId = project.projectId()
+    // Fire-and-forget: this is called from write actions (motion handlers),
+    // so we can't use blocking rpc(). Launch async instead.
+    service<CoroutineScopeProvider>().coroutineScope.launch {
+      JumpRemoteApi.getInstance().includeCurrentCommandAsNavigation(projectId)
     }
   }
 
+  override fun jumpAtCaret(editor: VimEditor): Jump? {
+    return DiffJumps.jumpAt(editor.ij) ?: diffJumpOnBackend(editor.ij) ?: super.jumpAtCaret(editor)
+  }
+
+  override fun showInDiff(editor: VimEditor, jump: Jump): Boolean {
+    val project = editor.ij.project ?: return false
+    return DiffJumps.show(project, jump) || showDiffJumpOnBackend(project, jump)
+  }
+
+  /**
+   * In split mode, diff tabs live on the backend. The frontend shows them with editors that mirror the backend's ones
+   *
+   * A write action can't wait for the backend, so a jump recorded in one falls back to what the frontend knows.
+   */
+  private fun diffJumpOnBackend(editor: Editor): Jump? {
+    if (!PlatformUtils.isJetBrainsClient() || editor.editorKind != EditorKind.DIFF) return null
+    if (ApplicationManager.getApplication().isWriteAccessAllowed) return null
+    val editorId = editor.editorIdOrNull() ?: return null
+    val caret = editor.caretModel.logicalPosition
+    return rpc(editor.project) { JumpRemoteApi.getInstance().diffJumpAt(editorId, caret.line, caret.column) }?.toJump()
+  }
+
+  private fun showDiffJumpOnBackend(project: Project, jump: Jump): Boolean {
+    if (!PlatformUtils.isJetBrainsClient()) return false
+    val diffJump = DiffJump.of(jump) ?: return false
+    return rpc(project) { JumpRemoteApi.getInstance().showDiffJump(project.projectId(), diffJump) }
+  }
+
   // We do not delete old project records.
-  // Rationale: It's more likely that users will want to review their old projects and access their jump history 
+  // Rationale: It's more likely that users will want to review their old projects and access their jump history
   // (e.g., recent files), than for the 100 jumps (max number of records) to consume enough space to be noticeable.
   override fun getState(): Element {
     val projectsElem = Element("projects")
-    for ((project, jumps) in projectToJumps) {
+    for ((project, jumps) in jumpsByProject()) {
       val projectElement = Element("project").setAttribute("id", project)
-      for (jump in jumps) {
+      // A jump to text that is not in a file, such as an older revision shown in a diff, has nowhere to go after a restart
+      for (jump in jumps.filter { it.isInFile }) {
         val jumpElem = Element("jump")
         jumpElem.setAttribute("line", jump.line.toString())
         jumpElem.setAttribute("column", jump.col.toString())
@@ -67,6 +112,24 @@ internal class VimJumpServiceImpl : VimJumpServiceBase(), PersistentStateCompone
       projectsElem.addContent(projectElement)
     }
     return projectsElem
+  }
+
+  /**
+   * One jump list per project, taken from the most recently used window
+   *
+   * Window ids mean nothing after a restart, so saving a list per window would write records that can never be read
+   * back. Vim also keeps a single list in `viminfo`.
+   */
+  private fun jumpsByProject(): Map<String, List<Jump>> {
+    val result = LinkedHashMap<String, List<Jump>>()
+    for ((scopeId, jumps) in scopeToJumps) {
+      result[VimWindowIdService.projectIdOf(scopeId)] = jumps
+    }
+    return result
+  }
+
+  override fun loadLegacyState(element: Any) {
+    loadState(element as Element)
   }
 
   override fun loadState(state: Element) {
@@ -88,47 +151,7 @@ internal class VimJumpServiceImpl : VimJumpServiceBase(), PersistentStateCompone
         logger.debug("jumps=$jumps")
       }
       val projectId = projectElement.getAttributeValue("id")
-      projectToJumps[projectId] = jumps
+      scopeToJumps[projectId] = jumps
     }
-  }
-}
-
-internal class JumpsListener(val project: Project) : RecentPlacesListener {
-  override fun recentPlaceAdded(changePlace: PlaceInfo, isChanged: Boolean) {
-    initInjector()
-    if (!injector.globalIjOptions().unifyjumps) return
-
-    val jumpService = injector.jumpService
-    if (!isChanged) {
-      if (changePlace.timeStamp < jumpService.lastJumpTimeStamp) return // this listener is notified asynchronously, and
-      // we do not want jumps that were processed before
-      val jump = buildJump(changePlace) ?: return
-      jumpService.addJump(injector.file.getProjectId(project), jump, true)
-    }
-  }
-
-  override fun recentPlaceRemoved(changePlace: PlaceInfo, isChanged: Boolean) {
-    if (!injector.globalIjOptions().unifyjumps) return
-
-    val jumpService = injector.jumpService
-    if (!isChanged) {
-      if (changePlace.timeStamp < jumpService.lastJumpTimeStamp) return // this listener is notified asynchronously, and
-      // we do not want jumps that were processed before
-      val jump = buildJump(changePlace) ?: return
-      jumpService.removeJump(injector.file.getProjectId(project), jump)
-    }
-  }
-
-  private fun buildJump(place: PlaceInfo): Jump? {
-    val editor = injector.editorGroup.getEditors().firstOrNull { it.ij.virtualFile == place.file } ?: return null
-    val offset = place.caretPosition?.startOffset ?: return null
-
-    val bufferPosition = editor.offsetToBufferPosition(offset)
-    val line = bufferPosition.line
-    val col = bufferPosition.column
-
-    val path = place.file.path
-
-    return Jump(line, col, path, place.file.fileSystem.protocol)
   }
 }

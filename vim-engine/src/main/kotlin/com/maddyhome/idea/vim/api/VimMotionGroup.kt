@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2023 The IdeaVim authors
+ * Copyright 2003-2026 The IdeaVim authors
  *
  * Use of this source code is governed by an MIT-style
  * license that can be found in the LICENSE.txt file or at
@@ -85,6 +85,18 @@ interface VimMotionGroup {
   fun moveCaretToMark(caret: ImmutableVimCaret, ch: Char, toLineStart: Boolean): Motion
   fun moveCaretToMarkRelative(caret: ImmutableVimCaret, count: Int): Motion
   fun moveCaretToJump(editor: VimEditor, caret: ImmutableVimCaret, count: Int): Motion
+  fun moveCaretToTagForward(editor: VimEditor, caret: ImmutableVimCaret, count: Int): Motion
+  fun moveCaretToTagDown(editor: VimEditor, caret: ImmutableVimCaret, context: ExecutionContext, count: Int): Motion
+
+  /**
+   * Move the caret along the change list (`g;` / `g,`). [count] is signed:
+   * negative for `g;` (older), positive for `g,` (newer).
+   *
+   * Emits the appropriate E662 / E663 / E664 message and returns [Motion.Error]
+   * when the index is already at the relevant boundary.
+   */
+  fun moveCaretToChange(editor: VimEditor, caret: ImmutableVimCaret, count: Int): Motion
+
   fun moveCaretToMatchingPair(editor: VimEditor, caret: ImmutableVimCaret): Motion
 
   /**
@@ -152,6 +164,7 @@ interface VimMotionGroup {
     context: ExecutionContext,
     argument: Argument,
     operatorArguments: OperatorArguments,
+    expandCollapsedFolds: Boolean = true,
   ): TextRange?
 
   // TODO: These aren't caret motions. Should be moved to VimWindowGroup?

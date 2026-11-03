@@ -11,8 +11,10 @@ package com.maddyhome.idea.vim.vimscript.model.commands.mapping
 import com.intellij.vim.annotations.ExCommand
 import com.maddyhome.idea.vim.api.ExecutionContext
 import com.maddyhome.idea.vim.api.VimEditor
+import com.maddyhome.idea.vim.api.getAllMappingInfoWithMode
 import com.maddyhome.idea.vim.api.injector
 import com.maddyhome.idea.vim.command.MappingMode
+import com.maddyhome.idea.vim.command.MappingMode.Companion.toModeString
 import com.maddyhome.idea.vim.command.OperatorArguments
 import com.maddyhome.idea.vim.diagnostic.vimLogger
 import com.maddyhome.idea.vim.ex.ExException
@@ -27,13 +29,17 @@ import com.maddyhome.idea.vim.vimscript.model.commands.mapping.MapCommand.Specia
 import com.maddyhome.idea.vim.vimscript.model.expressions.Expression
 import com.maddyhome.idea.vim.vimscript.model.expressions.SimpleExpression
 import org.jetbrains.annotations.NonNls
+import java.awt.event.KeyEvent
 import java.util.*
 import javax.swing.KeyStroke
 
 /**
  * @author vlan
  */
-@ExCommand(command = "map,nm[ap],vm[ap],xm[ap],smap,om[ap],im[ap],lm[ap],cm[ap],nn[oremap],vn[oremap],xn[oremap],snor[emap],ono[remap],no[remap],ino[remap],ln[oremap],cno[remap]")
+@ExCommand(
+  command = "map,nm[ap],vm[ap],xm[ap],smap,om[ap],im[ap],lm[ap],cm[ap],nn[oremap],vn[oremap],xn[oremap],snor[emap],ono[remap],no[remap],ino[remap],ln[oremap],cno[remap]",
+  description = "Map key sequence {lhs} to {rhs} in the modes of the command. The nore forms are not remapped. With only {lhs}, or nothing, list matching mappings."
+)
 data class MapCommand(val range: Range, val cmd: String, val modifier: CommandModifier, val argument: String) :
   Command.SingleExecution(range, modifier, argument) {
 
@@ -65,7 +71,7 @@ data class MapCommand(val range: Range, val cmd: String, val modifier: CommandMo
     // Empty string is an empty prefix that matches everything.
     if (argument.isBlank() || !argument.trim().contains(' ')) {
       val prefix = injector.parser.parseKeys(argument.trim())
-      return injector.keyGroup.showKeyMappings(modes, prefix, editor)
+      return showKeyMappings(modes, prefix, editor)
     }
 
     val arguments = try {
@@ -103,6 +109,31 @@ data class MapCommand(val range: Range, val cmd: String, val modifier: CommandMo
       val isRecursive = mapping != arguments.secondArgument || commandInfo.isRecursive
       injector.keyGroup.putKeyMapping(modes, arguments.fromKeys, mappingOwner, toKeys, isRecursive)
     }
+
+    return true
+  }
+
+  private fun showKeyMappings(modes: Set<MappingMode>, prefix: List<KeyStroke>, editor: VimEditor): Boolean {
+    val mappings = injector.keyGroup.getAllMappingInfoWithMode(prefix, modes)
+    val output = buildString {
+      mappings.forEach {
+        val mappingInfo = it.mappingInfo
+
+        append(it.modes.toModeString().padEnd(3, ' '))
+        append((injector.parser.toKeyNotation(mappingInfo.fromKeys) + " ").padEnd(12, ' '))
+        append(if (mappingInfo.isRecursive) " " else "*") // Or `&` if script-local mappings being recursive
+        append(" ") // Should be `@` if it's a buffer-local mapping
+        append(mappingInfo.getPresentableString())
+        appendLine()
+      }
+
+      if (this.isEmpty()) {
+        append("No mapping found")
+      }
+    }
+
+    val context = injector.executionContextManager.getEditorExecutionContext(editor)
+    injector.outputPanel.output(editor, context, output)
 
     return true
   }
@@ -164,34 +195,6 @@ data class MapCommand(val range: Range, val cmd: String, val modifier: CommandMo
     val secondArgument: String,
   )
 
-  companion object {
-    private val COMMAND_INFOS = arrayOf(
-      // TODO: Support lmap
-      CommandInfo("map", "", MappingMode.NVO, true),
-      CommandInfo("map", "", MappingMode.IC, true, bang = true),
-      CommandInfo("nm", "ap", MappingMode.N, true),
-      CommandInfo("vm", "ap", MappingMode.V, true),
-      CommandInfo("xm", "ap", MappingMode.X, true),
-      CommandInfo("smap", "", MappingMode.S, true),
-      CommandInfo("om", "ap", MappingMode.O, true),
-      CommandInfo("im", "ap", MappingMode.I, true),
-      CommandInfo("cm", "ap", MappingMode.C, true),
-
-      // TODO: Support lnoremap
-      CommandInfo("no", "remap", MappingMode.NVO, false),
-      CommandInfo("no", "remap", MappingMode.IC, false, bang = true),
-      CommandInfo("nn", "oremap", MappingMode.N, false),
-      CommandInfo("vn", "oremap", MappingMode.V, false),
-      CommandInfo("xn", "oremap", MappingMode.X, false),
-      CommandInfo("snor", "emap", MappingMode.S, false),
-      CommandInfo("ono", "remap", MappingMode.O, false),
-      CommandInfo("ino", "remap", MappingMode.I, false),
-      CommandInfo("cno", "remap", MappingMode.C, false),
-    )
-    private val UNSUPPORTED_SPECIAL_ARGUMENTS = EnumSet.of(SCRIPT)
-    private val logger = vimLogger<MapCommand>()
-  }
-
   private fun parseCommandArguments(input: String): CommandArguments? {
     val specialArguments = HashSet<SpecialArgument>()
     val toKeysBuilder = StringBuilder()
@@ -207,7 +210,12 @@ data class MapCommand(val range: Range, val cmd: String, val modifier: CommandMo
         if (specialArgument != null) {
           specialArguments.add(specialArgument)
         } else {
-          fromKeys = injector.parser.parseKeys(processBars(part))
+          fromKeys = injector.parser.parseKeys(processBars(part)).also { keys ->
+            // A modified character without its own key, e.g. <A-%>, is parsed as a typed keystroke no key press matches
+            if (keys.any { it.keyChar != KeyEvent.CHAR_UNDEFINED && it.modifiers != 0 }) {
+              throw exExceptionMessage("command.map.no.key.for.character", part)
+            }
+          }
         }
       }
     }
@@ -232,5 +240,33 @@ data class MapCommand(val range: Range, val cmd: String, val modifier: CommandMo
 
   private fun processBars(fromString: String): String {
     return fromString.replace("\\|", "|")
+  }
+
+  companion object {
+    private val COMMAND_INFOS = arrayOf(
+      CommandInfo("map", "", MappingMode.NVO, true),
+      CommandInfo("lm", "ap", MappingMode.L, true),
+      CommandInfo("map", "", MappingMode.IC, true, bang = true),
+      CommandInfo("nm", "ap", MappingMode.N, true),
+      CommandInfo("vm", "ap", MappingMode.V, true),
+      CommandInfo("xm", "ap", MappingMode.X, true),
+      CommandInfo("smap", "", MappingMode.S, true),
+      CommandInfo("om", "ap", MappingMode.O, true),
+      CommandInfo("im", "ap", MappingMode.I, true),
+      CommandInfo("cm", "ap", MappingMode.C, true),
+
+      CommandInfo("ln", "oremap", MappingMode.L, false),
+      CommandInfo("no", "remap", MappingMode.NVO, false),
+      CommandInfo("no", "remap", MappingMode.IC, false, bang = true),
+      CommandInfo("nn", "oremap", MappingMode.N, false),
+      CommandInfo("vn", "oremap", MappingMode.V, false),
+      CommandInfo("xn", "oremap", MappingMode.X, false),
+      CommandInfo("snor", "emap", MappingMode.S, false),
+      CommandInfo("ono", "remap", MappingMode.O, false),
+      CommandInfo("ino", "remap", MappingMode.I, false),
+      CommandInfo("cno", "remap", MappingMode.C, false),
+    )
+    private val UNSUPPORTED_SPECIAL_ARGUMENTS = EnumSet.of(SCRIPT)
+    private val logger = vimLogger<MapCommand>()
   }
 }

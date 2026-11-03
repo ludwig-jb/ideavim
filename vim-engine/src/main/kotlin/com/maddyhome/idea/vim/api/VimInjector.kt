@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2023 The IdeaVim authors
+ * Copyright 2003-2026 The IdeaVim authors
  *
  * Use of this source code is governed by an MIT-style
  * license that can be found in the LICENSE.txt file or at
@@ -10,8 +10,8 @@ package com.maddyhome.idea.vim.api
 
 import com.maddyhome.idea.vim.common.VimListenersNotifier
 import com.maddyhome.idea.vim.diagnostic.VimLogger
-import com.maddyhome.idea.vim.extension.JsonExtensionProvider
 import com.maddyhome.idea.vim.extension.ExtensionLoader
+import com.maddyhome.idea.vim.extension.JsonExtensionProvider
 import com.maddyhome.idea.vim.group.TabService
 import com.maddyhome.idea.vim.group.VimWindowGroup
 import com.maddyhome.idea.vim.history.VimHistory
@@ -21,8 +21,10 @@ import com.maddyhome.idea.vim.register.VimRegisterGroup
 import com.maddyhome.idea.vim.state.VimStateMachine
 import com.maddyhome.idea.vim.thinapi.VimHighlightingService
 import com.maddyhome.idea.vim.thinapi.VimPluginService
+import com.maddyhome.idea.vim.undo.LineChange
 import com.maddyhome.idea.vim.undo.VimUndoRedo
 import com.maddyhome.idea.vim.vimscript.services.VariableService
+import com.maddyhome.idea.vim.vimscript.services.VimrcPathService
 import com.maddyhome.idea.vim.yank.VimYankGroup
 import org.jetbrains.annotations.ApiStatus
 
@@ -66,9 +68,15 @@ interface VimInjector {
 
   val keyGroup: VimKeyGroup
 
+  val keymapGroup: VimKeymapGroup
+
+  val abbreviationGroup: VimAbbreviationGroup
+
   val markService: VimMarkService
 
   val jumpService: VimJumpService
+
+  val tagService: VimTagService
 
   val visualMotionGroup: VimVisualMotionGroup
 
@@ -107,7 +115,13 @@ interface VimInjector {
 
   val searchGroup: VimSearchGroup
 
+  val virtualBufferGroup: VirtualBufferGroup
+
+  val searchWindowGroup: SearchWindowGroup
+
   val statisticsService: VimStatistics
+
+  val spellcheckerService: SpellcheckerService
 
   val put: VimPut
 
@@ -121,13 +135,19 @@ interface VimInjector {
 
   val undo: VimUndoRedo
 
+  val lineChange: LineChange
+
   val psiService: VimPsiService
+
+  val windowIdService: VimWindowIdService
 
   val vimscriptExecutor: VimscriptExecutor
 
   val vimscriptParser: VimscriptParser
 
   val variableService: VariableService
+
+  val vimrcPathService: VimrcPathService
 
   val modalInput: VimModalInputService
   val commandLine: VimCommandLineService
@@ -147,6 +167,8 @@ interface VimInjector {
 
   val listenersNotifier: VimListenersNotifier
 
+  val autoCmd: AutoCmdService
+
   val redrawService: VimRedrawService
 
   val pluginService: VimPluginService
@@ -154,6 +176,13 @@ interface VimInjector {
   val highlightingService: VimHighlightingService
 
   val pathExpansion: VimPathExpansion
+
+  val pluginActivator: VimPluginActivator
+
+  /** Opens the URL or file under the cursor for the `gx` command. See [VimExternalOpener]. */
+  val externalOpener: VimExternalOpener
+
+  val quickFixService: QuickFixService
 }
 
 lateinit var injector: VimInjector

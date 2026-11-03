@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2023 The IdeaVim authors
+ * Copyright 2003-2026 The IdeaVim authors
  *
  * Use of this source code is governed by an MIT-style
  * license that can be found in the LICENSE.txt file or at
@@ -13,32 +13,53 @@ import com.intellij.codeInsight.editorActions.CopyPastePreProcessor
 import com.intellij.codeInsight.editorActions.TextBlockTransferable
 import com.intellij.codeInsight.editorActions.TextBlockTransferableData
 import com.intellij.ide.CopyPasteManagerEx
-import com.intellij.openapi.components.Service
 import com.intellij.openapi.editor.CaretStateTransferableData
 import com.intellij.openapi.editor.RawText
 import com.intellij.openapi.editor.richcopy.view.HtmlTransferableData
 import com.intellij.openapi.editor.richcopy.view.RtfTransferableData
+import com.intellij.openapi.Disposable
 import com.intellij.openapi.project.DumbService
 import com.intellij.openapi.project.IndexNotReadyException
 import com.intellij.psi.PsiDocumentManager
-import com.intellij.util.ui.EmptyClipboardOwner
 import com.maddyhome.idea.vim.api.ExecutionContext
+import com.maddyhome.idea.vim.api.ImmutableVimCaret
+import com.maddyhome.idea.vim.api.OwnedPrimaryContent
 import com.maddyhome.idea.vim.api.VimClipboardManager
 import com.maddyhome.idea.vim.api.VimEditor
+import com.maddyhome.idea.vim.api.globalOptions
 import com.maddyhome.idea.vim.api.injector
+import com.maddyhome.idea.vim.command.Command
 import com.maddyhome.idea.vim.common.TextRange
 import com.maddyhome.idea.vim.common.VimCopiedText
 import com.maddyhome.idea.vim.diagnostic.debug
 import com.maddyhome.idea.vim.diagnostic.vimLogger
+import com.maddyhome.idea.vim.options.OptionConstants
+import com.maddyhome.idea.vim.state.mode.SelectionType
+import com.maddyhome.idea.vim.state.mode.inVisualMode
+import com.maddyhome.idea.vim.state.mode.selectionType
 import java.awt.HeadlessException
 import java.awt.Toolkit
 import java.awt.datatransfer.DataFlavor
 import java.awt.datatransfer.Transferable
 import java.awt.datatransfer.UnsupportedFlavorException
 import java.io.IOException
+import java.util.concurrent.atomic.AtomicReference
 
-@Service
-internal class IjClipboardManager : VimClipboardManager {
+
+// Disposable so the PRIMARY writer's background thread and helper process are released when the
+// service goes away. That covers plugin unload as well as shutdown: IdeaVim's extension points are
+// all dynamic, so an un-disposed executor would pin the plugin classloader across a reload.
+internal class IjClipboardManager(
+  private val primaryWriter: PrimarySelectionWriter = primarySelectionWriter(),
+  private val isPrimarySupported: () -> Boolean = { injector.registerGroup.isPrimaryRegisterSupported() },
+) : VimClipboardManager, Disposable {
+  private val publishedToPrimary = AtomicReference<OwnedPrimaryContent?>()
+
+  override fun dispose() {
+    primaryWriter.dispose()
+    publishedToPrimary.set(null)
+  }
+
   override fun getPrimaryContent(editor: VimEditor, context: ExecutionContext): IjVimCopiedText? {
     val clipboard = Toolkit.getDefaultToolkit()?.systemSelection ?: return null
     val contents = clipboard.getContents(null) ?: return null
@@ -102,13 +123,50 @@ internal class IjClipboardManager : VimClipboardManager {
     editor: VimEditor,
     context: ExecutionContext,
     textData: VimCopiedText,
+    selectionType: SelectionType,
   ): Boolean {
     require(textData is IjVimCopiedText)
-    return handleTextSetting(textData.text, textData.text, textData.transferableData) { content ->
-      val clipboard = Toolkit.getDefaultToolkit()?.systemSelection ?: return@handleTextSetting null
-      clipboard.setContents(content, EmptyClipboardOwner.INSTANCE)
-    } != null
+    val published = primaryWriter.write(textData.text, textData.transferableData)
+    publishedToPrimary.set(if (published) OwnedPrimaryContent(textData, selectionType) else null)
+    return published
   }
+
+  override fun getOwnedPrimaryContent(): OwnedPrimaryContent? =
+    publishedToPrimary.get()?.takeIf { primaryWriter.ownsSelection() }
+
+  override fun getLastPublishedPrimaryContent(): OwnedPrimaryContent? = publishedToPrimary.get()
+
+  override fun onVisualSelectionChange(editor: VimEditor, caret: ImmutableVimCaret) {
+    if (!shouldRepublishVisualSelection(editor)) return
+    val text = readVisualSelectionText(editor, caret) ?: return
+    val context = injector.executionContextManager.getEditorExecutionContext(editor)
+    val selectionType = editor.mode.selectionType ?: SelectionType.CHARACTER_WISE
+    setPrimaryContent(editor, context, dumbCopiedText(text), selectionType)
+  }
+
+  // vim-engine invokes setVisualSelection transiently from operators (yy, dd, c…), text-object
+  // handlers, and put-with-selection too — pushing those would corrupt PRIMARY mid-operation.
+  private fun shouldRepublishVisualSelection(editor: VimEditor): Boolean {
+    if (!editor.inVisualMode) return false
+    if (OptionConstants.clipboard_autoselect !in injector.globalOptions().clipboard) return false
+    if (injector.vimState.executingCommand?.type in OPERATORS_SKIPPING_PRIMARY_PUSH) return false
+    return isPrimarySupported()
+  }
+
+  private fun readVisualSelectionText(editor: VimEditor, caret: ImmutableVimCaret): String? {
+    val start = caret.selectionStart
+    val end = caret.selectionEnd
+    if (start >= end) return null
+    val rawText = runCatching { editor.text().subSequence(start, end).toString() }.getOrNull() ?: return null
+    if (rawText.isEmpty()) return null
+    return ensureLinewiseTrailingNewline(rawText, editor.mode.selectionType)
+  }
+
+  // `lineToNativeSelection` ends the selection at the trailing `\n` rather than after it, so the
+  // raw substring excludes the newline. Re-add it for line-wise selections so external readers
+  // observe linewise content.
+  private fun ensureLinewiseTrailingNewline(text: String, selectionType: SelectionType?): String =
+    if (selectionType == SelectionType.LINE_WISE && !text.endsWith("\n")) "$text\n" else text
 
 //  override fun setPrimaryText(editor: VimEditor, context: ExecutionContext, entry: ClipboardEntry): Boolean {
 //    require(entry is IJClipboardEntry)
@@ -130,31 +188,23 @@ internal class IjClipboardManager : VimClipboardManager {
     return IjVimCopiedText(text, emptyList())
   }
 
-  @Suppress("UNCHECKED_CAST")
   private fun handleTextSetting(
     text: String,
     rawText: String,
     transferableData: List<Any>,
     setContent: (TextBlockTransferable) -> Unit?,
   ): Transferable? {
-    val mutableTransferableData = (transferableData as List<TextBlockTransferableData>).toMutableList()
-    try {
-      val s = TextBlockTransferable.convertLineSeparators(text, "\n", mutableTransferableData)
-      if (mutableTransferableData.none { it is CaretStateTransferableData }) {
-        // Manually add CaretStateTransferableData to avoid adjustment of a copied text to multicaret
-        mutableTransferableData += CaretStateTransferableData(intArrayOf(0), intArrayOf(s.length))
-      }
-      logger.debug { "Paste text with transferable data: ${mutableTransferableData.joinToString { it.javaClass.name }}" }
-      val content = TextBlockTransferable(s, mutableTransferableData, RawText(rawText))
+    return try {
+      val content = buildIjTextTransferable(text, rawText, transferableData)
       setContent(content)
-      return content
-    } catch (ignored: HeadlessException) {
+      content
+    } catch (_: HeadlessException) {
+      null
     }
-    return null
   }
 
   override fun getTransferableData(vimEditor: VimEditor, textRange: TextRange): List<TextBlockTransferableData> {
-    val editor = (vimEditor as IjVimEditor).editor
+    val editor = vimEditor.ij
     val transferableData: MutableList<TextBlockTransferableData> = ArrayList()
     val project = editor.project ?: return emptyList()
 
@@ -201,7 +251,7 @@ internal class IjClipboardManager : VimClipboardManager {
     text: String,
     transferableData: List<*>,
   ): String {
-    val editor = (vimEditor as IjVimEditor).editor
+    val editor = vimEditor.ij
     val project = editor.project ?: return text
     val file = PsiDocumentManager.getInstance(project).getPsiFile(editor.document) ?: return text
     val rawText = TextBlockTransferable.convertLineSeparators(
@@ -239,9 +289,38 @@ internal class IjClipboardManager : VimClipboardManager {
 
   companion object {
     val logger = vimLogger<IjClipboardManager>()
+
+    private val OPERATORS_SKIPPING_PRIMARY_PUSH = setOf(
+      Command.Type.COPY,
+      Command.Type.DELETE,
+      Command.Type.CHANGE,
+      Command.Type.PASTE,
+      Command.Type.INSERT,
+    )
   }
 }
 
 data class IjVimCopiedText(override val text: String, val transferableData: List<Any>) : VimCopiedText {
   override fun updateText(newText: String): VimCopiedText = IjVimCopiedText(newText, transferableData)
+}
+
+/**
+ * Builds the `TextBlockTransferable` for clipboard and PRIMARY writes. We pin a single-range
+ * `CaretStateTransferableData` so IntelliJ doesn't reshape the pasted text to match whatever
+ * multi-caret arrangement the destination editor has.
+ *
+ * Throws [HeadlessException] on a headless JVM; callers handle.
+ */
+@Suppress("UNCHECKED_CAST")
+internal fun buildIjTextTransferable(
+  text: String,
+  rawText: String,
+  transferableData: List<Any>,
+): TextBlockTransferable {
+  val mutableData = (transferableData as List<TextBlockTransferableData>).toMutableList()
+  val normalized = TextBlockTransferable.convertLineSeparators(text, "\n", mutableData)
+  if (mutableData.none { it is CaretStateTransferableData }) {
+    mutableData += CaretStateTransferableData(intArrayOf(0), intArrayOf(normalized.length))
+  }
+  return TextBlockTransferable(normalized, mutableData, RawText(rawText))
 }

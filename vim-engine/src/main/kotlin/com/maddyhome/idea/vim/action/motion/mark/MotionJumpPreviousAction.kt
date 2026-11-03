@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2023 The IdeaVim authors
+ * Copyright 2003-2026 The IdeaVim authors
  *
  * Use of this source code is governed by an MIT-style
  * license that can be found in the LICENSE.txt file or at
@@ -19,7 +19,11 @@ import com.maddyhome.idea.vim.command.OperatorArguments
 import com.maddyhome.idea.vim.handler.Motion
 import com.maddyhome.idea.vim.handler.MotionActionHandler
 
-@CommandOrMotion(keys = ["<C-O>", "<C-T>"], modes = [Mode.NORMAL])
+@CommandOrMotion(
+  keys = ["<C-O>"],
+  modes = [Mode.NORMAL],
+  description = "Go to the [count]th older position in the jump list."
+)
 class MotionJumpPreviousAction : MotionActionHandler.ForEachCaret() {
   override fun getOffset(
     editor: VimEditor,
@@ -28,9 +32,7 @@ class MotionJumpPreviousAction : MotionActionHandler.ForEachCaret() {
     argument: Argument?,
     operatorArguments: OperatorArguments,
   ): Motion {
-    val motion = injector.motion.moveCaretToJump(editor, caret, -operatorArguments.count1)
-    injector.jumpService.lastJumpTimeStamp = System.currentTimeMillis()
-    return motion
+    return injector.motion.moveCaretToJump(editor, caret, -operatorArguments.count1)
   }
 
   override val motionType: MotionType = MotionType.EXCLUSIVE

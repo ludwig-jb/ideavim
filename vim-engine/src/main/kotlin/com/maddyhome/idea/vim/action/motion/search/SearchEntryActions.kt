@@ -15,11 +15,16 @@ import com.maddyhome.idea.vim.api.injector
 import com.maddyhome.idea.vim.command.Command
 import com.maddyhome.idea.vim.command.CommandFlags
 import com.maddyhome.idea.vim.command.OperatorArguments
+import com.maddyhome.idea.vim.common.Direction
 import com.maddyhome.idea.vim.handler.VimActionHandler
 import com.maddyhome.idea.vim.helper.enumSetOf
 import java.util.*
 
-@CommandOrMotion(keys = ["/"], modes = [Mode.NORMAL, Mode.VISUAL, Mode.OP_PENDING])
+@CommandOrMotion(
+  keys = ["/"],
+  modes = [Mode.NORMAL, Mode.VISUAL, Mode.OP_PENDING],
+  description = "Search forward for the [count]'th occurrence of {pattern}, entered on the command line."
+)
 class SearchEntryFwdAction : VimActionHandler.SingleExecution() {
   override val type: Command.Type = Command.Type.MODE_CHANGE
   override val flags: EnumSet<CommandFlags> = enumSetOf(CommandFlags.FLAG_START_EX, CommandFlags.FLAG_SAVE_JUMP)
@@ -30,12 +35,16 @@ class SearchEntryFwdAction : VimActionHandler.SingleExecution() {
     cmd: Command,
     operatorArguments: OperatorArguments,
   ): Boolean {
-    startSearchCommand('/', editor, context)
+    startSearchCommand(Direction.FORWARDS, editor, context)
     return true
   }
 }
 
-@CommandOrMotion(keys = ["?"], modes = [Mode.NORMAL, Mode.VISUAL, Mode.OP_PENDING])
+@CommandOrMotion(
+  keys = ["?"],
+  modes = [Mode.NORMAL, Mode.VISUAL, Mode.OP_PENDING],
+  description = "Search backward for the [count]'th occurrence of {pattern}, entered on the command line."
+)
 class SearchEntryRevAction : VimActionHandler.SingleExecution() {
   override val type: Command.Type = Command.Type.MODE_CHANGE
   override val flags: EnumSet<CommandFlags> = enumSetOf(CommandFlags.FLAG_START_EX, CommandFlags.FLAG_SAVE_JUMP)
@@ -46,11 +55,11 @@ class SearchEntryRevAction : VimActionHandler.SingleExecution() {
     cmd: Command,
     operatorArguments: OperatorArguments,
   ): Boolean {
-    startSearchCommand('?', editor, context)
+    startSearchCommand(Direction.BACKWARDS, editor, context)
     return true
   }
 }
 
-private fun startSearchCommand(label: Char, editor: VimEditor, context: ExecutionContext) {
-  injector.commandLine.createSearchPrompt(editor, context, label.toString(), "")
+private fun startSearchCommand(direction: Direction, editor: VimEditor, context: ExecutionContext) {
+  injector.commandLine.createSearchPrompt(editor, context, direction, "")
 }

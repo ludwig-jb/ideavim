@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2023 The IdeaVim authors
+ * Copyright 2003-2026 The IdeaVim authors
  *
  * Use of this source code is governed by an MIT-style
  * license that can be found in the LICENSE.txt file or at
@@ -20,7 +20,7 @@ import com.maddyhome.idea.vim.vimscript.model.ExecutionResult
 /**
  * see "h :file"
  */
-@ExCommand(command = "f[ile]")
+@ExCommand(command = "f[ile]", description = "Display the current file name, cursor position and file status.")
 data class FileCommand(val range: Range, val modifier: CommandModifier, val argument: String) :
   Command.SingleExecution(range, modifier, argument) {
 
@@ -39,7 +39,10 @@ data class FileCommand(val range: Range, val modifier: CommandModifier, val argu
       throw exExceptionMessage("E474")
     }
 
-    injector.file.displayFileInfo(editor, true)
+    val message = injector.file.displayFileInfo(editor, true)
+    if (message != null) {
+      injector.messages.showMessage(editor, message)
+    }
     return ExecutionResult.Success
   }
 }

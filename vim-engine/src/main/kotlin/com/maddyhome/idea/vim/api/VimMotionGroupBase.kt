@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2023 The IdeaVim authors
+ * Copyright 2003-2026 The IdeaVim authors
  *
  * Use of this source code is governed by an MIT-style
  * license that can be found in the LICENSE.txt file or at
@@ -15,6 +15,7 @@ import com.maddyhome.idea.vim.command.OperatorArguments
 import com.maddyhome.idea.vim.common.Graphemes
 import com.maddyhome.idea.vim.common.TextRange
 import com.maddyhome.idea.vim.group.findMatchingPairOnCurrentLine
+import com.maddyhome.idea.vim.group.visual.VimBlockSelection
 import com.maddyhome.idea.vim.handler.ExternalActionHandler
 import com.maddyhome.idea.vim.handler.Motion
 import com.maddyhome.idea.vim.handler.Motion.AbsoluteOffset
@@ -23,10 +24,16 @@ import com.maddyhome.idea.vim.handler.TextObjectActionHandler
 import com.maddyhome.idea.vim.handler.toAdjustedMotionOrError
 import com.maddyhome.idea.vim.handler.toMotionOrError
 import com.maddyhome.idea.vim.helper.isEndAllowed
+import com.maddyhome.idea.vim.mark.Jump
+import com.maddyhome.idea.vim.mark.JumpSource
+import com.maddyhome.idea.vim.state.mode.SelectionType
 import com.maddyhome.idea.vim.state.mode.isEndAllowedIgnoringOnemore
+import com.maddyhome.idea.vim.tag.TagStackEntry
+import com.maddyhome.idea.vim.tag.TagStackMove
 import org.jetbrains.annotations.Range
 import kotlin.math.abs
 import kotlin.math.absoluteValue
+import kotlin.math.max
 import kotlin.math.min
 
 abstract class VimMotionGroupBase : VimMotionGroup {
@@ -61,14 +68,16 @@ abstract class VimMotionGroupBase : VimMotionGroup {
       throw RuntimeException("Line is " + line + " , pos.line=" + pos.line + ", count=" + count)
     }
 
-    val additionalVisualColumns = injector.engineEditorHelper
-      .amountOfInlaysBeforeVisualPosition(editor, VimVisualPosition(line, intendedColumn, false))
+    val additionalVisualColumns = injector.engineEditorHelper.amountOfInlaysBeforeVisualPosition(
+      editor,
+      VimVisualPosition(line, intendedColumn, false)
+    )
 
     val newPos = VimVisualPosition(line, intendedColumn + additionalVisualColumns, false)
     val offset = editor.visualPositionToOffset(newPos)
-    val finalColumn = editor.offsetToVisualPosition(offset).column
     val bufferLine = editor.offsetToBufferPosition(offset).line
     val normalisedOffset = editor.normalizeOffset(bufferLine, offset, editor.isEndAllowed)
+    val finalColumn = editor.offsetToVisualPosition(normalisedOffset).column
     return if (intendedColumn != finalColumn) {
       normalisedOffset.toAdjustedMotionOrError(intendedColumn)
     } else {
@@ -240,9 +249,7 @@ abstract class VimMotionGroupBase : VimMotionGroup {
     val startPos = editor.currentCaret().offset
     when (lastFTCmd) {
       TillCharacterMotionType.LAST_F -> res = moveCaretToNextCharacterOnLine(editor, caret, -count, lastFTChar)
-      TillCharacterMotionType.LAST_SMALL_F ->
-        res =
-          moveCaretToNextCharacterOnLine(editor, caret, count, lastFTChar)
+      TillCharacterMotionType.LAST_SMALL_F -> res = moveCaretToNextCharacterOnLine(editor, caret, count, lastFTChar)
 
       TillCharacterMotionType.LAST_T -> {
         res = moveCaretToBeforeNextCharacterOnLine(editor, caret, -count, lastFTChar)
@@ -286,7 +293,9 @@ abstract class VimMotionGroupBase : VimMotionGroup {
 
     // TODO [vakhitov] It is super super super wrong.
     // TODO [vakhitov] We should remove all of the secondary carets and return an offset of the primary one
-    val markEditor = injector.file.selectEditor(editor.projectId, mark.filepath, mark.protocol) ?: return Motion.Error
+    val markPosition = BufferPosition(line, if (toLineStart) 0 else mark.col)
+    val markEditor = injector.file.selectEditor(editor.projectId, mark.filepath, mark.protocol, markPosition)
+      ?: return Motion.Error
     // todo should we move all the carets or only one?
     for (carett in markEditor.carets()) {
       val offset = if (toLineStart) {
@@ -308,28 +317,156 @@ abstract class VimMotionGroupBase : VimMotionGroup {
     return offset.toMotionOrError()
   }
 
+  // Engine has no change list (it lives on the frontend). Frontend MotionGroup overrides.
+  override fun moveCaretToChange(editor: VimEditor, caret: ImmutableVimCaret, count: Int): Motion {
+    injector.messages.showErrorMessage(editor, injector.messages.message("E664"))
+    return Motion.Error
+  }
+
   override fun moveCaretToJump(editor: VimEditor, caret: ImmutableVimCaret, count: Int): Motion {
-    val jumpService = injector.jumpService
-    val spot = jumpService.getJumpSpot(editor)
-    val (line, col, fileName, protocol) = jumpService.getJump(editor, count) ?: return Motion.Error
-    val lp = BufferPosition(line, col, false)
-    return if (editor.getPath() != fileName) {
-      // TODO [vakhitov] come up with a more gentle way to handle protocol
-      injector.file.selectEditor(editor.projectId, fileName, protocol)?.let { newEditor ->
-        if (spot == -1) {
-          jumpService.addJump(editor, false)
-        }
-        newEditor.let {
-          it.currentCaret().moveToOffset(it.normalizeOffset(newEditor.bufferPositionToOffset(lp), false))
-        }
+    var jump = firstJump(editor, count)
+    while (jump != null) {
+      if (jump.source is JumpSource.Diff && injector.jumpService.showInDiff(editor, jump)) {
+        return Motion.NoMotion
       }
+      if (jump.isInFile) {
+        return moveCaretToJumpInFile(editor, jump)
+      }
+      jump = dropJumpToClosedDiff(editor, jump, isGoingBack = count < 0)
+    }
+    return Motion.Error
+  }
+
+  /**
+   * The jump [count] steps away from the current spot of the jump list
+   *
+   * Leaving the newest end of the list first adds the place of the caret, so a jump forward can bring the user back
+   * here. It replaces an older jump to the same place, e.g. one the IDE recorded, so the caret never jumps to where it
+   * already is.
+   */
+  private fun firstJump(editor: VimEditor, count: Int): Jump? {
+    val jumpService = injector.jumpService
+    val isAtNewestEnd = jumpService.getJumpSpot(editor) == -1
+    if (!isAtNewestEnd) return jumpService.getJump(editor, count)
+
+    val hasOlderJump = count < 0 && jumpService.getJumps(editor).size + count >= 0
+    if (!hasOlderJump) return null
+    val here = jumpService.jumpAtCaret(editor) ?: return jumpService.getJump(editor, count)
+    jumpService.addJump(editor, here, true)
+    // The newest jump is the place of the caret now, so the jump to take is one step further
+    return jumpService.getJump(editor, count - 1)
+  }
+
+  /**
+   * Removes a jump that only its diff could show, now that the diff is closed, and returns the next jump the same way
+   *
+   * The list is one shorter afterwards: the next older jump is at the current spot, and the next newer one a step
+   * forward.
+   */
+  private fun dropJumpToClosedDiff(editor: VimEditor, jump: Jump, isGoingBack: Boolean): Jump? {
+    injector.jumpService.removeJump(editor, jump)
+    return injector.jumpService.getJump(editor, if (isGoingBack) 0 else 1)
+  }
+
+  private fun moveCaretToJumpInFile(editor: VimEditor, jump: Jump): Motion {
+    val position = BufferPosition(jump.line, jump.col, false)
+    if (editor.getPath() == jump.filepath) {
+      return editor.bufferPositionToOffset(position).toMotionOrError()
+    }
+
+    val editorOfFile = injector.file.selectEditor(editor.projectId, jump.filepath, jump.protocol, position)
+      ?: return Motion.Error
+    val offset = editorOfFile.normalizeOffset(editorOfFile.bufferPositionToOffset(position), false)
+    editorOfFile.currentCaret().moveToOffset(offset)
+    // The caret moved in another editor, so there is nothing to move in this one
+    return Motion.NoMotion
+  }
+
+  /**
+   * Walks [count] entries up the tag stack, see "h CTRL-T"
+   */
+  override fun moveCaretToTagForward(editor: VimEditor, caret: ImmutableVimCaret, count: Int): Motion {
+    val tagService = injector.tagService
+    if (tagService.getEntries(editor).isEmpty()) {
+      injector.messages.showErrorMessage(editor, injector.messages.message("E73"))
+      return Motion.Error
+    }
+
+    val entry = tagService.pop(editor, count)
+    if (entry == null) {
+      injector.messages.showErrorMessage(editor, injector.messages.message("E555"))
+      return Motion.Error
+    }
+
+    injector.jumpService.saveJumpLocation(editor)
+    return moveCaretToTagPosition(editor, entry)
+  }
+
+  /**
+   * Walks [count] entries back down the tag stack, see "h :tag"
+   */
+  override fun moveCaretToTagDown(
+    editor: VimEditor,
+    caret: ImmutableVimCaret,
+    context: ExecutionContext,
+    count: Int,
+  ): Motion {
+    val tagService = injector.tagService
+    if (tagService.getEntries(editor).isEmpty()) {
+      injector.messages.showErrorMessage(editor, injector.messages.message("E73"))
+      return Motion.Error
+    }
+
+    return when (val move = tagService.moveDown(editor, count)) {
+      is TagStackMove.AtTop -> {
+        injector.messages.showErrorMessage(editor, injector.messages.message("E556"))
+        Motion.Error
+      }
+
+      is TagStackMove.ToKnownPosition -> {
+        injector.jumpService.saveJumpLocation(editor)
+        moveCaretToTagPosition(editor, move.landing)
+      }
+
+      is TagStackMove.ToTag -> {
+        injector.jumpService.saveJumpLocation(editor)
+        resolveTagAgain(editor, context, move.redone)
+      }
+    }
+  }
+
+  private fun moveCaretToTagPosition(editor: VimEditor, entry: TagStackEntry): Motion {
+    val lp = BufferPosition(entry.line, entry.col, false)
+    return if (editor.getPath() != entry.filepath) {
+      injector.file.selectEditor(editor.projectId, entry.filepath, entry.protocol, lp)?.let { newEditor ->
+        newEditor.currentCaret()
+          .moveToOffset(newEditor.normalizeOffset(newEditor.bufferPositionToOffset(lp), false))
+      }
+      // The caret has already been moved, in the editor we switched to
       Motion.Error
     } else {
-      if (spot == -1) {
-        jumpService.addJump(editor, false)
-      }
       editor.bufferPositionToOffset(lp).toMotionOrError()
     }
+  }
+
+  /**
+   * Asks the IDE for the tag again, because nothing was ever recorded past this jump
+   *
+   * The IDE resolves whatever the caret is on, so the caret goes back to where the tag was originally jumped from
+   * first - that is where the identifier is.
+   */
+  private fun resolveTagAgain(editor: VimEditor, context: ExecutionContext, entry: TagStackEntry): Motion {
+    val lp = BufferPosition(entry.line, entry.col, false)
+    val target = if (editor.getPath() != entry.filepath) {
+      injector.file.selectEditor(editor.projectId, entry.filepath, entry.protocol, lp)
+    } else {
+      editor
+    } ?: return Motion.Error
+
+    target.currentCaret().moveToOffset(target.normalizeOffset(target.bufferPositionToOffset(lp), false))
+    injector.actionExecutor.executeAction(target, name = "GotoDeclaration", context = context)
+    // The caret has already been moved
+    return Motion.Error
   }
 
   override fun getMotionRange(
@@ -338,6 +475,7 @@ abstract class VimMotionGroupBase : VimMotionGroup {
     context: ExecutionContext,
     argument: Argument,
     operatorArguments: OperatorArguments,
+    expandCollapsedFolds: Boolean,
   ): TextRange? {
     if (argument !is Argument.Motion) {
       throw RuntimeException("Unexpected argument passed to getMotionRange2: $argument")
@@ -345,6 +483,7 @@ abstract class VimMotionGroupBase : VimMotionGroup {
 
     var start: Int
     var end: Int
+    var isForwardMotion = false
 
     val action = argument.motion
     when (action) {
@@ -354,12 +493,25 @@ abstract class VimMotionGroupBase : VimMotionGroup {
 
         // Execute the motion (without moving the cursor) and get where we end
         val motion = action.getHandlerOffset(editor, caret, context, argument.argument, operatorArguments)
-        if (Motion.Error == motion || Motion.NoMotion == motion) return null
+        if (Motion.NoMotion == motion) return null
+        if (Motion.Error == motion) {
+          // A forward word motion fails at the end of the file, but with a pending operator Vim ignores the failure
+          // and applies the operator to the rest of the file instead
+          if (!action.clampToEndOfFileWhenOperatorPending) return null
+          end = editor.fileSize().toInt()
+        } else {
+          end = (motion as AbsoluteOffset).offset
+        }
+        isForwardMotion = end >= start
 
-        end = (motion as AbsoluteOffset).offset
+        // A blockwise force (o_CTRL-V) turns the motion's two endpoints into a rectangular block. The block's own
+        // machinery (VimBlockSelection) handles the column range, including the inclusive right column.
+        if (argument.forcedMotion === SelectionType.BLOCK_WISE) {
+          return VimBlockSelection(start, end, editor, false).toVimTextRange()
+        }
 
-        // If inclusive, add the last character to the range
-        if (action.motionType === MotionType.INCLUSIVE) {
+        // If inclusive, add the last character to the range. A forced motion modifier (o_v) can override the type.
+        if (argument.getEffectiveMotionType() === MotionType.INCLUSIVE) {
           if (start > end) {
             if (start < editor.fileSize()) start++
           } else {
@@ -370,8 +522,7 @@ abstract class VimMotionGroupBase : VimMotionGroup {
 
       is TextObjectActionHandler -> {
         val range: TextRange =
-          action.getRange(editor, caret, context, operatorArguments.count1, operatorArguments.count0)
-            ?: return null
+          action.getRange(editor, caret, context, operatorArguments.count1, operatorArguments.count0) ?: return null
         start = range.startOffset
         end = range.endOffset
         if (argument.isLinewiseMotion()) end--
@@ -405,6 +556,21 @@ abstract class VimMotionGroupBase : VimMotionGroup {
       }
     }
 
+    // :help exclusive - if the motion is exclusive and the end of the motion is in column 1, the end of the motion is
+    // moved to the end of the previous line and the motion becomes inclusive. If, additionally, the start of the
+    // motion was at or before the first non-blank in the line, the motion becomes linewise.
+    // The linewise half of the rule is applied by the operators (see getDeleteRangeAndType and yankMotion), which
+    // recognise it by the end of the range still being in column 1, so only adjust the end for the inclusive half.
+    // Backward motions are not adjusted. Vim skips the adjustment for the ones that would be affected in practice,
+    // e.g. <BS> and h wrapping to the previous line set CA_NO_ADJ_OP_END in nv_left
+    if (action is MotionActionHandler && action.motionType === MotionType.EXCLUSIVE && isForwardMotion) {
+      val startPosition = editor.offsetToBufferPosition(start)
+      val endPosition = editor.offsetToBufferPosition(end)
+      if (endPosition.column == 0 && endPosition.line > startPosition.line && editor.anyNonWhitespace(start, -1)) {
+        end = max(start, editor.getLineEndOffset(endPosition.line - 1))
+      }
+    }
+
     // This is a kludge for dw, dW, and d[w. Without this kludge, an extra newline is operated when it shouldn't be.
     val text = editor.text().subSequence(start, end).toString()
     val lastNewLine = text.lastIndexOf('\n')
@@ -417,7 +583,61 @@ abstract class VimMotionGroupBase : VimMotionGroup {
       }
     }
 
+    val shouldExpandCollapsedFolds =
+      expandCollapsedFolds && (action as? MotionActionHandler)?.expandCollapsedFolds != false
+    if (shouldExpandCollapsedFolds) {
+      return expandRangeForCollapsedFolds(editor, caret, start, end, argument.isLinewiseMotion())
+    }
+
     return TextRange(start, end)
+  }
+
+  /**
+   * Expands operator range to include a collapsed fold when appropriate.
+   *
+   * Linewise operators on the fold header line (e.g. `dd`) expand to the whole fold.
+   * Character-wise operators expand only when the range reaches the fold boundary
+   * ([VimFoldRegion.startOffset], often the newline after `{` on the header line).
+   */
+  private fun expandRangeForCollapsedFolds(
+    editor: VimEditor,
+    caret: ImmutableVimCaret,
+    start: Int,
+    end: Int,
+    linewise: Boolean,
+  ): TextRange {
+    val rangeStartLine = editor.offsetToBufferPosition(start).line
+    val rangeEndLine = editor.offsetToBufferPosition(end).line - 1
+    val collapsedFold =
+      editor.getCollapsedFoldRegionAtVisualStartLine(rangeStartLine) ?: editor.getCollapsedFoldRegionAtVisualStartLine(
+        rangeEndLine
+      ) ?: return TextRange(start, end)
+
+    if (editor.document.getRangeGuard(collapsedFold.startOffset, collapsedFold.endOffset) != null) {
+      return TextRange(start, end)
+    }
+
+    val shouldExpand = linewise || start + 1 >= collapsedFold.startOffset
+    if (!shouldExpand) {
+      return TextRange(start, end)
+    }
+
+    var expandedStart = min(start, collapsedFold.startOffset)
+    var expandedEnd = max(end, collapsedFold.endOffset)
+    if (linewise) {
+      expandedStart = editor.getLineStartForOffset(expandedStart)
+      expandedEnd = normalizeLinewiseMotionEnd(editor, caret, expandedEnd)
+    }
+
+    return TextRange(expandedStart, expandedEnd)
+  }
+
+  private fun normalizeLinewiseMotionEnd(editor: VimEditor, caret: ImmutableVimCaret, end: Int): Int {
+    return if (caret.getBufferPosition().line != editor.lineCount() - 1) {
+      min((editor.getLineEndForOffset(end - 1) + 1).toLong(), editor.fileSize()).toInt()
+    } else {
+      editor.getLineEndForOffset(end)
+    }
   }
 
   override fun moveCaretToColumn(editor: VimEditor, caret: ImmutableVimCaret, count: Int, allowEnd: Boolean): Motion {
@@ -458,8 +678,7 @@ abstract class VimMotionGroupBase : VimMotionGroup {
       editor,
       editor.normalizeLine(
         (editor.lineCount() * count.coerceIn(
-          0,
-          100
+          0, 100
         ) + 99) / 100 - 1
       ), // TODO why do we have this 99? (It is there since 2003)
       caret,

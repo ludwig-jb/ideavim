@@ -15,19 +15,23 @@ import com.intellij.vim.annotations.ExCommand
 import com.maddyhome.idea.vim.VimPlugin
 import com.maddyhome.idea.vim.api.ExecutionContext
 import com.maddyhome.idea.vim.api.VimEditor
+import com.maddyhome.idea.vim.api.globalOptions
 import com.maddyhome.idea.vim.api.injector
 import com.maddyhome.idea.vim.command.OperatorArguments
 import com.maddyhome.idea.vim.ex.ExException
 import com.maddyhome.idea.vim.ex.ranges.Range
 import com.maddyhome.idea.vim.ex.ranges.toTextRange
-import com.maddyhome.idea.vim.helper.EditorHelper
 import com.maddyhome.idea.vim.newapi.ij
 import com.maddyhome.idea.vim.vimscript.model.ExecutionResult
 
 /**
  * see "h :!"
  */
-@ExCommand(command = "!")
+@ExCommand(
+  command = "!",
+  barSeparates = false,
+  description = "Execute {cmd} in the shell and show its output; with [range], filter those lines through {cmd}."
+)
 internal data class CmdFilterCommand(val range: Range, val modifier: CommandModifier, val argument: String) :
   Command.SingleExecution(range, modifier) {
 
@@ -39,59 +43,59 @@ internal data class CmdFilterCommand(val range: Range, val modifier: CommandModi
     operatorArguments: OperatorArguments,
   ): ExecutionResult {
     logger.debug("execute")
-    val command = buildString {
+    // `!` first, then `%`, so a `%` recalled from the previous command is expanded too. Only `%` is expanded here:
+    // Vim leaves `$VAR` and `~` in a shell command to the shell itself.
+    val withLastCommand = buildString {
       var inBackslash = false
       argument.forEach { c ->
-        when {
-          !inBackslash && c == '!' -> {
-            val last = lastCommand
-            if (last.isNullOrEmpty()) {
-              injector.messages.showErrorMessage(editor, injector.messages.message("E34"))
-              return ExecutionResult.Error
-            }
-            append(last)
+        if (!inBackslash && c == '!') {
+          val last = lastCommand
+          if (last.isNullOrEmpty()) {
+            injector.messages.showErrorMessage(editor, injector.messages.message("E34"))
+            return ExecutionResult.Error
           }
-
-          !inBackslash && c == '%' -> {
-            val virtualFile = EditorHelper.getVirtualFile(editor.ij)
-            if (virtualFile == null) {
-              // Note that we use a slightly different error message to Vim, because we don't support alternate files or file
-              // name modifiers. (I also don't know what the :p:h means)
-              // (Vim) E499: Empty file name for '%' or '#', only works with ":p:h"
-              // (IdeaVim) E499: Empty file name for '%'
-              injector.messages.showErrorMessage(editor, injector.messages.message("E499"))
-              return ExecutionResult.Error
-            }
-            append(virtualFile.path)
-          }
-
-          else -> append(c)
+          append(last)
+        } else {
+          append(c)
         }
 
         inBackslash = c == '\\'
       }
     }
+    val command = injector.pathExpansion.expandCmdlineSpecials(withLastCommand, editor)
+      ?: run {
+        // Note that we use a slightly different error message to Vim, because we don't support alternate files.
+        // (Vim) E499: Empty file name for '%' or '#', only works with ":p:h"
+        // (IdeaVim) E499: Empty file name for '%'
+        injector.messages.showErrorMessage(editor, injector.messages.message("E499"))
+        return ExecutionResult.Error
+      }
 
     if (command.isEmpty()) {
       return ExecutionResult.Error
     }
 
     val workingDirectory = editor.ij.project?.basePath
+    val options = injector.globalOptions()
     return try {
       if (range.size() == 0) {
-        // Show command output in a window
-        VimPlugin.getProcess().executeCommand(editor, command, null, workingDirectory)?.let {
+        // Show command output in a window. Vim always shows the hit-enter prompt when running an external command, and
+        // it always shows the command
+        injector.processGroup.executeCommand(editor, command, null, workingDirectory, options)?.let {
           val outputPanel = injector.outputPanel.getOrCreate(editor, context)
+          outputPanel.clearText()
+          outputPanel.addText(":!$command\n")
           outputPanel.addText(it)
-          outputPanel.show()
+          outputPanel.show(requireHitEnter = true)
         }
+        showExitCodeMessage(editor)
         lastCommand = command
         ExecutionResult.Success
       } else {
         // Filter
         val range = getLineRange(editor).toTextRange(editor)
         val input = editor.ij.document.charsSequence.subSequence(range.startOffset, range.endOffset)
-        VimPlugin.getProcess().executeCommand(editor, command, input, workingDirectory)?.let {
+        injector.processGroup.executeCommand(editor, command, input, workingDirectory, options)?.let {
           ApplicationManager.getApplication().runWriteAction {
             val start = editor.offsetToBufferPosition(range.startOffset)
             val end = editor.offsetToBufferPosition(range.endOffset)
@@ -102,6 +106,7 @@ internal data class CmdFilterCommand(val range: Range, val modifier: CommandModi
             }
           }
         }
+        showExitCodeMessage(editor)
         lastCommand = command
         ExecutionResult.Success
       }
@@ -109,6 +114,20 @@ internal data class CmdFilterCommand(val range: Range, val modifier: CommandModi
       throw ExException("Command terminated")
     } catch (e: Exception) {
       throw ExException(e.message)
+    }
+  }
+
+  private fun showExitCodeMessage(editor: VimEditor) {
+    val exitCode = injector.processGroup.lastExitCode
+    if (exitCode != null && exitCode != 0) {
+      val outputPanel = injector.outputPanel.getCurrentOutputPanel()
+      if (outputPanel != null) {
+        outputPanel.addText("\nShell returned $exitCode")
+        outputPanel.show()
+      } else {
+        injector.messages.showMessage(editor, "shell returned $exitCode")
+      }
+      injector.messages.indicateError()
     }
   }
 

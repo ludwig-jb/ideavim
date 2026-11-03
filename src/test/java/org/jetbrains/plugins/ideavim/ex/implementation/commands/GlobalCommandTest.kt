@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2023 The IdeaVim authors
+ * Copyright 2003-2026 The IdeaVim authors
  *
  * Use of this source code is governed by an MIT-style
  * license that can be found in the LICENSE.txt file or at
@@ -239,7 +239,6 @@ class GlobalCommandTest : VimTestCase() {
 
   @Test
   fun `test check history`() {
-    VimPlugin.getHistory().clear()
     val initialEntries = VimPlugin.getHistory().getEntries(VimHistory.Type.Command, 0, 0)
     doTest(
       "g/found/d",
@@ -450,6 +449,20 @@ end
     assertState(textBefore)
     typeText(commandToKeys(":g//s//replacement/g"))
     assertState(textAfter)
+  }
+
+  @Test
+  fun `should start search from middle of document`() {
+    configureByText(
+      """
+     word 1
+     w${c}ord 2
+     word 3
+     word 4
+   """.trimIndent()
+    )
+    typeText(":g/word<CR>n")
+    assertStatusLineText("[3/4]")
   }
 
   private fun doTest(command: String, before: String, after: String) {

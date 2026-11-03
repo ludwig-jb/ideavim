@@ -11,10 +11,14 @@ import com.intellij.vim.annotations.CommandOrMotion
 import com.intellij.vim.annotations.Mode
 import com.maddyhome.idea.vim.api.VimCommandLine
 
-@CommandOrMotion(keys = ["<S-Up>", "<C-P>", "<PageUp>"], modes = [Mode.CMD_LINE])
+@CommandOrMotion(
+  keys = ["<S-Up>", "<C-P>", "<PageUp>"],
+  modes = [Mode.CMD_LINE],
+  description = "In Command-line mode, recall the previous (older) command line from history."
+)
 class SelectOlderHistoryAction : CommandLineActionHandler() {
   override fun execute(commandLine: VimCommandLine): Boolean {
-    commandLine.selectHistory(isUp = true, filter = false)
+    commandLine.selectOlderHistory(filter = false)
     return true
   }
 }

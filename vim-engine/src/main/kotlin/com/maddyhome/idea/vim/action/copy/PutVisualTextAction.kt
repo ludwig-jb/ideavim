@@ -19,6 +19,8 @@ import com.maddyhome.idea.vim.command.OperatorArguments
 import com.maddyhome.idea.vim.group.visual.VimSelection
 import com.maddyhome.idea.vim.handler.VisualOperatorActionHandler
 import com.maddyhome.idea.vim.put.PutData
+import com.maddyhome.idea.vim.register.Register
+import com.maddyhome.idea.vim.register.RegisterConstants.PRIMARY_REGISTER
 
 /**
  * @author vlan
@@ -59,14 +61,38 @@ sealed class PutVisualTextBaseAction(
     count: Int,
   ): PutData {
     val lastRegisterChar = injector.registerGroup.lastRegisterChar
-    val register = caret.registerStorage.getRegister(editor, context, lastRegisterChar)
-    val textData = register?.let { PutData.TextData(register) }
+    val register = resolveRegisterForVisualPaste(lastRegisterChar, caret, editor, context)
+    val textData = register?.let { PutData.TextData(it) }
     val visualSelection = selection?.let { PutData.VisualSelection(mapOf(caret to it), it.type) }
     return PutData(textData, visualSelection, count, insertTextBeforeCaret, indent, caretAfterInsertedText)
   }
+
+  private fun resolveRegisterForVisualPaste(
+    lastRegisterChar: Char,
+    caret: VimCaret,
+    editor: VimEditor,
+    context: ExecutionContext,
+  ): Register? {
+    // IntelliJ updates X11 PRIMARY on visual selection; use the last explicitly-yanked value.
+    return if (isDefaultPrimaryRegister(lastRegisterChar)) {
+      injector.registerGroup.getLastExplicitlyWrittenRegister(lastRegisterChar)
+        ?: caret.registerStorage.getRegister(editor, context, lastRegisterChar)
+    } else {
+      caret.registerStorage.getRegister(editor, context, lastRegisterChar)
+    }
+  }
+
+  private fun isDefaultPrimaryRegister(registerChar: Char) =
+    !injector.registerGroup.isRegisterSpecifiedExplicitly &&
+      registerChar == PRIMARY_REGISTER &&
+      injector.registerGroup.isPrimaryRegisterSupported()
 }
 
-@CommandOrMotion(keys = ["P"], modes = [Mode.VISUAL])
+@CommandOrMotion(
+  keys = ["P"],
+  modes = [Mode.VISUAL],
+  description = "Replace the highlighted text with the contents of register [x], without changing the unnamed register."
+)
 class PutVisualTextBeforeCursorAction : PutVisualTextBaseAction(
   insertTextBeforeCaret = true,
   indent = true,
@@ -74,17 +100,37 @@ class PutVisualTextBeforeCursorAction : PutVisualTextBaseAction(
   modifyRegister = false
 )
 
-@CommandOrMotion(keys = ["p"], modes = [Mode.VISUAL])
+@CommandOrMotion(
+  keys = ["p"],
+  modes = [Mode.VISUAL],
+  description = "Replace the highlighted text with the contents of register [x]. The replaced text is stored in the unnamed register."
+)
 class PutVisualTextAfterCursorAction : PutVisualTextBaseAction(insertTextBeforeCaret = false, indent = true, caretAfterInsertedText = false)
 
-@CommandOrMotion(keys = ["]P", "[P"], modes = [Mode.VISUAL])
+@CommandOrMotion(
+  keys = ["]P", "[P"],
+  modes = [Mode.VISUAL],
+  description = "Replace the highlighted text with the contents of register [x], adjusting the indent to the current line."
+)
 class PutVisualTextBeforeCursorNoIndentAction : PutVisualTextBaseAction(insertTextBeforeCaret = true, indent = false, caretAfterInsertedText = false)
 
-@CommandOrMotion(keys = ["[p", "]p"], modes = [Mode.VISUAL])
+@CommandOrMotion(
+  keys = ["[p", "]p"],
+  modes = [Mode.VISUAL],
+  description = "Replace the highlighted text with the contents of register [x], adjusting the indent to the current line."
+)
 class PutVisualTextAfterCursorNoIndentAction : PutVisualTextBaseAction(insertTextBeforeCaret = false, indent = false, caretAfterInsertedText = false)
 
-@CommandOrMotion(keys = ["gP"], modes = [Mode.VISUAL])
+@CommandOrMotion(
+  keys = ["gP"],
+  modes = [Mode.VISUAL],
+  description = "Replace the highlighted text with the contents of register [x] and leave the cursor just after the new text."
+)
 class PutVisualTextBeforeCursorMoveCursorAction : PutVisualTextBaseAction(insertTextBeforeCaret = true, indent = true, caretAfterInsertedText = true)
 
-@CommandOrMotion(keys = ["gp"], modes = [Mode.VISUAL])
+@CommandOrMotion(
+  keys = ["gp"],
+  modes = [Mode.VISUAL],
+  description = "Replace the highlighted text with the contents of register [x] and leave the cursor just after the new text."
+)
 class PutVisualTextAfterCursorMoveCursorAction : PutVisualTextBaseAction(insertTextBeforeCaret = false, indent = true, caretAfterInsertedText = true)

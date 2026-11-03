@@ -13,9 +13,12 @@ import com.maddyhome.idea.vim.KeyProcessResult
 import com.maddyhome.idea.vim.command.Argument
 import com.maddyhome.idea.vim.command.Command
 import com.maddyhome.idea.vim.command.CommandFlags
+import com.maddyhome.idea.vim.command.MappingMode
 import com.maddyhome.idea.vim.command.OperatorArguments
 import com.maddyhome.idea.vim.common.ChangesListener
+import com.maddyhome.idea.vim.common.LiveRange
 import com.maddyhome.idea.vim.common.TextRange
+import com.maddyhome.idea.vim.common.VimEditorReplaceMask
 import com.maddyhome.idea.vim.diagnostic.debug
 import com.maddyhome.idea.vim.diagnostic.vimLogger
 import com.maddyhome.idea.vim.ex.ranges.LineRange
@@ -30,13 +33,18 @@ import com.maddyhome.idea.vim.helper.NumberType
 import com.maddyhome.idea.vim.helper.StrictMode
 import com.maddyhome.idea.vim.helper.endOffsetInclusive
 import com.maddyhome.idea.vim.helper.usesVirtualSpace
+import com.maddyhome.idea.vim.key.AbbreviationContext
+import com.maddyhome.idea.vim.key.findAndResolveAbbreviation
+import com.maddyhome.idea.vim.key.isAbbreviationSessionInvalidated
 import com.maddyhome.idea.vim.listener.SelectionVimListenerSuppressor
 import com.maddyhome.idea.vim.mark.VimMarkConstants.MARK_CHANGE_END
 import com.maddyhome.idea.vim.mark.VimMarkConstants.MARK_CHANGE_POS
 import com.maddyhome.idea.vim.mark.VimMarkConstants.MARK_CHANGE_START
+import com.maddyhome.idea.vim.options.helpers.KeywordOptionHelper.isKeyword
 import com.maddyhome.idea.vim.regexp.VimRegex
 import com.maddyhome.idea.vim.regexp.match.VimMatchResult
 import com.maddyhome.idea.vim.register.RegisterConstants.LAST_INSERTED_TEXT_REGISTER
+import com.maddyhome.idea.vim.state.mode.CtrlXCompletionMode
 import com.maddyhome.idea.vim.state.mode.Mode
 import com.maddyhome.idea.vim.state.mode.SelectionType
 import com.maddyhome.idea.vim.undo.VimKeyBasedUndoService
@@ -53,7 +61,7 @@ import kotlin.math.max
 import kotlin.math.min
 
 abstract class VimChangeGroupBase : VimChangeGroup {
-  private var repeatLines: Int = 0
+  protected var repeatLines: Int = 0
   private var repeatColumn: Int = 0
   private var repeatAppend: Boolean = false
 
@@ -69,6 +77,10 @@ abstract class VimChangeGroupBase : VimChangeGroup {
   @JvmField
   protected var oldOffset: Int = -1
 
+  private val recordedTexts: MutableList<RecordedText> = ArrayList()
+
+  private var insertStarts: List<LiveRange> = emptyList()
+
   @JvmField
   protected var vimDocumentListener: ChangesListener? = null
 
@@ -80,6 +92,28 @@ abstract class VimChangeGroupBase : VimChangeGroup {
 
   @JvmField
   protected var lastInsert: Command? = null
+
+  @JvmField
+  protected var processingEscape = false
+
+  /**
+   * Vim's `did_ai`: the indent on the caret's line was inserted automatically and nothing has been typed since, so it
+   * is removed again when Insert mode is left. Only valid for the current insert session.
+   *
+   * Vim sets this for every automatically inserted indent. IdeaVim sets it for `cc` and `S` only, so that `o`, `O` and
+   * Enter keep the indent of the line they have opened - see [onNewLineIndentInserted]
+   */
+  @JvmField
+  protected var didAutoIndent: Boolean = false
+
+  /**
+   * The value [didAutoIndent] gets when the next insert session starts, which is how `cc` and `S` set it.
+   *
+   * They insert the indent before Insert mode is entered, so the flag cannot be set directly - [initInsert] would have
+   * to leave it alone, and a session that was never left (the user clicked away, the editor was closed) would leak the
+   * flag into the next one
+   */
+  private var pendingAutoIndent: Boolean = false
 
   override fun setInsertRepeat(lines: Int, column: Int, append: Boolean) {
     repeatLines = lines
@@ -105,10 +139,17 @@ abstract class VimChangeGroupBase : VimChangeGroup {
   ): Boolean {
     val endOffset = injector.motion.getHorizontalMotion(editor, caret, count, true)
     if (endOffset is AbsoluteOffset) {
+      val range = TextRange(caret.offset, endOffset.offset)
+      // If the deletion reaches the end of the line, remember it so that returning to Insert mode after a `<C-O>`
+      // single command can place the caret in the "append" position past the last character (matching Vim).
+      val endLine = editor.offsetToBufferPosition(range.endOffset).line
+      if (range.endOffset >= editor.getLineEndOffset(endLine, true)) {
+        injector.vimState.deletedToEndOfLine = true
+      }
       val res = deleteText(
         editor,
         context,
-        TextRange(caret.offset, endOffset.offset),
+        range,
         SelectionType.CHARACTER_WISE,
         caret,
       )
@@ -180,7 +221,7 @@ abstract class VimChangeGroupBase : VimChangeGroup {
       }
     }
 
-    val isInsertMode = editor.mode == Mode.INSERT || editor.mode == Mode.REPLACE
+    val isInsertMode = editor.mode is Mode.INSERT || editor.mode == Mode.REPLACE
     val shouldYank = type != null && !isInsertMode && saveToRegister
     if (shouldYank && !caret.registerStorage.storeText(editor, context, updatedRange, type, isDelete = true)) {
       return false
@@ -247,31 +288,58 @@ abstract class VimChangeGroupBase : VimChangeGroup {
     count: Int,
   ) {
     val myLastStrokes = lastStrokes ?: return
+
+    val batched = batchAdjacentTextStrokes(myLastStrokes)
+
     for (caret in editor.nativeCarets()) {
       repeat(count) {
-        for (lastStroke in myLastStrokes) {
-          when (lastStroke) {
+        for (stroke in batched) {
+          when (stroke) {
+            is String -> {
+              insertText(editor, caret, stroke)
+            }
+
             is NativeAction -> {
-              injector.actionExecutor.executeAction(editor, lastStroke, context)
-              strokes.add(lastStroke)
+              injector.actionExecutor.executeAction(editor, stroke, context)
+              strokes.add(stroke)
             }
 
             is EditorActionHandlerBase -> {
-              injector.actionExecutor.executeVimAction(editor, lastStroke, context, OperatorArguments(0, editor.mode))
-              strokes.add(lastStroke)
-            }
-
-            is CharArray -> {
-              insertText(editor, caret, String(lastStroke))
+              injector.actionExecutor.executeVimAction(editor, stroke, context, OperatorArguments(0, editor.mode))
+              strokes.add(stroke)
             }
 
             else -> {
-              throw RuntimeException("Unexpected stroke type: ${lastStroke.javaClass} $lastStroke")
+              throw RuntimeException("Unexpected stroke type: ${stroke.javaClass} $stroke")
             }
           }
         }
       }
     }
+  }
+
+  /**
+   * Merges adjacent [CharArray] entries into [String]s, leaving other stroke types as-is.
+   */
+  private fun batchAdjacentTextStrokes(strokes: List<Any>): List<Any> {
+    val result = mutableListOf<Any>()
+    val textBuffer = StringBuilder()
+
+    for (stroke in strokes) {
+      if (stroke is CharArray) {
+        textBuffer.append(stroke)
+      } else {
+        if (textBuffer.isNotEmpty()) {
+          result.add(textBuffer.toString())
+          textBuffer.clear()
+        }
+        result.add(stroke)
+      }
+    }
+    if (textBuffer.isNotEmpty()) {
+      result.add(textBuffer.toString())
+    }
+    return result
   }
 
   /**
@@ -287,38 +355,46 @@ abstract class VimChangeGroupBase : VimChangeGroup {
     count: Int,
     started: Boolean,
   ) {
-    for (caret in editor.nativeCarets()) {
-      if (repeatLines > 0) {
-        val visualLine = caret.getVisualPosition().line
-        val bufferLine = caret.getBufferPosition().line
-        val position = editor.bufferPositionToOffset(BufferPosition(bufferLine, repeatColumn, false))
-        for (i in 0 until repeatLines) {
-          if (repeatAppend &&
-            (repeatColumn < VimMotionGroupBase.LAST_COLUMN) &&
-            (injector.engineEditorHelper.getVisualLineLength(editor, visualLine + i) < repeatColumn)
-          ) {
-            val pad = injector.engineEditorHelper.pad(editor, bufferLine + i, repeatColumn)
-            if (pad.isNotEmpty()) {
-              val offset = editor.getLineEndOffset(bufferLine + i)
-              insertText(editor, caret, offset, pad)
+    // Defer caret merging across the row-by-row replay. We deliberately do NOT use
+    // `runAsAllCaretsAction` here: the replay may execute IDE actions (e.g. `<BS>` as a
+    // NativeAction stroke), and those typically call `runForEachCaret` themselves — nesting
+    // throws `IllegalStateException`. The plain batch is safe and still gives us merging
+    // deferral; the split-mode caret-event explosion is bounded by the listener gating in
+    // `EditorCaretHandler` and the wraps at the (non-replay) call sites.
+    editor.runBatchCaretOperation {
+      for (caret in editor.nativeCarets()) {
+        if (repeatLines > 0) {
+          val visualLine = caret.getVisualPosition().line
+          val bufferLine = caret.getBufferPosition().line
+          val position = editor.bufferPositionToOffset(BufferPosition(bufferLine, repeatColumn, false))
+          for (i in 0 until repeatLines) {
+            if (repeatAppend &&
+              (repeatColumn < VimMotionGroupBase.LAST_COLUMN) &&
+              (injector.engineEditorHelper.getVisualLineLength(editor, visualLine + i) < repeatColumn)
+            ) {
+              val pad = injector.engineEditorHelper.pad(editor, bufferLine + i, repeatColumn)
+              if (pad.isNotEmpty()) {
+                val offset = editor.getLineEndOffset(bufferLine + i)
+                insertText(editor, caret, offset, pad)
+              }
+            }
+            val updatedCount = if (started) (if (i == 0) count else count + 1) else count
+            if (repeatColumn >= VimMotionGroupBase.LAST_COLUMN) {
+              caret.moveToOffset(injector.motion.moveCaretToLineEnd(editor, bufferLine + i, true))
+              repeatInsertText(editor, context, updatedCount)
+            } else if (injector.engineEditorHelper.getVisualLineLength(editor, visualLine + i) >= repeatColumn) {
+              val visualPosition = VimVisualPosition(visualLine + i, repeatColumn, false)
+              val inlaysCount = injector.engineEditorHelper.amountOfInlaysBeforeVisualPosition(editor, visualPosition)
+              caret.moveToVisualPosition(VimVisualPosition(visualLine + i, repeatColumn + inlaysCount, false))
+              repeatInsertText(editor, context, updatedCount)
             }
           }
-          val updatedCount = if (started) (if (i == 0) count else count + 1) else count
-          if (repeatColumn >= VimMotionGroupBase.LAST_COLUMN) {
-            caret.moveToOffset(injector.motion.moveCaretToLineEnd(editor, bufferLine + i, true))
-            repeatInsertText(editor, context, updatedCount)
-          } else if (injector.engineEditorHelper.getVisualLineLength(editor, visualLine + i) >= repeatColumn) {
-            val visualPosition = VimVisualPosition(visualLine + i, repeatColumn, false)
-            val inlaysCount = injector.engineEditorHelper.amountOfInlaysBeforeVisualPosition(editor, visualPosition)
-            caret.moveToVisualPosition(VimVisualPosition(visualLine + i, repeatColumn + inlaysCount, false))
-            repeatInsertText(editor, context, updatedCount)
-          }
+          caret.moveToOffset(position)
+        } else {
+          repeatInsertText(editor, context, count)
+          val position = injector.motion.getHorizontalMotion(editor, caret, -1, false)
+          caret.moveToMotion(position)
         }
-        caret.moveToOffset(position)
-      } else {
-        repeatInsertText(editor, context, count)
-        val position = injector.motion.getHorizontalMotion(editor, caret, -1, false)
-        caret.moveToMotion(position)
       }
     }
     repeatLines = 0
@@ -326,45 +402,148 @@ abstract class VimChangeGroupBase : VimChangeGroup {
     repeatAppend = false
   }
 
+  /** Text we have appended to [strokes], remembered so that a change taking it back can cancel the recording. */
+  private class RecordedText(
+    var offset: Int,
+    val chars: CharArray,
+    val firstStrokeIndex: Int,
+    val previousOldOffset: Int,
+  ) {
+    fun isTakenBackBy(change: ChangesListener.Change) =
+      change.offset == offset && change.oldFragment == chars.concatToString()
+  }
+
   protected inner class VimChangesListener : ChangesListener {
     override fun documentChanged(change: ChangesListener.Change) {
-      val newFragment = change.newFragment
-      val oldFragment = change.oldFragment
-      val newFragmentLength = newFragment.length
-      val oldFragmentLength = oldFragment.length
+      // Vim clears `did_ai` for every character that is inserted (`insertchar()` in edit.c). Going by document changes
+      // instead of typed keys also covers text that the IDE inserts for us, e.g. a live template or a completion
+      didAutoIndent = false
 
-      // Repeat buffer limits
-      if (repeatCharsCount > MAX_REPEAT_CHARS_COUNT) {
+      if (isRepeatBufferFull()) return
+
+      if (isMadeBeforeInsert(change)) {
+        followWithoutRecording(change)
         return
       }
+      if (undoLastRecordedText(change)) return
 
+      updateRecordedTexts(change)
+      record(change)
+    }
+
+    private fun isRepeatBufferFull() = repeatCharsCount > MAX_REPEAT_CHARS_COUNT
+
+    /**
+     * We do want most of what the IDE changes while we are in insert mode - that is how auto-inserted brackets and
+     * indents end up being replayed by `.`. But an import added by "add unambiguous imports on the fly" or by an
+     * Alt+Enter fix is not something the user typed. The platform doesn't tell us who made a change, so we go by the
+     * insert region: nothing before the start of the insert can be the typing we are recording.
+     */
+    private fun isMadeBeforeInsert(change: ChangesListener.Change): Boolean {
+      return insertStarts.isNotEmpty() && insertStarts.all { change.offset < it.startOffset }
+    }
+
+    /**
+     * Everything after the change has moved, and so must the offsets we remember. Otherwise the next typed character
+     * looks like a jump and we would record caret motions for it.
+     */
+    private fun followWithoutRecording(change: ChangesListener.Change) {
+      if (oldOffset >= 0) {
+        oldOffset += change.lengthDelta
+      }
+      updateRecordedTexts(change)
+    }
+
+    /**
+     * Rolls the strokes back if [change] takes back the text we recorded last, and nothing else. Completing a class
+     * name from the lookup does exactly that: it inserts the fully qualified name, adds the import and then shortens
+     * the name again. Replaying that round trip would leave the caret wherever the round trip ended.
+     */
+    private fun undoLastRecordedText(change: ChangesListener.Change): Boolean {
+      if (!change.isPureDeletion) return false
+      val last = recordedTexts.lastOrNull() ?: return false
+      if (!last.isTakenBackBy(change)) return false
+      // Strokes recorded after that text are real - a backspace over an auto-inserted bracket arrives as two changes -
+      // and dropping them along with the text would break the replay
+      if (strokes.lastOrNull() !== last.chars) return false
+
+      strokes.subList(last.firstStrokeIndex, strokes.size).clear()
+      repeatCharsCount -= last.chars.size
+      oldOffset = last.previousOldOffset
+      recordedTexts.removeAt(recordedTexts.size - 1)
+      return true
+    }
+
+    /** Keeps the remembered offsets usable now that the document has changed, and forgets what the change overwrote. */
+    private fun updateRecordedTexts(change: ChangesListener.Change) {
+      val changeEnd = change.offset + change.oldFragment.length
+      val iterator = recordedTexts.iterator()
+      while (iterator.hasNext()) {
+        val recordedText = iterator.next()
+        when {
+          recordedText.offset >= changeEnd -> recordedText.offset += change.lengthDelta
+          recordedText.offset >= change.offset -> iterator.remove()
+        }
+      }
+    }
+
+    private fun record(change: ChangesListener.Change) {
       // <Enter> is added to strokes as an action during processing in order to indent code properly in the repeat
       // command
-      if (newFragment.startsWith("\n") && newFragment.trim { it <= ' ' }.isEmpty()) {
-        strokes.addAll(getAdjustCaretActions(change))
+      if (isNewLineWithIndent(change)) {
+        recordCaretAdjustment(change)
         oldOffset = -1
         return
       }
 
       // Ignore multi-character indents as they should be inserted automatically while repeating <Enter> actions
-      if (newFragmentLength > 1 && newFragment.trim { it <= ' ' }.isEmpty()) {
-        return
-      }
-      strokes.addAll(getAdjustCaretActions(change))
-      if (oldFragmentLength > 0) {
-        val editorDelete = injector.nativeActionManager.deleteAction
-        if (editorDelete != null) {
-          repeat(oldFragmentLength) {
-            strokes.add(editorDelete)
-          }
-        }
-      }
-      if (newFragmentLength > 0) {
-        strokes.add(newFragment.toCharArray())
-      }
-      repeatCharsCount += newFragmentLength
-      oldOffset = change.offset + newFragmentLength
+      if (isMultiCharacterIndent(change)) return
+
+      val firstStrokeIndex = strokes.size
+      val previousOldOffset = oldOffset
+      recordCaretAdjustment(change)
+      recordDeletions(change.oldFragment.length)
+      recordText(change, firstStrokeIndex, previousOldOffset)
+
+      repeatCharsCount += change.newFragment.length
+      oldOffset = change.offset + change.newFragment.length
     }
+
+    private fun recordCaretAdjustment(change: ChangesListener.Change) {
+      strokes.addAll(getAdjustCaretActions(change))
+    }
+
+    private fun recordDeletions(count: Int) {
+      val deleteAction = injector.nativeActionManager.deleteAction ?: return
+      repeat(count) {
+        strokes.add(deleteAction)
+      }
+    }
+
+    private fun recordText(change: ChangesListener.Change, firstStrokeIndex: Int, previousOldOffset: Int) {
+      if (change.newFragment.isEmpty()) return
+
+      val chars = change.newFragment.toCharArray()
+      strokes.add(chars)
+      recordedTexts.add(RecordedText(change.offset, chars, firstStrokeIndex, previousOldOffset))
+      if (recordedTexts.size > MAX_RECORDED_TEXTS) {
+        recordedTexts.removeAt(0)
+      }
+    }
+
+    private fun isNewLineWithIndent(change: ChangesListener.Change) =
+      change.newFragment.startsWith("\n") && isWhitespaceOnly(change.newFragment)
+
+    private fun isMultiCharacterIndent(change: ChangesListener.Change) =
+      change.newFragment.length > 1 && isWhitespaceOnly(change.newFragment)
+
+    private fun isWhitespaceOnly(fragment: String) = fragment.trim { it <= ' ' }.isEmpty()
+
+    private val ChangesListener.Change.lengthDelta: Int
+      get() = newFragment.length - oldFragment.length
+
+    private val ChangesListener.Change.isPureDeletion: Boolean
+      get() = oldFragment.isNotEmpty() && newFragment.isEmpty()
 
     private fun getAdjustCaretActions(change: ChangesListener.Change): List<EditorActionHandlerBase> {
       val delta: Int = change.offset - oldOffset
@@ -453,11 +632,16 @@ abstract class VimChangeGroupBase : VimChangeGroup {
       return
     }
 
+    didAutoIndent = pendingAutoIndent
+    pendingAutoIndent = false
+
     val state = injector.vimState
     injector.application.runReadAction {
-      for (caret in editor.nativeCarets()) {
-        caret.vimInsertStart = editor.createLiveMarker(caret.offset, caret.offset)
+      insertStarts = editor.nativeCarets().map { caret ->
+        val insertStart = editor.createLiveMarker(caret.offset, caret.offset)
+        caret.vimInsertStart = insertStart
         injector.markService.setMark(caret, MARK_CHANGE_START, caret.offset)
+        insertStart
       }
     }
     val cmd = state.executingCommand
@@ -474,8 +658,7 @@ abstract class VimChangeGroupBase : VimChangeGroup {
       editor.mode = Mode.NORMAL()
     } else {
       lastInsert = cmd
-      strokes.clear()
-      repeatCharsCount = 0
+      clearRecordedStrokes()
       val myVimDocument = vimDocument
       if (myVimDocument != null && vimDocumentListener != null) {
         myVimDocument.removeChangeListener(vimDocumentListener!!)
@@ -487,19 +670,31 @@ abstract class VimChangeGroupBase : VimChangeGroup {
       injector.application.runReadAction {
         oldOffset = editor.currentCaret().offset
       }
-      editor.insertMode = mode == Mode.INSERT
+      editor.insertMode = mode is Mode.INSERT
+      injector.vimState.ctrlXCompletionMode = CtrlXCompletionMode.NONE
       editor.mode = mode
     }
+  }
+
+  /**
+   * Begin Replace mode
+   *
+   * @param editor  The editor to replace in
+   * @param context The data context
+   */
+  override fun changeReplace(editor: VimEditor, context: ExecutionContext) {
+    initInsert(editor, context, Mode.REPLACE)
+    editor.replaceMask = VimEditorReplaceMask(editor)
   }
 
   override fun runEnterAction(editor: VimEditor, context: ExecutionContext) {
     val state = injector.vimState
     if (!state.isDotRepeatInProgress) {
       // While repeating the enter action has been already executed because `initInsert` repeats the input
-      val action = injector.nativeActionManager.enterAction
+      val action = getLineBreakAction(editor) ?: injector.nativeActionManager.enterAction
       if (action != null) {
         // We use enter action for `o`, `O` commands. If we want to undo the added \n and indent, we should record start of insert
-        if (editor.mode == Mode.INSERT) {
+        if (editor.mode is Mode.INSERT) {
           val undo = injector.undo
           when (undo) {
             is VimKeyBasedUndoService -> undo.setInsertNonMergeUndoKey()
@@ -511,9 +706,16 @@ abstract class VimChangeGroupBase : VimChangeGroup {
         }
         strokes.add(action)
         injector.actionExecutor.executeAction(editor, action, context)
+        onNewLineIndentInserted(editor)
       }
     }
   }
+
+  /**
+   * The editor's own action that breaks the line at the caret, for an editor where the platform's line-break actions
+   * don't work. Used for `o`, `O` and `<CR>` in Insert mode. Null to use the platform's actions.
+   */
+  protected open fun getLineBreakAction(editor: VimEditor): NativeAction? = null
 
   override fun runEnterAboveAction(editor: VimEditor, context: ExecutionContext) {
     val state = injector.vimState
@@ -523,8 +725,69 @@ abstract class VimChangeGroupBase : VimChangeGroup {
       if (action != null) {
         strokes.add(action)
         injector.actionExecutor.executeAction(editor, action, context)
+        onNewLineIndentInserted(editor)
       }
     }
+  }
+
+  /**
+   * Handles the indent that the IDE has just inserted for a new line, for `o`, `O` or Enter in Insert mode.
+   *
+   * 'autoindent' only copies the indent of the current line. An indent worked out from the code by 'indentexpr',
+   * 'cindent' or 'smartindent' is added whatever the option is set to - the `do_cindent` condition in `open_line()`
+   * (change.c) does not look at `b_p_ai` - and that is the kind the IDE inserts wherever the language has a formatter.
+   *
+   * Unlike Vim, the indent is not remembered for deletion, so a line that was just opened keeps it when Insert mode is
+   * left without anything being typed. Vim deletes it, for both kinds (`fixthisline()`, indent.c), so that `o<Esc>`
+   * leaves an empty line. IdeaVim keeps it, because a line opened in the IDE is expected to stay where it is. `cc` and
+   * `S` are the exception and still follow Vim - see [pendingAutoIndent].
+   */
+  private fun onNewLineIndentInserted(editor: VimEditor) {
+    didAutoIndent = false
+    if (isIndentCopiedFromPreviousLine(editor) && !isAutoIndentOn(editor)) {
+      removeIndentOfCaretLines(editor)
+    }
+  }
+
+  /** Without a formatter for the language, the IDE can only repeat the indent of the line above, as in plain text. */
+  private fun isIndentCopiedFromPreviousLine(editor: VimEditor) =
+    !injector.psiService.hasLanguageIndentSupport(editor)
+
+  private fun isAutoIndentOn(editor: VimEditor) = injector.options(editor).autoindent
+
+  private fun removeIndentOfCaretLines(editor: VimEditor) {
+    val ranges = injector.application.runReadAction {
+      editor.nativeCarets().mapNotNull { caret ->
+        val line = editor.offsetToBufferPosition(caret.offset).line
+        val lineStart = editor.getLineStartOffset(line)
+        val firstNonBlank = injector.motion.moveCaretToLineStartSkipLeading(editor, line)
+        if (firstNonBlank == lineStart) null else TextRange(lineStart, firstNonBlank)
+      }
+    }
+    deleteRanges(editor, ranges, "Remove indent")
+  }
+
+  /**
+   * Deletes the given ranges as a single change.
+   *
+   * The escape action is [Command.Type.OTHER_SELF_SYNCHRONIZED], and Insert mode can also be left from outside the key
+   * handler (e.g. by an autocommand), so there is no guarantee that we are inside a command already. The platform
+   * refuses document changes outside a command, and nested commands are merged into the outer one, so it is always
+   * correct to open one here.
+   */
+  private fun deleteRanges(editor: VimEditor, ranges: List<TextRange>, name: String) {
+    if (ranges.isEmpty()) return
+    injector.actionExecutor.executeCommand(
+      editor,
+      {
+        injector.application.runWriteAction {
+          // Delete from the end of the document, so that the offsets of the remaining ranges stay valid
+          ranges.distinct().sortedByDescending { it.startOffset }.forEach { editor.deleteString(it) }
+        }
+      },
+      name,
+      null,
+    )
   }
 
   /**
@@ -554,38 +817,116 @@ abstract class VimChangeGroupBase : VimChangeGroup {
   override fun processEscape(editor: VimEditor, context: ExecutionContext?) {
     // Get the offset for marks before we exit insert mode - switching from insert to overtype subtracts one from the
     // column offset.
-    val markGroup = injector.markService
-    markGroup.setMark(editor, VimMarkService.INSERT_EXIT_MARK)
-    markGroup.setMark(editor, MARK_CHANGE_END)
-    if (editor.mode is Mode.REPLACE) {
-      editor.insertMode = true
-    }
-    val repeatCount0 = lastInsert?.let {
-      // How many times do we want to *repeat* the insert? For a simple insert or change action, this is count-1. But if
-      // the command is an operator+motion, then the count applies to the motion, not the insert/change. I.e., `2cw`
-      // changes two words, rather than inserting the change twice. This is the only place where we need to know who the
-      // count applies to
-      if (CommandFlags.FLAG_NO_REPEAT_INSERT in it.flags || it.action.argumentType == Argument.Type.MOTION) {
-        0
-      } else {
-        it.count - 1
+    ensureSingeProcessingEscape {
+      val markGroup = injector.markService
+      markGroup.setMark(editor, VimMarkService.INSERT_EXIT_MARK)
+      markGroup.setMark(editor, MARK_CHANGE_END)
+      if (editor.mode is Mode.REPLACE) {
+        editor.insertMode = true
       }
-    } ?: 0
-    if (vimDocument != null && vimDocumentListener != null) {
-      vimDocument!!.removeChangeListener(vimDocumentListener!!)
-      vimDocumentListener = null
-    }
-    lastStrokes = ArrayList(strokes)
-    if (context != null) {
-      injector.changeGroup.repeatInsert(editor, context, repeatCount0, true)
-    }
-    if (editor.mode is Mode.INSERT) {
-      updateLastInsertedTextRegister()
-    }
+      val repeatCount0 = lastInsert?.let {
+        // How many times do we want to *repeat* the insert? For a simple insert or change action, this is count-1. But if
+        // the command is an operator+motion, then the count applies to the motion, not the insert/change. I.e., `2cw`
+        // changes two words, rather than inserting the change twice. This is the only place where we need to know who the
+        // count applies to
+        if (CommandFlags.FLAG_NO_REPEAT_INSERT in it.flags || it.action.argumentType == Argument.Type.MOTION) {
+          0
+        } else {
+          it.count - 1
+        }
+      } ?: 0
+      if (vimDocument != null && vimDocumentListener != null) {
+        vimDocument!!.removeChangeListener(vimDocumentListener!!)
+        vimDocumentListener = null
+      }
+      insertStarts = emptyList()
+      lastStrokes = ArrayList(strokes)
+      if (context != null) {
+        injector.changeGroup.repeatInsert(editor, context, repeatCount0, true)
+      }
+      if (editor.mode is Mode.INSERT) {
+        updateLastInsertedTextRegister()
+      }
+      if (didAutoIndent) {
+        removeAutoIndent(editor)
+      }
 
-    // The change pos '.' mark is the offset AFTER processing escape, and after switching to overtype
-    markGroup.setMark(editor, MARK_CHANGE_POS)
-    editor.mode = Mode.NORMAL()
+      // The change pos '.' mark is the offset AFTER processing escape, and after switching to overtype
+      markGroup.setMark(editor, MARK_CHANGE_POS)
+      editor.mode = Mode.NORMAL()
+      didAutoIndent = false
+      pendingAutoIndent = false
+    }
+  }
+
+  /**
+   * Removes the indent that `cc` or `S` kept on the line they emptied, as `stop_insert()` (edit.c) does.
+   *
+   * Typing clears `did_ai`, so white space the user put there is never touched. Vim does this for `o`, `O` and Enter
+   * as well, but IdeaVim leaves those alone - see [onNewLineIndentInserted].
+   *
+   * "Keep indents on empty lines" in the IDE's code style answers this exact question for the whole IDE, so it wins
+   * over Vim. It is off by default, which leaves Vim's behaviour.
+   */
+  private fun removeAutoIndent(editor: VimEditor) {
+    if (editor.indentConfig.keepIndentsOnEmptyLines) return
+    val ranges = injector.application.runReadAction {
+      val text = editor.text()
+      editor.nativeCarets().mapNotNull { caret -> findAutoIndentRange(editor, text, caret.offset) }
+    }
+    deleteRanges(editor, ranges, "Remove auto indent")
+  }
+
+  /**
+   * The white space to delete for a caret that is leaving Insert mode, or null if there is nothing to delete.
+   *
+   * Vim deletes the run of white space around the character the insert ended on, so a non-blank character there stops
+   * the whole thing. `i<CR><Esc>` in the middle of a line therefore keeps the indent, the text after the caret not
+   * being white space.
+   */
+  private fun findAutoIndentRange(editor: VimEditor, text: CharSequence, offset: Int): TextRange? {
+    val lineStart = editor.getLineStartForOffset(offset)
+    val lineEnd = editor.getLineEndForOffset(offset)
+    val position = characterInsertEndedOn(offset, lineStart, lineEnd) ?: return null
+    if (!isWhiteSpace(text[position])) return null
+    val whiteSpace = whiteSpaceRunAround(text, position, lineStart, lineEnd)
+    return whiteSpace.takeIf { startsTheLine(it, lineStart) }
+  }
+
+  /** The insert ends past the last character, so Vim steps back one when it ended at the end of the line. */
+  private fun characterInsertEndedOn(offset: Int, lineStart: Int, lineEnd: Int): Int? {
+    val position = offset.coerceAtMost(lineEnd)
+    return (if (position == lineEnd) position - 1 else position).takeIf { it >= lineStart }
+  }
+
+  private fun whiteSpaceRunAround(text: CharSequence, position: Int, lineStart: Int, lineEnd: Int): TextRange {
+    var start = position
+    while (start > lineStart && isWhiteSpace(text[start - 1])) start--
+    var end = position + 1
+    while (end < lineEnd && isWhiteSpace(text[end])) end++
+    return TextRange(start, end)
+  }
+
+  /**
+   * An automatically inserted indent always starts at the beginning of the line. Vim gets this for free, because
+   * `did_ai` can only be set while the line holds nothing but that indent, but our flag is less precise, and eating
+   * the white space between two words would be much worse than leaving an indent behind.
+   */
+  private fun startsTheLine(range: TextRange, lineStart: Int) = range.startOffset == lineStart
+
+  private fun isWhiteSpace(char: Char) = char == ' ' || char == '\t'
+
+  // processing escape might be entered from multiple places at once but we don't wont to repeat it.
+  // For example, it might be called from standard esc processing and
+  // Rider Escape lookup which results in duplicated text insertion
+  fun ensureSingeProcessingEscape(unit: () -> Unit) {
+    if (processingEscape) return
+    processingEscape = true
+    try {
+      unit()
+    } finally {
+      processingEscape = false
+    }
   }
 
   private fun updateLastInsertedTextRegister() {
@@ -601,7 +942,8 @@ abstract class VimChangeGroupBase : VimChangeGroup {
   }
 
   /**
-   * Processes the Enter key by running the first successful action registered for "ENTER" keystroke.
+   * Processes the Enter key by running the editor's own line-break action (see [getLineBreakAction]), or else the first
+   * successful action registered for "ENTER" keystroke.
    *
    * If this is REPLACE mode we need to turn off OVERWRITE before and then turn OVERWRITE back on after sending the
    * "ENTER" key.
@@ -613,16 +955,23 @@ abstract class VimChangeGroupBase : VimChangeGroup {
     if (editor.mode is Mode.REPLACE) {
       editor.insertMode = true
     }
-    val enterKeyStroke = KeyStroke.getKeyStroke(KeyEvent.VK_ENTER, 0)
-    val actions = injector.keyGroup.getActions(editor, enterKeyStroke)
-    for (action in actions) {
-      if (injector.actionExecutor.executeAction(editor, action, context)) {
-        break
+    val lineBreakAction = getLineBreakAction(editor)
+    if (lineBreakAction != null) {
+      injector.actionExecutor.executeAction(editor, lineBreakAction, context)
+    } else {
+      val enterKeyStroke = KeyStroke.getKeyStroke(KeyEvent.VK_ENTER, 0)
+      val actions = injector.keyGroup.getActions(editor, enterKeyStroke)
+      for (action in actions) {
+        if (injector.actionExecutor.executeAction(editor, action, context)) {
+          break
+        }
       }
     }
     if (editor.mode is Mode.REPLACE) {
       editor.insertMode = false
+      editor.replaceMask?.recordLineBreakAtCaret()
     }
+    onNewLineIndentInserted(editor)
   }
 
   /**
@@ -636,7 +985,7 @@ abstract class VimChangeGroupBase : VimChangeGroup {
     context: ExecutionContext,
     toSwitch: Mode,
   ) {
-    if (toSwitch == Mode.INSERT) {
+    if (toSwitch is Mode.INSERT) {
       initInsert(editor, context, Mode.INSERT)
     }
   }
@@ -664,7 +1013,16 @@ abstract class VimChangeGroupBase : VimChangeGroup {
    * @param editor The editor to put into NORMAL mode for one command
    */
   override fun processSingleCommand(editor: VimEditor) {
+    injector.vimState.deletedToEndOfLine = false
+
     editor.mode = Mode.NORMAL(editor.mode)
+
+    editor.forEachCaret { caret ->
+      val normalized = editor.normalizeOffset(caret.offset, allowEnd = false)
+      if (normalized != caret.offset) {
+        caret.moveToOffset(normalized)
+      }
+    }
     clearStrokes(editor)
   }
 
@@ -699,6 +1057,7 @@ abstract class VimChangeGroupBase : VimChangeGroup {
         val pos = injector.motion.getHorizontalMotion(editor, caret, -1, false)
         caret.moveToMotion(pos)
       }
+      injector.vimState.deletedToEndOfLine = true
       return res
     }
     return false
@@ -725,11 +1084,7 @@ abstract class VimChangeGroupBase : VimChangeGroup {
     if (myCount < 2) myCount = 2
     val lline = caret.getBufferPosition().line
     val total = editor.lineCount()
-    return if (lline + myCount > total) {
-      false
-    } else {
-      deleteJoinNLines(editor, context, caret, lline, myCount, spaces)
-    }
+    return lline + myCount <= total && deleteJoinNLines(editor, context, caret, lline, myCount, spaces)
   }
 
   /**
@@ -746,9 +1101,10 @@ abstract class VimChangeGroupBase : VimChangeGroup {
   ): Boolean {
     logger.debug { "processKey($key)" }
     if (key.keyChar != KeyEvent.CHAR_UNDEFINED) {
-      editor.replaceMask?.recordChangeAtCaret(editor)
+      editor.replaceMask?.recordTypedCharacterAtCaret()
       processResultBuilder.addExecutionStep { _, e, c ->
         type(e, c, key.keyChar)
+        didAutoIndent = false
       }
       return true
     } else if (key.keyCode == injector.parser.plugKeyStroke.keyCode || key.keyCode == injector.parser.actionKeyStroke.keyCode) {
@@ -756,19 +1112,38 @@ abstract class VimChangeGroupBase : VimChangeGroup {
       // Insert or Select mode, we need to replace it with the name of the key as text.
       processResultBuilder.addExecutionStep { _, e, c ->
         type(e, c, injector.parser.toKeyNotation(key))
+        didAutoIndent = false
       }
       return true
     }
 
     // Shift-space
     if (key.keyCode == 32 && key.modifiers and KeyEvent.SHIFT_DOWN_MASK != 0) {
-      editor.replaceMask?.recordChangeAtCaret(editor)
+      editor.replaceMask?.recordTypedCharacterAtCaret()
       processResultBuilder.addExecutionStep { _, e, c ->
         type(e, c, ' ')
+        didAutoIndent = false
       }
       return true
     }
     return false
+  }
+
+  protected fun tryExpandAbbreviation(editor: VimEditor, trigger: Char) {
+    if (isKeyword(editor, trigger)) return
+    if (isAbbreviationSessionInvalidated(editor)) return
+    val caret = editor.currentCaret()
+    val lineStart = editor.getLineStartOffset(editor.offsetToBufferPosition(caret.offset).line)
+    val ctx = AbbreviationContext(editor.text(), lineStart, editor)
+    val expansion = findAndResolveAbbreviation(ctx, caret.offset, MappingMode.INSERT) ?: return
+    replaceWithRhs(editor, caret, expansion.lhsRange, expansion.rhs)
+  }
+
+  private fun replaceWithRhs(editor: VimEditor, caret: VimCaret, lhsRange: TextRange, rhs: String) {
+    injector.application.runWriteAction {
+      editor.deleteString(lhsRange)
+    }
+    insertText(editor, caret, lhsRange.startOffset, rhs)
   }
 
   override fun processKeyInSelectMode(
@@ -776,8 +1151,8 @@ abstract class VimChangeGroupBase : VimChangeGroup {
     key: KeyStroke,
     processResultBuilder: KeyProcessResult.KeyProcessResultBuilder,
   ): Boolean {
-    var res: Boolean
-    SelectionVimListenerSuppressor.lock().use {
+    var res = false
+    SelectionVimListenerSuppressor.lock {
       res = processKey(editor, key, processResultBuilder)
       processResultBuilder.addExecutionStep { _, lambdaEditor, lambdaContext ->
         lambdaEditor.exitSelectModeNative(false)
@@ -913,7 +1288,7 @@ abstract class VimChangeGroupBase : VimChangeGroup {
     // 1) The range is across multiple lines
     // 2) There is only whitespace before the start of the range
     // 3) There is only whitespace after the end of the range
-    if (!isChange && motionType != SelectionType.LINE_WISE) {
+    if (!isChange && motionType == SelectionType.CHARACTER_WISE && argument.motion.supportsLinewiseDeletePromotion) {
       val start = editor.offsetToBufferPosition(range.startOffset)
       val end = editor.offsetToBufferPosition(range.endOffset)
       if (start.line != end.line
@@ -921,9 +1296,28 @@ abstract class VimChangeGroupBase : VimChangeGroup {
         && !editor.anyNonWhitespace(range.endOffset, 1)
       ) {
         motionType = SelectionType.LINE_WISE
+        // Now that it's linewise, expand the (still characterwise) range to whole lines so the leading whitespace of
+        // the first line and the trailing newline of the last line are removed too, matching Vim.
+        return Pair(expandRangeToWholeLines(editor, range), motionType)
       }
     }
     return Pair(range, motionType)
+  }
+
+  /**
+   * Expands a characterwise range to cover the whole lines it touches, mirroring the way [VimMotionGroup.getMotionRange]
+   * normalizes a genuinely linewise motion. Used when a characterwise delete is promoted to linewise so that the leading
+   * whitespace of the first line and the trailing newline of the last line are removed too.
+   */
+  private fun expandRangeToWholeLines(editor: VimEditor, range: TextRange): TextRange {
+    val startOffset = editor.getLineStartForOffset(range.startOffset)
+    // endOffset is exclusive, so use the last actually-covered character to find the final line. This stops an
+    // exclusive motion that ends at column 1 of the following line (e.g. `d}`) from pulling in that extra line.
+    val lastCoveredOffset = (range.endOffset - 1).coerceAtLeast(range.startOffset)
+    // Include the trailing newline of the last line so whole lines are removed; on the final line (no trailing
+    // newline) this coerces back to the file size.
+    val endOffset = min((editor.getLineEndForOffset(lastCoveredOffset) + 1).toLong(), editor.fileSize()).toInt()
+    return TextRange(startOffset, endOffset)
   }
 
   /**
@@ -948,6 +1342,13 @@ abstract class VimChangeGroupBase : VimChangeGroup {
   ): Boolean {
     val intendedColumn = caret.vimLastColumn
 
+    val endLine = editor.offsetToBufferPosition(range.endOffset).line
+    val deletedToEndOfLine = type != SelectionType.LINE_WISE &&
+      range.endOffset >= editor.getLineEndOffset(endLine, true)
+    if (deletedToEndOfLine) {
+      injector.vimState.deletedToEndOfLine = true
+    }
+
     val removeLastNewLine = removeLastNewLine(editor, range, type)
     val res = deleteText(editor, context, range, type, caret, saveToRegister)
     var processedCaret = editor.findLastVersionOfCaret(caret) ?: caret
@@ -971,6 +1372,7 @@ abstract class VimChangeGroupBase : VimChangeGroup {
             editor.offsetToBufferPosition(pos).line,
             caret,
           )
+        pos = editor.normalizeOffset(pos, isChange)
         updated
       } else {
         caret
@@ -1052,11 +1454,18 @@ abstract class VimChangeGroupBase : VimChangeGroup {
    * @param editor The editor to clear strokes from.
    */
   protected fun clearStrokes(editor: VimEditor) {
-    strokes.clear()
-    repeatCharsCount = 0
-    for (caret in editor.nativeCarets()) {
-      caret.vimInsertStart = editor.createLiveMarker(caret.offset, caret.offset)
+    clearRecordedStrokes()
+    insertStarts = editor.nativeCarets().map { caret ->
+      val insertStart = editor.createLiveMarker(caret.offset, caret.offset)
+      caret.vimInsertStart = insertStart
+      insertStart
     }
+  }
+
+  private fun clearRecordedStrokes() {
+    strokes.clear()
+    recordedTexts.clear()
+    repeatCharsCount = 0
   }
 
   /**
@@ -1093,9 +1502,12 @@ abstract class VimChangeGroupBase : VimChangeGroup {
         return i > 1
       }
       // Note that caret isn't moved here; it's only used for register + mark storage
-      deleteText(editor, context, TextRange(startOffset, endOffset), null, caret)
       if (spaces && !hasTrailingWhitespace) {
-        insertText(editor, caret, startOffset, " ")
+        // Use replaceText to combine delete+insert into a single document event,
+        // so mark adjustment correctly accounts for the replacement length
+        replaceText(editor, caret, startOffset, endOffset, " ")
+      } else {
+        deleteText(editor, context, TextRange(startOffset, endOffset), null, caret)
       }
       caret.moveToOffset(startOffset)
     }
@@ -1144,7 +1556,7 @@ abstract class VimChangeGroupBase : VimChangeGroup {
     if (editor.isOneLineMode()) return
     var firstLiner = false
     var newCaret = if (caret.getVisualPosition().line == 0) {
-      val newCaret = caret.moveToOffset(
+      val newCaret = caret.moveToInlayAwareOffset(
         injector.motion.moveCaretToCurrentLineStart(
           editor,
           caret,
@@ -1156,8 +1568,8 @@ abstract class VimChangeGroupBase : VimChangeGroup {
       // TODO: getVerticalMotionOffset returns a visual line, not the expected logical line
       // Also address the unguarded upcast
       val motion = injector.motion.getVerticalMotionOffset(editor, caret, -1)
-      val updated = caret.moveToOffset((motion as AbsoluteOffset).offset)
-      updated.moveToOffset(injector.motion.moveCaretToCurrentLineEnd(editor, updated))
+      val updated = caret.moveToInlayAwareOffset((motion as AbsoluteOffset).offset)
+      updated.moveToInlayAwareOffset(injector.motion.moveCaretToCurrentLineEnd(editor, updated))
     }
     editor.vimChangeActionSwitchMode = Mode.INSERT
     newCaret = insertText(
@@ -1205,7 +1617,8 @@ abstract class VimChangeGroupBase : VimChangeGroup {
             kludge = true
             motionArgument = Argument.Motion(
               injector.actionExecutor.findVimActionOrDie(VIM_MOTION_WORD_END_RIGHT) as MotionActionHandler,
-              motionArgument.argument
+              motionArgument.argument,
+              motionArgument.forcedMotion,
             )
           }
 
@@ -1213,7 +1626,8 @@ abstract class VimChangeGroupBase : VimChangeGroup {
             kludge = true
             motionArgument = Argument.Motion(
               injector.actionExecutor.findVimActionOrDie(VIM_MOTION_BIG_WORD_END_RIGHT) as MotionActionHandler,
-              motionArgument.argument
+              motionArgument.argument,
+              motionArgument.forcedMotion,
             )
           }
 
@@ -1221,7 +1635,8 @@ abstract class VimChangeGroupBase : VimChangeGroup {
             kludge = true
             motionArgument = Argument.Motion(
               injector.actionExecutor.findVimActionOrDie(VIM_MOTION_CAMEL_END_RIGHT) as MotionActionHandler,
-              motionArgument.argument
+              motionArgument.argument,
+              motionArgument.forcedMotion,
             )
           }
         }
@@ -1272,6 +1687,32 @@ abstract class VimChangeGroupBase : VimChangeGroup {
   }
 
   /**
+   * Replaces the indent of the line emptied by a linewise change with the one the language gives it.
+   *
+   * Vim reindents this line with 'cindent' or 'indentexpr' whatever 'autoindent' is set to (`fix_indent()`, called from
+   * `op_change()` in ops.c), so the caret ends up at the indent of the surrounding code rather than at the indent the
+   * line used to have. This is only available where the IDE can work out the indent of the language.
+   *
+   * @return true if the line was reindented
+   */
+  private fun reindentChangedLine(editor: VimEditor, caret: VimCaret): Boolean {
+    val indent = getLanguageIndent(editor, caret.offset) ?: return false
+    val line = caret.getBufferPosition().line
+    val lineStart = editor.getLineStartOffset(line)
+    injector.application.runWriteAction {
+      (editor as MutableVimEditor).replaceString(lineStart, editor.getLineEndOffset(line), indent)
+    }
+    caret.moveToOffset(lineStart + indent.length)
+    return true
+  }
+
+  /**
+   * The indent the language would give to the line at [offset], or null if the IDE can't work it out, in which case the
+   * line keeps the indent it was given.
+   */
+  protected open fun getLanguageIndent(editor: VimEditor, offset: Int): String? = null
+
+  /**
    * Deletes the range of text and enters insert mode
    *
    * @param editor            The editor to change
@@ -1305,10 +1746,18 @@ abstract class VimChangeGroupBase : VimChangeGroup {
         // Please don't use `getDocument().getText().isEmpty()` because it converts CharSequence into String
         if (editor.fileSize() == 0L) {
           insertBeforeCaret(editor, context)
-        } else if (after && !editor.endsWithNewLine()) {
-          insertNewLineBelow(editor, updatedCaret, lp.column)
         } else {
-          insertNewLineAbove(editor, updatedCaret, lp.column)
+          // With 'autoindent' off, Vim does not keep the indent of the changed line, but puts the caret in column 0
+          // (`beginline(0)` in `op_delete()`, ops.c)
+          val autoIndent = isAutoIndentOn(editor)
+          val indentColumn = if (autoIndent) lp.column else 0
+          if (after && !editor.endsWithNewLine()) {
+            insertNewLineBelow(editor, updatedCaret, indentColumn)
+          } else {
+            insertNewLineAbove(editor, updatedCaret, indentColumn)
+          }
+          val reindented = reindentChangedLine(editor, updatedCaret)
+          pendingAutoIndent = autoIndent || reindented
         }
       } else {
         if (type === SelectionType.BLOCK_WISE) {
@@ -1345,15 +1794,45 @@ abstract class VimChangeGroupBase : VimChangeGroup {
     val starts = range.startOffsets
     val ends = range.endOffsets
     val firstLine = editor.offsetToBufferPosition(range.startOffset).line
+    reformatCodeRange(ends, editor, starts)
+    val newOffset = injector.motion.moveCaretToLineStartSkipLeading(editor, firstLine)
+    caret.moveToOffset(newOffset)
+    return true
+  }
+
+  override fun reformatCodeMotionPreserveCursor(
+    editor: VimEditor,
+    caret: VimCaret,
+    context: ExecutionContext,
+    argument: Argument,
+    operatorArguments: OperatorArguments,
+  ): Boolean {
+    val range = injector.motion.getMotionRange(
+      editor, caret, context, argument,
+      operatorArguments
+    )
+    return range != null && reformatCodeRangePreserveCursor(editor, range)
+  }
+
+  override fun reformatCodeSelectionPreserveCursor(editor: VimEditor, caret: VimCaret, range: VimSelection) {
+    val textRange = range.toVimTextRange(true)
+    reformatCodeRangePreserveCursor(editor, textRange)
+  }
+
+  private fun reformatCodeRangePreserveCursor(editor: VimEditor, range: TextRange): Boolean {
+    val starts = range.startOffsets
+    val ends = range.endOffsets
+    reformatCodeRange(ends, editor, starts)
+    return true
+  }
+
+  private fun reformatCodeRange(ends: IntArray, editor: VimEditor, starts: IntArray) {
     for (i in ends.indices.reversed()) {
       val startOffset = editor.getLineStartForOffset(starts[i])
       val offset = ends[i] - if (startOffset == ends[i]) 0 else 1
       val endOffset = editor.getLineEndForOffset(offset)
       reformatCode(editor, startOffset, endOffset)
     }
-    val newOffset = injector.motion.moveCaretToLineStartSkipLeading(editor, firstLine)
-    caret.moveToOffset(newOffset)
-    return true
   }
 
   override fun autoIndentMotion(
@@ -1366,8 +1845,9 @@ abstract class VimChangeGroupBase : VimChangeGroup {
     val range = injector.motion.getMotionRange(editor, caret, context, argument, operatorArguments)
     if (range != null) {
       autoIndentRange(
-        editor, caret, context,
-        TextRange(range.startOffset, range.endOffsetInclusive)
+        editor, context,
+        ranges = listOf(TextRange(range.startOffset, range.endOffsetInclusive)),
+        carets = listOf(caret),
       )
     }
   }
@@ -1819,9 +2299,7 @@ abstract class VimChangeGroupBase : VimChangeGroup {
   }
 
   private fun isNumberChar(ch: Char, alpha: Boolean, hex: Boolean, octal: Boolean, decimal: Boolean): Boolean {
-    return if (alpha && ((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z'))) {
-      true
-    } else if (octal && (ch >= '0' && ch <= '7')) {
+    return alpha && ((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z')) || if (octal && (ch >= '0' && ch <= '7')) {
       true
     } else if (hex && ((ch >= '0' && ch <= '9') || "abcdefABCDEF".indexOf(ch) >= 0)) {
       true
@@ -2009,7 +2487,7 @@ abstract class VimChangeGroupBase : VimChangeGroup {
         }
       }
     }
-    if (editor.mode != Mode.INSERT) {
+    if (editor.mode !is Mode.INSERT) {
       if (!range.isMultiple) {
         // The caret has moved, so reset the intended column before trying to get the expected offset
         val newCaret = caret.setVimLastColumnAndGetCaret(intendedColumn)
@@ -2055,8 +2533,8 @@ abstract class VimChangeGroupBase : VimChangeGroup {
   }
 
   override fun reset() {
-    strokes.clear()
-    repeatCharsCount = 0
+    clearRecordedStrokes()
+    insertStarts = emptyList()
     if (lastStrokes != null) {
       lastStrokes!!.clear()
     }
@@ -2074,6 +2552,7 @@ abstract class VimChangeGroupBase : VimChangeGroup {
 
   companion object {
     private const val MAX_REPEAT_CHARS_COUNT = 10000
+    private const val MAX_RECORDED_TEXTS = 32
     private val logger = vimLogger<VimChangeGroupBase>()
 
     /**

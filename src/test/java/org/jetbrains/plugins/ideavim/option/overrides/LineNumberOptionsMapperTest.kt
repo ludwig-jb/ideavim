@@ -18,6 +18,7 @@ import com.maddyhome.idea.vim.api.injector
 import org.jetbrains.plugins.ideavim.SkipNeovimReason
 import org.jetbrains.plugins.ideavim.TestWithoutNeovim
 import org.jetbrains.plugins.ideavim.VimTestCase
+import org.jetbrains.plugins.ideavim.air.AirPrompt
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
@@ -49,6 +50,26 @@ class LineNumberOptionsMapperTest : VimTestCase() {
     // panel (which causes problems if our next command is `:set`). So type something (`0` is a good no-op) to give time
     // for the event to propagate
     typeText("0")
+  }
+
+  @Test
+  fun `test 'number' and 'relativenumber' do not show line numbers in AI chat prompt input`() {
+    markAsAirPrompt()
+    enterCommand("set number")
+    assertFalse(fixture.editor.settings.isLineNumbersShown)
+    enterCommand("set relativenumber")
+    assertFalse(fixture.editor.settings.isLineNumbersShown)
+  }
+
+  @Test
+  fun `test 'number' and 'relativenumber' do not show line numbers in AI chat prompt input when set locally`() {
+    markAsAirPrompt()
+    enterCommand("setlocal number relativenumber")
+    assertFalse(fixture.editor.settings.isLineNumbersShown)
+  }
+
+  private fun markAsAirPrompt() {
+    AirPrompt.mark(fixture.editor, fixture.testRootDisposable)
   }
 
   @Test

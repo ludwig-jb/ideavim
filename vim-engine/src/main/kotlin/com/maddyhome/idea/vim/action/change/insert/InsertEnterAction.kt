@@ -19,7 +19,11 @@ import com.maddyhome.idea.vim.handler.VimActionHandler
 import com.maddyhome.idea.vim.helper.enumSetOf
 import java.util.*
 
-@CommandOrMotion(keys = ["<CR>", "<C-M>", "<C-J>"], modes = [Mode.INSERT])
+@CommandOrMotion(
+  keys = ["<CR>", "<C-M>", "<C-J>"],
+  modes = [Mode.INSERT],
+  description = "In Insert mode, begin a new line."
+)
 class InsertEnterAction : VimActionHandler.SingleExecution() {
   override val type: Command.Type = Command.Type.INSERT
   override val flags: EnumSet<CommandFlags> = enumSetOf(CommandFlags.FLAG_SAVE_STROKE)
@@ -30,18 +34,7 @@ class InsertEnterAction : VimActionHandler.SingleExecution() {
     cmd: Command,
     operatorArguments: OperatorArguments,
   ): Boolean {
-    if (injector.application.isOctopusEnabled()) {
-      if (editor.isInForEachCaretScope()) {
-        editor.removeSecondaryCarets()
-        injector.changeGroup.processEnter(editor, editor.primaryCaret(), context)
-      } else {
-        editor.forEachNativeCaret({ caret ->
-          injector.changeGroup.processEnter(editor, caret, context)
-        })
-      }
-    } else {
-      injector.changeGroup.processEnter(editor, context)
-    }
+    injector.changeGroup.processEnter(editor, context)
     injector.scroll.scrollCaretIntoView(editor)
     return true
   }

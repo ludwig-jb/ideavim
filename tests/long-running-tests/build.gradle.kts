@@ -8,8 +8,7 @@ plugins {
 }
 
 repositories {
-  mavenCentral()
-
+  maven { url = uri("https://cache-redirector.jetbrains.com/repo.maven.apache.org/maven2") }
   intellijPlatform {
     defaultRepositories()
   }
@@ -25,7 +24,7 @@ dependencies {
   compileOnly("org.jetbrains.kotlin:kotlin-stdlib:$kotlinVersion")
   testImplementation("org.jetbrains.kotlin:kotlin-test:$kotlinVersion")
   testImplementation(testFixtures(project(":"))) // The root project
-  testImplementation("org.junit.vintage:junit-vintage-engine:6.0.1")
+  testImplementation("org.junit.vintage:junit-vintage-engine:6.1.3")
 
   intellijPlatform {
     // Snapshots don't use installers
@@ -35,6 +34,9 @@ dependencies {
     create(ideaType, ideaVersion) { this.useInstaller = false }
     testFramework(TestFrameworkType.Platform)
     testFramework(TestFrameworkType.JUnit5)
+    // Provides the BenchmarkTestInfo implementation that PlatformTestUtil.newBenchmark() loads via ServiceLoader.
+    // Without it, the benchmark tests fail with "No implementations of BenchmarkTestInfo found".
+    testFramework(TestFrameworkType.Metrics)
   }
 }
 
@@ -42,12 +44,20 @@ intellijPlatform {
   buildSearchableOptions = false
 }
 
+
 tasks {
   // This task is disabled because it should be excluded from `gradle test` run (because it's slow)
   // I didn't find a better way to exclude except disabling and defining a new task with a different name
   // Note that useJUnitTestPlatform() is required to prevent red code
   test {
     useJUnitPlatform()
+
+    // Without this the test IDE starts every plugin bundled with the product; a startup
+    // error in any of them is rethrown as a failure of whichever IdeaVim test ran first.
+    systemProperty("idea.load.plugins.id", "com.intellij,IdeaVIM")
+
+    // Their .properties files shadow, rather than complement, the originals they translate.
+    classpath -= classpath.filter { it.name.startsWith("localization-") && it.name.endsWith(".jar") }
   }
 }
 

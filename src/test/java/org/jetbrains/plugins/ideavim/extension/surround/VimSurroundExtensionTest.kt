@@ -10,9 +10,12 @@
 
 package org.jetbrains.plugins.ideavim.extension.surround
 
+import com.intellij.openapi.application.ApplicationManager
 import com.maddyhome.idea.vim.api.injector
 import com.maddyhome.idea.vim.extension.sneak.IdeaVimSneakExtension
+import com.maddyhome.idea.vim.newapi.vim
 import com.maddyhome.idea.vim.state.mode.Mode
+import com.maddyhome.idea.vim.state.mode.SelectionType
 import org.jetbrains.plugins.ideavim.VimBehaviorDiffers
 import org.jetbrains.plugins.ideavim.VimTestCase
 import org.junit.jupiter.api.AfterEach
@@ -21,6 +24,7 @@ import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestInfo
 import org.junit.jupiter.params.ParameterizedTest
 import org.junit.jupiter.params.provider.MethodSource
+import javax.swing.KeyStroke
 
 /**
  * @author dhleong
@@ -96,6 +100,83 @@ class VimSurroundExtensionTest : VimTestCase() {
     assertState("Hello <em>World</em>!\n")
   }
 
+  // VIM-2796
+  @Test
+  fun testSurroundTagFinishedWithEnter() {
+    configureByText("Hello ${c}World!\n")
+    typeText(injector.parser.parseKeys("ysiwtem<CR>"))
+    assertState("Hello <em>World</em>!\n")
+  }
+
+  // VIM-2796
+  @Test
+  fun testSurroundTagWithAttributesFinishedWithEnter() {
+    configureByText("Hello ${c}World!")
+    typeText(injector.parser.parseKeys("ysiwtspan class=\"important\"<CR>"))
+    assertState("Hello <span class=\"important\">World</span>!")
+  }
+
+  // VIM-2796
+  @Test
+  fun testVisualSurroundTagFinishedWithEnter() {
+    configureByText("<div><p>${c}content</p></div>")
+    typeText(injector.parser.parseKeys("vt<Sti<CR>"))
+    assertState("<div><p><i>content</i></p></div>")
+  }
+
+  @Test
+  fun testSurroundTagEditedWithBackspace() {
+    configureByText("Hello ${c}World!\n")
+    typeText(injector.parser.parseKeys("ysiwtemx<BS><CR>"))
+    assertState("Hello ${c}<em>World</em>!\n")
+  }
+
+  @Test
+  fun testSurroundTagEditedWithDeleteWord() {
+    configureByText("Hello ${c}World!\n")
+    typeText(injector.parser.parseKeys("ysiwtfoo<C-W>em>"))
+    assertState("Hello ${c}<em>World</em>!\n")
+  }
+
+  @Test
+  fun testUndoSurroundTag() {
+    configureByText("Hello ${c}World!\n")
+    typeText(injector.parser.parseKeys("ysiwtem>"))
+    typeText(injector.parser.parseKeys("u"))
+    assertState("Hello ${c}World!\n")
+  }
+
+  @Test
+  fun testVisualSurroundTagCancelledWithEscape() {
+    configureByText("<div><p>${c}content</p></div>")
+    typeText(injector.parser.parseKeys("vt<Sti<Esc>"))
+    assertMode(Mode.VISUAL(SelectionType.CHARACTER_WISE))
+    assertState("<div><p>${s}conten${c}t${se}</p></div>")
+  }
+
+  @Test
+  fun testVisualSurroundCancelledWithEscape() {
+    configureByText("<div><p>${c}content</p></div>")
+    typeText(injector.parser.parseKeys("vt<S<Esc>"))
+    assertMode(Mode.NORMAL())
+    assertState("<div><p>conten${c}t</p></div>")
+  }
+
+  @Test
+  fun testVisualSurroundWithInvalidCharacter() {
+    configureByText("<div><p>${c}content</p></div>")
+    typeText(injector.parser.parseKeys("vt<Sx"))
+    assertMode(Mode.NORMAL())
+    assertState("<div><p>conten${c}t</p></div>")
+  }
+
+  @Test
+  fun testVisualSurroundKeepsSelectionWhileTagIsTyped() {
+    configureByText("<div><p>${c}content</p></div>")
+    typeText(injector.parser.parseKeys("vt<Sti"))
+    assertState("<div><p>${s}conten${c}t${se}</p></div>")
+  }
+
   // VIM-1569
   @Test
   fun testSurroundTagWithAttributes() {
@@ -122,7 +203,7 @@ class VimSurroundExtensionTest : VimTestCase() {
   @Test
   fun testSurroundFunctionName() {
     configureByText("foo = b${c}ar")
-    typeText(injector.parser.parseKeys("ysiwfbaz"))
+    typeText(injector.parser.parseKeys("ysiwfbaz<CR>"))
     assertState("foo = ${c}baz(bar)")
   }
 
@@ -138,7 +219,7 @@ class VimSurroundExtensionTest : VimTestCase() {
   @Test
   fun testSurroundFunctionNameWithInnerSpacing() {
     configureByText("foo = b${c}ar")
-    typeText(injector.parser.parseKeys("ysiwFbaz"))
+    typeText(injector.parser.parseKeys("ysiwFbaz<CR>"))
     assertState("foo = ${c}baz( bar )")
   }
 
@@ -230,6 +311,62 @@ class VimSurroundExtensionTest : VimTestCase() {
       Mode.NORMAL(),
     )
     assertMode(Mode.NORMAL())
+  }
+
+  // VIM-4368
+  @Test
+  fun testVisualBlockSurroundEachLine() {
+    val before = """
+      ${c}foo
+      bar
+      baz
+    """.trimIndent()
+    val after = """
+      ${c}"foo"
+      "bar"
+      "baz"
+    """.trimIndent()
+
+    doTest("<C-V>jjllS\"", before, after, Mode.NORMAL())
+  }
+
+  // VIM-4368
+  @Test
+  fun testVisualBlockSurroundPartOfLines() {
+    val before = """
+      a${c}foo b
+      abar b
+      abaz b
+    """.trimIndent()
+    val after = """
+      a${c}(foo) b
+      a(bar) b
+      a(baz) b
+    """.trimIndent()
+
+    doTest("<C-V>jjllS)", before, after, Mode.NORMAL())
+  }
+
+  // VIM-4346
+  @Test
+  fun testVisualSurroundTagPromptDoesNotTriggerIncsearch() {
+    configureByText("<div><p>${c}content</p></div>")
+    enterCommand("set incsearch")
+    typeText("vt<")
+
+    // In unit test mode, inputString reads keys from TestInputModel and never opens the command line, so drive the
+    // same prompt that inputTagPair opens in the IDE
+    val vimEditor = fixture.editor.vim
+    val context = injector.executionContextManager.getEditorExecutionContext(vimEditor)
+    ApplicationManager.getApplication().invokeAndWait {
+      val commandLine = injector.commandLine.createSearchPrompt(vimEditor, context, "<", "")
+      commandLine.handleKey(KeyStroke.getKeyStroke('i'))
+
+      assertState("<div><p>${s}conten${c}t${se}</p></div>")
+
+      commandLine.deactivate(refocusOwningEditor = true, resetCaret = true)
+      assertState("<div><p>${s}conten${c}t${se}</p></div>")
+    }
   }
 
   /* Delete surroundings */
@@ -595,6 +732,57 @@ class VimSurroundExtensionTest : VimTestCase() {
                     """
 
     doTest(listOf("yss\""), before, after, Mode.NORMAL())
+  }
+
+  // VIM-4368
+  @Test
+  fun `test surround line with normal command over range`() {
+    val before = """
+      ${c}foo
+      bar
+      baz
+    """.trimIndent()
+    val after = """
+      "foo"
+      "bar"
+      ${c}"baz"
+    """.trimIndent()
+
+    doTest(exCommand("1,3normal yss\""), before, after, Mode.NORMAL())
+  }
+
+  // VIM-4368
+  @Test
+  fun `test surround line with normal command over Visual selection`() {
+    val before = """
+      ${c}foo
+      bar
+      baz
+    """.trimIndent()
+    val after = """
+      "foo"
+      "bar"
+      ${c}"baz"
+    """.trimIndent()
+
+    doTest(listOf("VG", exCommand("normal yss\"")), before, after, Mode.NORMAL())
+  }
+
+  // VIM-4368
+  @Test
+  fun `test surround line with tag and normal command over range`() {
+    val before = """
+      ${c}foo
+      bar
+      baz
+    """.trimIndent()
+    val after = """
+      <b>foo</b>
+      <b>bar</b>
+      ${c}<b>baz</b>
+    """.trimIndent()
+
+    doTest(exCommand("1,3normal yss<lt>b>"), before, after, Mode.NORMAL())
   }
 
   @Test

@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2023 The IdeaVim authors
+ * Copyright 2003-2026 The IdeaVim authors
  *
  * Use of this source code is governed by an MIT-style
  * license that can be found in the LICENSE.txt file or at
@@ -8,6 +8,7 @@
 
 package com.maddyhome.idea.vim.key
 
+import com.intellij.codeInsight.lookup.LookupManager
 import com.intellij.codeInsight.template.impl.editorActions.ExpandLiveTemplateByTabAction
 import com.intellij.openapi.actionSystem.ActionPromoter
 import com.intellij.openapi.actionSystem.AnAction
@@ -16,7 +17,11 @@ import com.intellij.openapi.actionSystem.CommonDataKeys
 import com.intellij.openapi.actionSystem.DataContext
 import com.intellij.openapi.editor.actionSystem.EditorActionHandler
 import com.intellij.openapi.editor.actions.TabAction
+import com.maddyhome.idea.vim.action.OutsideEditorKeyDispatcher
 import com.maddyhome.idea.vim.action.VimShortcutKeyAction
+import com.maddyhome.idea.vim.api.getFirstMappingInfoMatch
+import com.maddyhome.idea.vim.api.injector
+import com.maddyhome.idea.vim.command.MappingMode
 import com.maddyhome.idea.vim.helper.isIdeaVimDisabledHere
 import com.maddyhome.idea.vim.newapi.vim
 import com.maddyhome.idea.vim.state.mode.Mode
@@ -50,6 +55,9 @@ import com.maddyhome.idea.vim.state.mode.Mode
  */
 internal class VimActionsPromoter : ActionPromoter {
   override fun promote(actions: List<AnAction>, context: DataContext): List<AnAction>? {
+    // Registered only while no editor is open, and disables itself for keys that don't continue a user mapping
+    actions.firstOrNull { it is OutsideEditorKeyDispatcher }?.let { return listOf(it) }
+
     val vimIndex = actions.indexOfFirst { it is AnActionWrapper && it.delegate is VimShortcutKeyAction }
     if (vimIndex == -1) return null
 
@@ -59,6 +67,13 @@ internal class VimActionsPromoter : ActionPromoter {
       if (editor.isIdeaVimDisabledHere) return null
       val mode = editor.vim.mode
       val vimAction = actions[vimIndex]
+
+      if ((mode is Mode.INSERT || mode == Mode.REPLACE) &&
+        LookupManager.getActiveLookup(editor) != null &&
+        injector.keyGroup.getFirstMappingInfoMatch(injector.parser.parseKeys("<Tab>"), MappingMode.I) != null
+      ) {
+        return listOf(vimAction)
+      }
 
       val ordered = mutableListOf<AnAction>()
       actions.forEach {
@@ -76,7 +91,7 @@ internal class VimActionsPromoter : ActionPromoter {
         // invoke an action that will edit text while we're in e.g., Normal. This isn't a hard and fast rule - we don't
         // remove InsertInlineCompletionAction or Next Edit Suggestions. These are ok because there are visible prompts,
         // so modifying text in Normal is expected.
-        if (it is ExpandLiveTemplateByTabAction && mode != Mode.INSERT && mode != Mode.REPLACE && mode !is Mode.SELECT) {
+        if (it is ExpandLiveTemplateByTabAction && mode !is Mode.INSERT && mode != Mode.REPLACE && mode !is Mode.SELECT) {
           return@forEach
         }
         ordered.add(it)
@@ -84,8 +99,7 @@ internal class VimActionsPromoter : ActionPromoter {
 
       // Returns all actions, in the order we've added them
       return ordered
-    }
-    else {
+    } else {
       // Return the action we want to promote
       return listOf(actions[vimIndex])
     }

@@ -22,6 +22,7 @@ import com.maddyhome.idea.vim.diagnostic.trace
 import com.maddyhome.idea.vim.diagnostic.vimLogger
 import com.maddyhome.idea.vim.handler.EditorActionHandlerBase
 import com.maddyhome.idea.vim.key.KeyConsumer
+import com.maddyhome.idea.vim.key.KeySource
 import com.maddyhome.idea.vim.state.KeyHandlerState
 import com.maddyhome.idea.vim.state.VimStateMachine
 import com.maddyhome.idea.vim.state.mode.Mode
@@ -56,33 +57,26 @@ internal class CommandKeyConsumer : KeyConsumer {
   override fun isApplicable(
     key: KeyStroke,
     editor: VimEditor,
-    allowKeyMappings: Boolean,
+    keySource: KeySource,
     keyProcessResultBuilder: KeyProcessResult.KeyProcessResultBuilder,
   ): Boolean {
     // A key is a command key if there are no expected arguments (we're at the start of a command, or a multi-key
     // command is still in progress), or if the expected argument is a motion, which is a command.
-    // TODO: Get rid of the check for digraphs
-    // In Command-line mode, <C-C> is supposed to cancel the command line, even if we're in the middle of another
-    // command, either as a DIGRAPH or CHARACTER argument, or while entering a multi-key command.
-    // Up to now, we only support this while entering a DIGRAPH, by having a special case check in DigraphConsumer, and
-    // dropping through to CommandKeyConsumer to match and call LeaveCommandLineAction. (This shouldn't actually work,
-    // because we're matching a command when we're not in a state to match a command - we're still waiting for the
-    // argument to the last command. Historically, this check wasn't made.)
     // We don't support cancelling command line while entering a CHARACTER argument, and the only multi-key command
     // we've supported to date is c_CTRL-\-CTRL-N, which actually appears to be broken; we don't close the command line.
     // Because we need to support <C-C> at arbitrary points, and not just where a new command is expected, we should
     // introduce a new key consumer to handle this, at which point we can clean up the digraph logic.
     // Note that in Vim, <Esc> will also exit command line, if 'x' is in the 'cpoptions' option, which we don't support.
     val commandBuilder = keyProcessResultBuilder.state.commandBuilder
-    return commandBuilder.expectedArgumentType == null || commandBuilder.expectedArgumentType == Argument.Type.MOTION
-      || commandBuilder.expectedArgumentType == Argument.Type.DIGRAPH
+    return commandBuilder.expectedArgumentType == null
+      || commandBuilder.expectedArgumentType == Argument.Type.MOTION
       || commandBuilder.isBuildingMultiKeyCommand()
   }
 
   override fun consumeKey(
     key: KeyStroke,
     editor: VimEditor,
-    allowKeyMappings: Boolean,
+    keySource: KeySource,
     keyProcessResultBuilder: KeyProcessResult.KeyProcessResultBuilder,
   ): Boolean {
     logger.trace("Entered CommandConsumer")
@@ -96,7 +90,11 @@ internal class CommandKeyConsumer : KeyConsumer {
       if (editor.mode is Mode.OP_PENDING) commandBuilder.convertDuplicateOperatorKeyStrokeToMotion(key) else key
     logger.trace { "Original keystroke: $key, substituted keystroke: $keystroke" }
 
-    return commandBuilder.processKey(keystroke) { handleAction(it, keyProcessResultBuilder) }
+    return commandBuilder.processKey(keystroke) { command ->
+      // `<C-Y>` and friends register two handlers for one key - see `@CommandOrMotion(lookup = true)`
+      val hasActiveLookup = injector.lookupManager.getActiveLookup(editor) != null
+      handleAction(command.resolve(hasActiveLookup).instance, keyProcessResultBuilder)
+    }
   }
 
   private fun handleAction(action: EditorActionHandlerBase, processBuilder: KeyProcessResult.KeyProcessResultBuilder) {
@@ -142,16 +140,26 @@ internal class CommandKeyConsumer : KeyConsumer {
       }
     }
 
-    processBuilder.addExecutionStep { _, _, _ ->
+    processBuilder.addExecutionStep { lambdaKeyState, _, _ ->
       if (action.flags.contains(CommandFlags.FLAG_END_EX)) {
         logger.trace("Processing ex_string")
-        val commandLine = injector.commandLine.getActiveCommandLine()!!
+        val commandLine = injector.commandLine.getActiveCommandLine()
+        if (commandLine == null) {
+          // VIM-4115: FLAG_END_EX action matched via a stale CMD_LINE builder while the panel is gone.
+          // Clear the leftover state so subsequent keys are handled in the real mode.
+          logger.error("VIM-4115: FLAG_END_EX action '${action.id}' ran with no active command line. State: $lambdaKeyState")
+          lambdaKeyState.leaveCommandLine()
+          return@addExecutionStep
+        }
         val label = commandLine.getLabel()
+        val type = commandLine.type
         val text = commandLine.text
         val processing = commandLine.inputProcessing
+        val incSearchOffset = commandLine.getIncsearchMatchOffset()
+        val caretOffset = commandLine.caret.offset
         commandLine.close(refocusOwningEditor = true, resetCaret = true)
 
-        commandBuilder.addArgument(Argument.ExString(label[0], text, processing))
+        commandBuilder.addArgument(Argument.ExString(label[0], text, incSearchOffset, processing, caretOffset, type))
       }
     }
   }
@@ -169,7 +177,7 @@ internal class CommandKeyConsumer : KeyConsumer {
       if (editorState.isDotRepeatInProgress && argumentCaptured != null) {
         commandBuilder.addArgument(argumentCaptured!!)
       }
-      editor.mode = Mode.OP_PENDING(editorState.mode.returnTo)
+      editor.mode = Mode.OP_PENDING(editorState.mode)
     }
 
     action.onStartWaitingForArgument(editor, context, keyState)

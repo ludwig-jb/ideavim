@@ -18,7 +18,11 @@ import com.maddyhome.idea.vim.command.TextObjectVisualType
 import com.maddyhome.idea.vim.common.TextRange
 import com.maddyhome.idea.vim.handler.TextObjectActionHandler
 
-@CommandOrMotion(keys = ["i`"], modes = [Mode.VISUAL, Mode.OP_PENDING])
+@CommandOrMotion(
+  keys = ["i`"],
+  modes = [Mode.VISUAL, Mode.OP_PENDING],
+  description = "Inner backtick string: select the text between backticks, excluding the quotes."
+)
 class MotionInnerBlockBackQuoteAction : TextObjectActionHandler() {
 
   override val preserveSelectionAnchor: Boolean = false
@@ -32,11 +36,15 @@ class MotionInnerBlockBackQuoteAction : TextObjectActionHandler() {
     count: Int,
     rawCount: Int,
   ): TextRange? {
-    return injector.searchHelper.findBlockQuoteInLineRange(editor, caret, '`', false)
+    return injector.searchHelper.findBlockQuoteInLineRange(editor, caret, '`', false, includeQuotes = count >= 2)
   }
 }
 
-@CommandOrMotion(keys = ["i\""], modes = [Mode.VISUAL, Mode.OP_PENDING])
+@CommandOrMotion(
+  keys = ["i\""],
+  modes = [Mode.VISUAL, Mode.OP_PENDING],
+  description = "Inner double-quoted string: select the text between double quotes, excluding the quotes."
+)
 class MotionInnerBlockDoubleQuoteAction : TextObjectActionHandler() {
 
   override val preserveSelectionAnchor: Boolean = false
@@ -50,11 +58,15 @@ class MotionInnerBlockDoubleQuoteAction : TextObjectActionHandler() {
     count: Int,
     rawCount: Int,
   ): TextRange? {
-    return injector.searchHelper.findBlockQuoteInLineRange(editor, caret, '"', false)
+    return injector.searchHelper.findBlockQuoteInLineRange(editor, caret, '"', false, includeQuotes = count >= 2)
   }
 }
 
-@CommandOrMotion(keys = ["i'"], modes = [Mode.VISUAL, Mode.OP_PENDING])
+@CommandOrMotion(
+  keys = ["i'"],
+  modes = [Mode.VISUAL, Mode.OP_PENDING],
+  description = "Inner single-quoted string: select the text between single quotes, excluding the quotes."
+)
 class MotionInnerBlockSingleQuoteAction : TextObjectActionHandler() {
 
   override val preserveSelectionAnchor: Boolean = false
@@ -68,11 +80,15 @@ class MotionInnerBlockSingleQuoteAction : TextObjectActionHandler() {
     count: Int,
     rawCount: Int,
   ): TextRange? {
-    return injector.searchHelper.findBlockQuoteInLineRange(editor, caret, '\'', false)
+    return injector.searchHelper.findBlockQuoteInLineRange(editor, caret, '\'', false, includeQuotes = count >= 2)
   }
 }
 
-@CommandOrMotion(keys = ["a`"], modes = [Mode.VISUAL, Mode.OP_PENDING])
+@CommandOrMotion(
+  keys = ["a`"],
+  modes = [Mode.VISUAL, Mode.OP_PENDING],
+  description = "A backtick string: select the text between backticks, including the quotes and trailing white space."
+)
 class MotionOuterBlockBackQuoteAction : TextObjectActionHandler() {
 
   override val preserveSelectionAnchor: Boolean = false
@@ -90,7 +106,11 @@ class MotionOuterBlockBackQuoteAction : TextObjectActionHandler() {
   }
 }
 
-@CommandOrMotion(keys = ["a\""], modes = [Mode.VISUAL, Mode.OP_PENDING])
+@CommandOrMotion(
+  keys = ["a\""],
+  modes = [Mode.VISUAL, Mode.OP_PENDING],
+  description = "A double-quoted string: select the quoted text, including the quotes and trailing white space."
+)
 class MotionOuterBlockDoubleQuoteAction : TextObjectActionHandler() {
 
   override val preserveSelectionAnchor: Boolean = false
@@ -108,7 +128,11 @@ class MotionOuterBlockDoubleQuoteAction : TextObjectActionHandler() {
   }
 }
 
-@CommandOrMotion(keys = ["a'"], modes = [Mode.VISUAL, Mode.OP_PENDING])
+@CommandOrMotion(
+  keys = ["a'"],
+  modes = [Mode.VISUAL, Mode.OP_PENDING],
+  description = "A single-quoted string: select the quoted text, including the quotes and trailing white space."
+)
 class MotionOuterBlockSingleQuoteAction : TextObjectActionHandler() {
 
   override val preserveSelectionAnchor: Boolean = false

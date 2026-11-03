@@ -542,6 +542,22 @@ Contributors:
   [![icon][github]](https://github.com/1grzyb1)
   &nbsp;
   1grzyb1
+* [![icon][mail]](mailto:yury@digitalby.me)
+  [![icon][github]](https://github.com/digitalby)
+  &nbsp;
+  digitalby
+* [![icon][mail]](mailto:gourav.and.de@gmail.com)
+  [![icon][github]](https://github.com/AndDe-gourav)
+  &nbsp;
+  AndDe-gourav
+* [![icon][mail]](mailto:wtrebella@gmail.com)
+  [![icon][github]](https://github.com/wtrebella)
+  &nbsp;
+  wtrebella
+* [![icon][mail]](mailto:ameertaweel2002@gmail.com)
+  [![icon][github]](https://github.com/ameertaweel)
+  &nbsp;
+  ameertaweel
 
 Contributors with JetBrains IP:
 

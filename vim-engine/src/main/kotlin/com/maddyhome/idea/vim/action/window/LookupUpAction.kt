@@ -20,7 +20,11 @@ import com.maddyhome.idea.vim.handler.VimActionHandler
 /**
  * @author Alex Plate
  */
-@CommandOrMotion(keys = ["<C-P>"], modes = [Mode.INSERT])
+@CommandOrMotion(
+  keys = ["<C-P>"],
+  modes = [Mode.INSERT],
+  description = "In Insert mode, invoke the IDE action that <C-P> is bound to in the IDE keymap, e.g. to move up in a completion popup."
+)
 class LookupUpAction : VimActionHandler.SingleExecution() {
 
   private val keySet = setOf(injector.parser.parseKeys("<C-P>"))
@@ -33,15 +37,10 @@ class LookupUpAction : VimActionHandler.SingleExecution() {
     cmd: Command,
     operatorArguments: OperatorArguments,
   ): Boolean {
-    val activeLookup = injector.lookupManager.getActiveLookup(editor)
-    if (activeLookup != null) {
-      activeLookup.up(editor.primaryCaret(), context)
-    } else {
-      val keyStroke = keySet.first().first()
-      val actions = injector.keyGroup.getKeymapConflicts(keyStroke)
-      for (action in actions) {
-        if (injector.actionExecutor.executeAction(editor, action, context)) break
-      }
+    val keyStroke = keySet.first().first()
+    val actions = injector.keyGroup.getKeymapConflicts(keyStroke)
+    for (action in actions) {
+      if (injector.actionExecutor.executeAction(editor, action, context)) break
     }
     return true
   }

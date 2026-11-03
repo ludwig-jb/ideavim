@@ -9,7 +9,6 @@
 package com.maddyhome.idea.vim.thinapi.editor.caret
 
 import com.intellij.vim.api.models.CaretId
-import com.intellij.vim.api.models.Line
 import com.intellij.vim.api.models.Range
 import com.intellij.vim.api.scopes.editor.EditorAccessor
 import com.intellij.vim.api.scopes.editor.caret.CaretRead
@@ -30,10 +29,11 @@ import com.maddyhome.idea.vim.thinapi.editor.EditorAccessorImpl
 import com.maddyhome.idea.vim.mark.Jump as EngineJump
 
 class CaretTransactionImpl(
+  private val projectId: String?,
   override val caretId: CaretId,
-) : CaretTransaction, CaretRead by CaretReadImpl(caretId), EditorAccessor by EditorAccessorImpl() {
+) : CaretTransaction, CaretRead by CaretReadImpl(projectId, caretId), EditorAccessor by EditorAccessorImpl(projectId) {
   private val vimEditor: VimEditor
-    get() = injector.editorGroup.getFocusedEditor()!!
+    get() = projectId?.let { injector.editorGroup.getSelectedEditor(it) } ?: injector.fallbackWindow
 
   private val executionContext: ExecutionContext
     get() = injector.executionContextManager.getEditorExecutionContext(vimEditor)
@@ -47,29 +47,32 @@ class CaretTransactionImpl(
     }
   }
 
+  /**
+   * Works out how a `[startOffset, endOffset)` range should be replaced.
+   *
+   * A range is treated as line-wise only if it spans more than one line *and* covers those lines
+   * completely. A range that starts or ends in the middle of a line has to stay character-wise -
+   * a line-wise replace would drop the parts of the first and the last line that are outside the
+   * requested range.
+   */
   private fun determineSelectionType(startOffset: Int, endOffset: Int): SelectionType {
     val endOffsetNormalized = endOffset.coerceAtMost(vimEditor.fileSize().toInt())
-    if (endOffsetNormalized == startOffset) return SelectionType.CHARACTER_WISE
-
-    val selectedText = vimEditor.text().subSequence(startOffset, endOffsetNormalized)
+    if (endOffsetNormalized <= startOffset) return SelectionType.CHARACTER_WISE
 
     val startLine = vimEditor.offsetToBufferPosition(startOffset).line
-    val endLine = vimEditor.offsetToBufferPosition(endOffset).line
+    val endLine = vimEditor.offsetToBufferPosition(endOffsetNormalized).line
+    if (startLine == endLine) return SelectionType.CHARACTER_WISE
 
-    val lineStartOffset = vimEditor.getLineStartOffset(startLine)
-    val lineEndOffset = vimEditor.getLineEndOffset(endLine)
+    val startsAtLineStart = startOffset == vimEditor.getLineStartOffset(startLine)
+    // The range either stops right before the last line's break, or has consumed it already, in
+    // which case the offset has moved on to the start of the following line.
+    val endsAtLineEnd = endOffsetNormalized == vimEditor.getLineEndOffset(endLine) ||
+      endOffsetNormalized == vimEditor.getLineStartOffset(endLine)
 
-    val isLine: Boolean = (startOffset == lineStartOffset && endOffset == lineEndOffset) &&
-      selectedText.endsWith("\n")
-
-    return if (startLine == endLine) {
-      if (isLine) {
-        SelectionType.LINE_WISE
-      } else {
-        SelectionType.CHARACTER_WISE
-      }
-    } else {
+    return if (startsAtLineStart && endsAtLineEnd) {
       SelectionType.LINE_WISE
+    } else {
+      SelectionType.CHARACTER_WISE
     }
   }
 
@@ -93,12 +96,7 @@ class CaretTransactionImpl(
     )
 
     val result: Boolean = injector.put.putTextForCaret(
-      vimEditor,
-      vimCaret,
-      executionContext,
-      putData,
-      updateVisualMarks = false,
-      modifyRegister = false
+      vimEditor, vimCaret, executionContext, putData, updateVisualMarks = false, modifyRegister = false
     )
     return result
   }
@@ -176,13 +174,9 @@ class CaretTransactionImpl(
     val visualSelection = PutData.VisualSelection(
       mapOf(
         vimCaret to VimSelection.create(
-          startOffset,
-          endOffset - 1,
-          selectionType,
-          vimEditor
+          startOffset, endOffset - 1, selectionType, vimEditor
         )
-      ),
-      selectionType
+      ), selectionType
     )
 
     return putTextInternal(text, visualSelection, caretAfterInsertedText = false, beforeCaret = true)
@@ -217,11 +211,7 @@ class CaretTransactionImpl(
 
     for (selection in selections.withIndex()) {
       injector.changeGroup.replaceText(
-        vimEditor,
-        vimCaret,
-        selection.value.start,
-        selection.value.end,
-        listOfText[selection.index]
+        vimEditor, vimCaret, selection.value.start, selection.value.end, listOfText[selection.index]
       )
     }
   }
@@ -265,29 +255,13 @@ class CaretTransactionImpl(
     vimCaret.moveToOffset(offset)
   }
 
-  override fun getLineStartOffset(line: Int): Int {
-    return vimEditor.getLineStartOffset(line)
-  }
-
-  override fun getLineEndOffset(line: Int, allowEnd: Boolean): Int {
-    return vimEditor.getLineEndOffset(line)
-  }
-
-  override fun getLine(offset: Int): Line {
-    val lineNumber = vimEditor.offsetToBufferPosition(offset).line
-    val lineText = vimEditor.getLineText(lineNumber)
-    val lineStartOffset = vimEditor.getLineStartOffset(lineNumber)
-    val lineEndOffset = vimEditor.getLineEndOffset(lineNumber)
-    return Line(lineNumber, lineText, lineStartOffset, lineEndOffset)
-  }
-
   override fun addJump(reset: Boolean) {
     val virtualFile = vimEditor.getVirtualFile() ?: return
     val path = virtualFile.path
     val protocol = virtualFile.protocol
     val position = vimEditor.offsetToBufferPosition(vimCaret.offset)
     val jump = EngineJump(position.line, position.column, path, protocol)
-    injector.jumpService.addJump(vimEditor.projectId, jump, reset)
+    injector.jumpService.addJump(vimEditor.jumpListId, jump, reset)
   }
 
   override fun saveJumpLocation() {

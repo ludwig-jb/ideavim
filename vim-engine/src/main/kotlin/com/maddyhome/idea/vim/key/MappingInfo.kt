@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2023 The IdeaVim authors
+ * Copyright 2003-2026 The IdeaVim authors
  *
  * Use of this source code is governed by an MIT-style
  * license that can be found in the LICENSE.txt file or at
@@ -25,6 +25,7 @@ import com.maddyhome.idea.vim.group.visual.VimSelection
 import com.maddyhome.idea.vim.group.visual.VimSelection.Companion.create
 import com.maddyhome.idea.vim.handler.ExternalActionHandler
 import com.maddyhome.idea.vim.helper.VimNlsSafe
+import com.maddyhome.idea.vim.impl.state.toMappingMode
 import com.maddyhome.idea.vim.state.KeyHandlerState
 import com.maddyhome.idea.vim.state.mode.Mode
 import com.maddyhome.idea.vim.state.mode.SelectionType.CHARACTER_WISE
@@ -43,12 +44,31 @@ sealed class MappingInfo(
   val isRecursive: Boolean,
   val owner: MappingOwner,
   val originalModes: Set<MappingMode>,
-) : Comparable<MappingInfo>, MappingInfoLayer {
+) : Comparable<MappingInfo> {
 
   @VimNlsSafe
-  abstract override fun getPresentableString(): String
+  abstract fun getPresentableString(): String
 
-  abstract override fun execute(editor: VimEditor, context: ExecutionContext, keyState: KeyHandlerState)
+  abstract fun execute(editor: VimEditor, context: ExecutionContext, keyState: KeyHandlerState)
+
+  protected fun <T> withSelectModeAsVisual(editor: VimEditor, keyState: KeyHandlerState, action: () -> T): T {
+    if (editor.mode !is Mode.SELECT || MappingMode.VISUAL !in originalModes) return action()
+
+    toggleSelectVisual(editor, keyState)
+    try {
+      return action()
+    } finally {
+      // The right-hand side might have ended the selection, e.g. `:noremap j d`. There is no Select mode to return to
+      if (editor.mode is Mode.VISUAL) toggleSelectVisual(editor, keyState)
+    }
+  }
+
+  private fun toggleSelectVisual(editor: VimEditor, keyState: KeyHandlerState) {
+    injector.visualMotionGroup.toggleSelectVisual(editor)
+    // The command builder caches the key stroke trie of the mode it was reset for, and changing the mode does not
+    // update it. Without this, the keys of the right-hand side would not be recognised as commands
+    keyState.commandBuilder.resetCommandTrie(injector.keyGroup.getBuiltinCommandsTrie(editor.mode.toMappingMode()))
+  }
 
   override fun compareTo(other: MappingInfo): Int {
     val size = fromKeys.size
@@ -98,12 +118,20 @@ class ToKeysMappingInfo(
     LOG.trace { "Adding new keys to keyStack as toKeys of mapping. State before adding keys: ${keyHandler.keyStack.dump()}" }
     keyHandler.keyStack.addKeys(toKeys)
     try {
-      var first = true
-      while (keyHandler.keyStack.hasStroke()) {
-        val keyStroke = keyHandler.keyStack.feedStroke()
-        val allowKeyMappings = isRecursive && !(first && lhsIsPrefixOfRhs)
-        keyHandler.handleKey(editor, keyStroke, context, allowKeyMappings, keyState)
-        first = false
+      withSelectModeAsVisual(editor, keyState) {
+        var first = true
+        while (keyHandler.keyStack.hasStroke()) {
+          val keySource = if (!isRecursive || (first && lhsIsPrefixOfRhs)) {
+            KeySource.MAPPED_NON_RECURSIVE
+          }
+          else {
+            KeySource.MAPPED
+          }
+          val keyStroke = keyHandler.keyStack.feedStroke()
+          keyHandler.handleKey(editor, keyStroke, keySource, context, keyState)
+          first = false
+          if (keyHandler.maxMapDepthReached) break
+        }
       }
     } finally {
       keyHandler.keyStack.removeFirst()
@@ -132,7 +160,8 @@ class ToExpressionMappingInfo(
   override fun execute(editor: VimEditor, context: ExecutionContext, keyState: KeyHandlerState) {
     LOG.debug("Executing 'ToExpression' mapping info...")
 
-    val toKeys = injector.parser.parseKeys(toExpression.evaluate(editor, context, CommandLineVimLContext).toOutputString())
+    val toKeys =
+      injector.parser.parseKeys(toExpression.evaluate(editor, context, CommandLineVimLContext).toOutputString())
 
     // TODO: Merge similar code from ToKeysMappingInfo
     // From the Vim docs: If the {rhs} starts with the {lhs}, the first character is not mapped again.
@@ -141,9 +170,14 @@ class ToExpressionMappingInfo(
     val lhsIsPrefixOfRhs = KeyHandler.isPrefix(fromKeys, toKeys)
     var first = true
     for (keyStroke in toKeys) {
-      val allowKeyMappings = isRecursive && !(first && lhsIsPrefixOfRhs)
+      val keySource = if (!isRecursive || (first && lhsIsPrefixOfRhs)) {
+        KeySource.MAPPED_NON_RECURSIVE
+      }
+      else {
+        KeySource.MAPPED
+      }
       val keyHandler = KeyHandler.getInstance()
-      keyHandler.handleKey(editor, keyStroke, context, allowKeyMappings, keyState)
+      keyHandler.handleKey(editor, keyStroke, keySource, context, keyState)
       first = false
     }
   }
@@ -271,7 +305,11 @@ class ToActionMappingInfo(
 
   override fun execute(editor: VimEditor, context: ExecutionContext, keyState: KeyHandlerState) {
     LOG.debug("Executing 'ToAction' mapping...")
-    injector.actionExecutor.executeAction(editor, name = action, context = context)
+    val count = keyState.editorCommandBuilder.calculateCount0Snapshot().coerceAtLeast(1)
+    keyState.editorCommandBuilder.resetCount()
+    repeat(count) {
+      injector.actionExecutor.executeAction(editor, name = action, context = context)
+    }
   }
 
   companion object {

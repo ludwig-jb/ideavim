@@ -11,156 +11,96 @@ package com.maddyhome.idea.vim.thinapi
 
 import com.intellij.vim.api.VimApi
 import com.intellij.vim.api.models.Mode
-import com.intellij.vim.api.models.Path
+import com.intellij.vim.api.scopes.CommandScope
 import com.intellij.vim.api.scopes.DigraphScope
 import com.intellij.vim.api.scopes.MappingScope
 import com.intellij.vim.api.scopes.ModalInput
 import com.intellij.vim.api.scopes.OptionScope
 import com.intellij.vim.api.scopes.OutputPanelScope
+import com.intellij.vim.api.scopes.StorageScope
+import com.intellij.vim.api.scopes.TabScope
 import com.intellij.vim.api.scopes.TextObjectScope
+import com.intellij.vim.api.scopes.TextScope
+import com.intellij.vim.api.scopes.VariableScope
 import com.intellij.vim.api.scopes.commandline.CommandLineScope
 import com.intellij.vim.api.scopes.editor.EditorScope
 import com.maddyhome.idea.vim.api.ExecutionContext
-import com.maddyhome.idea.vim.api.Key
 import com.maddyhome.idea.vim.api.VimEditor
-import com.maddyhome.idea.vim.api.globalOptions
 import com.maddyhome.idea.vim.api.injector
-import com.maddyhome.idea.vim.common.CommandAliasHandler
 import com.maddyhome.idea.vim.common.ListenerOwner
-import com.maddyhome.idea.vim.ex.exExceptionMessage
 import com.maddyhome.idea.vim.key.MappingOwner
-import com.maddyhome.idea.vim.key.OperatorFunction
-import com.maddyhome.idea.vim.state.mode.SelectionType
 import com.maddyhome.idea.vim.thinapi.commandline.CommandLineScopeImpl
 import com.maddyhome.idea.vim.thinapi.editor.EditorScopeImpl
-import com.maddyhome.idea.vim.vimscript.model.VimPluginContext
-import com.maddyhome.idea.vim.vimscript.model.datatypes.VimDataType
-import com.maddyhome.idea.vim.vimscript.model.expressions.Scope
-import com.maddyhome.idea.vim.vimscript.model.expressions.VariableExpression
-import com.maddyhome.idea.vim.vimscript.services.VariableService
-import kotlinx.coroutines.runBlocking
-import kotlin.io.path.pathString
-import kotlin.reflect.KType
 
+/**
+ * [projectId] is used to properly determine the selected editor. However,
+ *   during the initialization, the projectId is null and the editor falls back to the fallback editor.
+ */
 class VimApiImpl(
   private val listenerOwner: ListenerOwner,
   private val mappingOwner: MappingOwner,
+  val projectId: String?,
 ) : VimApi {
-  // Note: Setting a new mode is a complicated operation. Currently, it updates the selection under the write lock,
-  //   but we don't require to run this under the write lock. Also, esc in insert mode may produce more inserts
-  //   when the insert was started with the number: `3iabc<esc>`
-  // It'll be necessary to review how the set of mode should be presented in the API.
-  override var mode: Mode
-    get() {
-      return injector.vimState.mode.toMode()
-    }
-    set(value) {
-      changeMode(value, vimEditor)
-    }
+  override val mode: Mode
+    get() = injector.vimState.mode.toMode()
 
   private val vimEditor: VimEditor
-    get() = injector.editorGroup.getFocusedEditor()!!
+    get() = projectId?.let { injector.editorGroup.getSelectedEditor(it) } ?: injector.fallbackWindow
 
   private val vimContext: ExecutionContext
     get() = injector.executionContextManager.getEditorExecutionContext(vimEditor)
 
-  override fun <T : Any> getVariable(name: String, type: KType): T? {
-    val (variableName, scope) = parseVariableName(name)
-    val variableService: VariableService = injector.variableService
-
-    // For global variables, we can look them up without an editor
-    // This is important during extension initialization when there may be no focused editor
-    val variableValue: VimDataType? = if (scope == Scope.GLOBAL_VARIABLE) {
-      variableService.getGlobalVariableValue(variableName)
-    } else {
-      val variable = VariableExpression(scope, variableName)
-      val context = injector.executionContextManager.getEditorExecutionContext(vimEditor)
-      variableService.getNullableVariableValue(variable, vimEditor, context, VimPluginContext)
-    }
-
-    // variable does not exist
-    if (variableValue == null) {
-      return variableValue
-    }
-    val value: T = injector.variableService.convertToKotlinType(variableValue, type)
-    return value
+  override fun <T> variables(block: VariableScope.() -> T): T {
+    val variableScope = VariableScopeImpl(vimEditor, vimContext)
+    return variableScope.block()
   }
 
-  override fun setVariable(name: String, value: Any, type: KType) {
-    val (variableName, scope) = parseVariableName(name)
-    val variableService: VariableService = injector.variableService
-    val variable = VariableExpression(scope, variableName)
-
-    val isLocked = variableService.isVariableLocked(variable, vimEditor, vimContext, VimPluginContext)
-    if (isLocked) {
-      throw exExceptionMessage("E741", name)
-    }
-
-    val context = injector.executionContextManager.getEditorExecutionContext(vimEditor)
-
-    val vimValue = variableService.convertToVimDataType(value, type)
-
-    variableService.storeVariable(variable, vimValue, vimEditor, context, VimPluginContext)
+  override fun variables(): VariableScope {
+    return VariableScopeImpl(vimEditor, vimContext)
   }
 
-  private fun parseVariableName(name: String): Pair<String, Scope?> {
-    if (name.contains(':').not()) {
-      return name to Scope.GLOBAL_VARIABLE
-    }
-    val prefix: String = name.substringBefore(':')
-    val variableName: String = name.substringAfter(':')
-    return variableName to Scope.getByValue(prefix)
+  override fun <T> commands(block: CommandScope.() -> T): T {
+    val commandScope = CommandScopeImpl(listenerOwner, mappingOwner)
+    return commandScope.block()
   }
 
-  override fun exportOperatorFunction(name: String, function: suspend VimApi.() -> Boolean) {
-    val operatorFunction: OperatorFunction = object : OperatorFunction {
-      override fun apply(
-        editor: VimEditor,
-        context: ExecutionContext,
-        selectionType: SelectionType?,
-      ): Boolean {
-        var returnValue = false
-        injector.actionExecutor.executeCommand(vimEditor, {
-          runBlocking {
-            returnValue = VimApiImpl(listenerOwner, mappingOwner).function()
-          }
-        }, "Insert Text", null)
-        return returnValue
-      }
-    }
-    injector.pluginService.exportOperatorFunction(name, operatorFunction)
+  override fun commands(): CommandScope {
+    return CommandScopeImpl(listenerOwner, mappingOwner)
   }
 
-  override fun setOperatorFunction(name: String) {
-    injector.globalOptions().operatorfunc = name
-  }
-
-  override fun normal(command: String) {
+  override suspend fun normal(command: String) {
     injector.pluginService.executeNormalWithoutMapping(command, vimEditor)
   }
 
-  override fun <T> editor(block: EditorScope.() -> T): T {
-    return EditorScopeImpl().block()
+  override suspend fun <T> editor(block: suspend EditorScope.() -> T): T {
+    return EditorScopeImpl(projectId).block()
   }
 
-  override fun <T> forEachEditor(block: EditorScope.() -> T): List<T> {
+  override suspend fun <T> forEachEditor(block: suspend EditorScope.() -> T): List<T> {
     return injector.editorGroup.getEditors().map { editor ->
-      val editorScope = EditorScopeImpl()
+      val editorScope = EditorScopeImpl(projectId)
       editorScope.block()
     }
   }
 
-  override fun mappings(block: MappingScope.() -> Unit): MappingScope {
+  override fun <T> mappings(block: MappingScope.() -> T): T {
     val mappingScope = MappingScopeImpl(listenerOwner, mappingOwner)
-    mappingScope.block()
-    return mappingScope
+    return mappingScope.block()
   }
 
-  override fun textObjects(block: TextObjectScope.() -> Unit): TextObjectScope {
+  override fun mappings(): MappingScope {
+    return MappingScopeImpl(listenerOwner, mappingOwner)
+  }
+
+  override fun <T> textObjects(block: TextObjectScope.() -> T): T {
     val pluginName = (mappingOwner as? MappingOwner.Plugin)?.name ?: "unknown"
     val textObjectScope = TextObjectScopeImpl(pluginName, listenerOwner, mappingOwner)
-    textObjectScope.block()
-    return textObjectScope
+    return textObjectScope.block()
+  }
+
+  override fun textObjects(): TextObjectScope {
+    val pluginName = (mappingOwner as? MappingOwner.Plugin)?.name ?: "unknown"
+    return TextObjectScopeImpl(pluginName, listenerOwner, mappingOwner)
   }
 
 //  override fun listeners(block: ListenersScope.() -> Unit) {
@@ -168,93 +108,97 @@ class VimApiImpl(
 //    listenersScope.block()
 //  }
 
-  override fun outputPanel(block: OutputPanelScope.() -> Unit): OutputPanelScope {
-    val outputPanelScope = OutputPanelScopeImpl
-    outputPanelScope.block()
-    return outputPanelScope
+  override suspend fun <T> outputPanel(block: suspend OutputPanelScope.() -> T): T {
+    val outputPanelScope = OutputPanelScopeImpl(projectId)
+    return outputPanelScope.block()
   }
 
-  override fun modalInput(): ModalInput {
-    return ModalInputImpl(listenerOwner, mappingOwner)
+  override suspend fun outputPanel(): OutputPanelScope {
+    return OutputPanelScopeImpl(projectId)
   }
 
-  override fun commandLine(block: CommandLineScope.() -> Unit): CommandLineScope {
-    val commandLineScope = CommandLineScopeImpl(listenerOwner, mappingOwner)
-    commandLineScope.block()
-    return commandLineScope
+  override suspend fun modalInput(): ModalInput {
+    return ModalInputImpl(listenerOwner, mappingOwner, projectId)
   }
 
-  override fun <T> option(block: OptionScope.() -> T): T {
-    return OptionScopeImpl.block()
+  override suspend fun <T> commandLine(block: suspend CommandLineScope.() -> T): T {
+    val commandLineScope = CommandLineScopeImpl(listenerOwner, mappingOwner, projectId)
+    return commandLineScope.block()
   }
 
-  override fun digraph(block: DigraphScope.() -> Unit): DigraphScope {
-    DigraphScopeImpl.block()
-    return DigraphScopeImpl
+  override suspend fun commandLine(): CommandLineScope {
+    return CommandLineScopeImpl(listenerOwner, mappingOwner, projectId)
   }
 
-  override val tabCount: Int
-    get() = injector.tabService.getTabCount(vimContext)
-
-  override val currentTabIndex: Int?
-    get() = injector.tabService.getCurrentTabIndex(vimContext)
-
-  override fun removeTabAt(indexToDelete: Int, indexToSelect: Int) {
-    injector.tabService.removeTabAt(indexToDelete, indexToSelect, vimContext)
+  override suspend fun <T> option(block: suspend OptionScope.() -> T): T {
+    return OptionScopeImpl(projectId).block()
   }
 
-  override fun moveCurrentTabToIndex(index: Int) {
-    injector.tabService.moveCurrentTabToIndex(index, vimContext)
+  override suspend fun <T> digraph(block: suspend DigraphScope.() -> T): T {
+    val digraphScope = DigraphScopeImpl(projectId)
+    return digraphScope.block()
   }
 
-  override fun closeAllExceptCurrentTab() {
-    injector.tabService.closeAllExceptCurrentTab(vimContext)
+  override suspend fun digraph(): DigraphScope {
+    return DigraphScopeImpl(projectId)
   }
 
-  override fun matches(pattern: String, text: String, ignoreCase: Boolean): Boolean {
-    return injector.regexpService.matches(pattern, text, ignoreCase)
+  override suspend fun <T> tabs(block: suspend TabScope.() -> T): T {
+    val tabScope = TabScopeImpl(vimContext)
+    return tabScope.block()
   }
 
-  override fun getAllMatches(
-    text: String,
-    pattern: String,
-  ): List<Pair<Int, Int>> {
-    return injector.regexpService.getAllMatches(text, pattern)
+  override suspend fun tabs(): TabScope {
+    return TabScopeImpl(vimContext)
   }
 
-  override fun selectNextWindow() {
-    injector.window.selectNextWindow(vimContext)
+  override suspend fun <T> text(block: suspend TextScope.() -> T): T {
+    val textScope = TextScopeImpl()
+    return textScope.block()
   }
 
-  override fun selectWindow(index: Int) {
-    injector.window.selectWindow(vimContext, index)
+  override suspend fun text(): TextScope {
+    return TextScopeImpl()
   }
 
-  override fun selectPreviousWindow() {
-    injector.window.selectPreviousWindow(vimContext)
-  }
+  // Window management methods commented out — see IJPL-235369.
+  // After setAsCurrentWindow(), getSelectedTextEditor() returns stale data because
+  // the propagation is async and unobservable. Re-enable when the platform provides
+  // a synchronous or awaitable window-switching API.
+  //
+  // override fun selectNextWindow() {
+  //   injector.window.selectNextWindow(vimContext)
+  // }
+  //
+  // override fun selectWindow(index: Int) {
+  //   injector.window.selectWindow(vimContext, index)
+  // }
+  //
+  // override fun selectPreviousWindow() {
+  //   injector.window.selectPreviousWindow(vimContext)
+  // }
+  //
+  // override fun splitWindowVertically(filePath: Path?) {
+  //   injector.window.splitWindowVertical(vimContext, filePath?.javaPath?.pathString ?: "")
+  // }
+  //
+  // override fun splitWindowHorizontally(filePath: Path?) {
+  //   injector.window.splitWindowHorizontal(vimContext, filePath?.javaPath?.pathString ?: "")
+  // }
+  //
+  // override fun closeAllExceptCurrentWindow() {
+  //   injector.window.closeAllExceptCurrent(vimContext)
+  // }
+  //
+  // override fun closeCurrentWindow() {
+  //   injector.window.closeCurrentWindow(vimContext)
+  // }
+  //
+  // override fun closeAllWindows() {
+  //   injector.window.closeAll(vimContext)
+  // }
 
-  override fun splitWindowVertically(filePath: Path?) {
-    injector.window.splitWindowVertical(vimContext, filePath?.javaPath?.pathString ?: "")
-  }
-
-  override fun splitWindowHorizontally(filePath: Path?) {
-    injector.window.splitWindowHorizontal(vimContext, filePath?.javaPath?.pathString ?: "")
-  }
-
-  override fun closeAllExceptCurrentWindow() {
-    injector.window.closeAllExceptCurrent(vimContext)
-  }
-
-  override fun closeCurrentWindow() {
-    injector.window.closeCurrentWindow(vimContext)
-  }
-
-  override fun closeAllWindows() {
-    injector.window.closeAll(vimContext)
-  }
-
-  override fun execute(script: String): Boolean {
+  override suspend fun execute(script: String): Boolean {
     val result = injector.vimscriptExecutor.execute(
       script, vimEditor, vimContext,
       skipHistory = true,
@@ -263,75 +207,22 @@ class VimApiImpl(
     return result == com.maddyhome.idea.vim.vimscript.model.ExecutionResult.Success
   }
 
-  override fun command(
-    command: String,
-    block: VimApi.(String) -> Unit,
-  ) {
-    val commandHandler = object : CommandAliasHandler {
-      override fun execute(
-        command: String,
-        range: com.maddyhome.idea.vim.ex.ranges.Range,
-        editor: VimEditor,
-        context: ExecutionContext,
-      ) {
-        val vimApi = VimApiImpl(listenerOwner, mappingOwner)
-        vimApi.block(command)
-      }
-    }
-    injector.pluginService.addCommand(command, commandHandler)
+
+  override suspend fun <T> storage(block: suspend StorageScope.() -> T): T {
+    val storageScope = StorageScopeImpl(vimEditor)
+    return storageScope.block()
   }
 
-  override fun <T> getDataFromWindow(key: String): T? {
-    val storageKey = Key<T>(key)
-    return injector.vimStorageService.getDataFromWindow(vimEditor, storageKey)
+  override suspend fun storage(): StorageScope {
+    return StorageScopeImpl(vimEditor)
   }
 
-  override fun <T> putDataToWindow(key: String, data: T) {
-    val storageKey = Key<T>(key)
-    injector.vimStorageService.putDataToWindow(vimEditor, storageKey, data)
-  }
-
-  override fun <T> getDataFromBuffer(key: String): T? {
-    val storageKey = Key<T>(key)
-    return injector.vimStorageService.getDataFromBuffer(vimEditor, storageKey)
-  }
-
-  override fun <T> putDataToBuffer(key: String, data: T) {
-    val storageKey = Key<T>(key)
-    injector.vimStorageService.putDataToBuffer(vimEditor, storageKey, data)
-  }
-
-  override fun <T> getDataFromTab(key: String): T? {
-    val storageKey = Key<T>(key)
-    return injector.vimStorageService.getDataFromTab(vimEditor, storageKey)
-  }
-
-  override fun <T> putDataToTab(key: String, data: T) {
-    val storageKey = Key<T>(key)
-    injector.vimStorageService.putDataToTab(vimEditor, storageKey, data)
-  }
-
-  override fun saveFile() {
+  override suspend fun saveFile() {
     injector.file.saveFile(vimEditor, vimContext)
   }
 
-  override fun closeFile() {
+  override suspend fun closeFile() {
     injector.file.closeFile(vimEditor, vimContext)
   }
 
-  override fun getNextCamelStartOffset(chars: CharSequence, startIndex: Int, count: Int): Int? {
-    return injector.searchHelper.findNextCamelStart(chars, startIndex, count)
-  }
-
-  override fun getPreviousCamelStartOffset(chars: CharSequence, endIndex: Int, count: Int): Int? {
-    return injector.searchHelper.findPreviousCamelStart(chars, endIndex, count)
-  }
-
-  override fun getNextCamelEndOffset(chars: CharSequence, startIndex: Int, count: Int): Int? {
-    return injector.searchHelper.findNextCamelEnd(chars, startIndex, count)
-  }
-
-  override fun getPreviousCamelEndOffset(chars: CharSequence, endIndex: Int, count: Int): Int? {
-    return injector.searchHelper.findPreviousCamelEnd(chars, endIndex, count)
-  }
 }

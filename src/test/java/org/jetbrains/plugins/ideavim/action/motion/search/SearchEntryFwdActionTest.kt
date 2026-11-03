@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2023 The IdeaVim authors
+ * Copyright 2003-2026 The IdeaVim authors
  *
  * Use of this source code is governed by an MIT-style
  * license that can be found in the LICENSE.txt file or at
@@ -10,9 +10,12 @@ package org.jetbrains.plugins.ideavim.action.motion.search
 
 import com.maddyhome.idea.vim.state.mode.Mode
 import com.maddyhome.idea.vim.state.mode.SelectionType
+import com.maddyhome.idea.vim.ui.ex.ExEntryPanel
 import org.jetbrains.plugins.ideavim.VimTestCase
 import org.junit.jupiter.api.Disabled
 import org.junit.jupiter.api.Test
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 
 class SearchEntryFwdActionTest : VimTestCase() {
   @Test
@@ -22,6 +25,13 @@ class SearchEntryFwdActionTest : VimTestCase() {
     assertPluginErrorMessage("E486: Pattern not found: dolor")
     typeText("/")  // No <CR>
     assertStatusLineCleared()
+  }
+
+  @Test
+  fun `test search not found shows only error message on output panel`() {
+    configureByText("lorem ipsum dolor sit amet")
+    enterSearch("nonexistent")
+    assertExOutput("E486: Pattern not found: nonexistent")
   }
 
   @Test
@@ -110,6 +120,23 @@ class SearchEntryFwdActionTest : VimTestCase() {
     )
   }
 
+  @Test
+  fun `test escape after search not found closes panel without inserting escape char`() {
+    configureByText("lorem ipsum dolor sit amet")
+    typeText("/notfound")
+
+    val panel = ExEntryPanel.getOrCreatePanelInstance()
+    assertTrue(panel.isActive)
+
+    typeText("<Esc>")
+
+    assertFalse(panel.isActive)
+    assertMode(Mode.NORMAL())
+    // The panel text should not contain ^[ (escape character written as text)
+    assertFalse(panel.text.contains("\u001B"), "Panel text should not contain escape character")
+    assertFalse(panel.text.contains("^["), "Panel text should not contain ^[ literal")
+  }
+
   @Disabled("Ctrl-o doesn't work yet in select mode")
   @Test
   fun `search in one time from select mode`() {
@@ -127,5 +154,97 @@ class SearchEntryFwdActionTest : VimTestCase() {
     """.trimMargin(),
       Mode.SELECT(SelectionType.CHARACTER_WISE),
     )
+  }
+
+  @Test
+  fun `should show match count`() {
+    configureByText(
+      """
+     ${c}word 1
+     word 2
+     word 3
+     word 4
+   """.trimIndent()
+    )
+    typeText("/word<CR>")
+    assertStatusLineText("[2/4]")
+  }
+
+  @Test
+  fun `match count lags behind the caret by one jump`() {
+    configureByText(
+      """
+     ${c}word 1
+     word 2
+     word 3
+     word 4
+   """.trimIndent()
+    )
+
+    typeText("/word<CR>")
+    assertState(
+      """
+     word 1
+     ${c}word 2
+     word 3
+     word 4
+   """.trimIndent()
+    )
+    assertStatusLineText("[2/4]")
+
+    typeText("n")
+    assertState(
+      """
+     word 1
+     word 2
+     ${c}word 3
+     word 4
+   """.trimIndent()
+    )
+    assertStatusLineText("[3/4]")
+  }
+
+  @Test
+  fun `should show next match count`() {
+    configureByText(
+      """
+     ${c}word 1
+     word 2
+     word 3
+     word 4
+   """.trimIndent()
+    )
+    typeText("/word<CR>n")
+    assertStatusLineText("[3/4]")
+  }
+
+  @Test
+  fun `should start search from middle of document`() {
+    configureByText(
+      """
+     word 1
+     w${c}ord 2
+     word 3
+     word 4
+   """.trimIndent()
+    )
+    typeText("/word<CR>n")
+    assertStatusLineText("[4/4]")
+  }
+
+  @Test
+  fun `should clear match count when output panel shows new message`() {
+    configureByText(
+      """
+     ${c}word 1
+     word 2
+     word 3
+     word 4
+   """.trimIndent()
+    )
+    typeText("/word<CR>")
+    assertStatusLineText("[2/4]")
+    typeText(":echo hello<CR>")
+    assertStatusLineText("")
   }
 }

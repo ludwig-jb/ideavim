@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2023 The IdeaVim authors
+ * Copyright 2003-2026 The IdeaVim authors
  *
  * Use of this source code is governed by an MIT-style
  * license that can be found in the LICENSE.txt file or at
@@ -12,11 +12,16 @@ import com.intellij.openapi.components.service
 import com.intellij.openapi.components.serviceIfCreated
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.editor.textarea.TextComponentEditorImpl
+import com.maddyhome.idea.vim.api.AutoCmdService
 import com.maddyhome.idea.vim.api.EngineEditorHelper
 import com.maddyhome.idea.vim.api.ExecutionContextManager
 import com.maddyhome.idea.vim.api.LocalOptionInitialisationScenario
 import com.maddyhome.idea.vim.api.NativeActionManager
+import com.maddyhome.idea.vim.api.QuickFixService
+import com.maddyhome.idea.vim.api.SearchWindowGroup
+import com.maddyhome.idea.vim.api.SpellcheckerService
 import com.maddyhome.idea.vim.api.SystemInfoService
+import com.maddyhome.idea.vim.api.VimAbbreviationGroup
 import com.maddyhome.idea.vim.api.VimActionExecutor
 import com.maddyhome.idea.vim.api.VimApplication
 import com.maddyhome.idea.vim.api.VimChangeGroup
@@ -28,11 +33,13 @@ import com.maddyhome.idea.vim.api.VimEditor
 import com.maddyhome.idea.vim.api.VimEditorGroup
 import com.maddyhome.idea.vim.api.VimEnabler
 import com.maddyhome.idea.vim.api.VimExtensionRegistrator
+import com.maddyhome.idea.vim.api.VimExternalOpener
 import com.maddyhome.idea.vim.api.VimFile
 import com.maddyhome.idea.vim.api.VimInjector
 import com.maddyhome.idea.vim.api.VimInjectorBase
 import com.maddyhome.idea.vim.api.VimJumpService
 import com.maddyhome.idea.vim.api.VimKeyGroup
+import com.maddyhome.idea.vim.api.VimKeymapGroup
 import com.maddyhome.idea.vim.api.VimLookupManager
 import com.maddyhome.idea.vim.api.VimMarkService
 import com.maddyhome.idea.vim.api.VimMessages
@@ -42,6 +49,7 @@ import com.maddyhome.idea.vim.api.VimOptionGroup
 import com.maddyhome.idea.vim.api.VimOutputPanelService
 import com.maddyhome.idea.vim.api.VimPathExpansion
 import com.maddyhome.idea.vim.api.VimPathExpansionImpl
+import com.maddyhome.idea.vim.api.VimPluginActivator
 import com.maddyhome.idea.vim.api.VimProcessGroup
 import com.maddyhome.idea.vim.api.VimPsiService
 import com.maddyhome.idea.vim.api.VimRedrawService
@@ -53,52 +61,37 @@ import com.maddyhome.idea.vim.api.VimSearchHelper
 import com.maddyhome.idea.vim.api.VimStatistics
 import com.maddyhome.idea.vim.api.VimStorageService
 import com.maddyhome.idea.vim.api.VimStringParser
+import com.maddyhome.idea.vim.api.VimTagService
 import com.maddyhome.idea.vim.api.VimTemplateManager
 import com.maddyhome.idea.vim.api.VimVisualMotionGroup
+import com.maddyhome.idea.vim.api.VimWindowIdService
 import com.maddyhome.idea.vim.api.VimrcFileState
 import com.maddyhome.idea.vim.api.VimscriptExecutor
 import com.maddyhome.idea.vim.api.VimscriptFunctionService
 import com.maddyhome.idea.vim.api.VimscriptParser
+import com.maddyhome.idea.vim.api.VirtualBufferGroup
 import com.maddyhome.idea.vim.api.injector
 import com.maddyhome.idea.vim.api.isInjectorInitialized
 import com.maddyhome.idea.vim.diagnostic.VimLogger
 import com.maddyhome.idea.vim.extension.ExtensionLoader
 import com.maddyhome.idea.vim.extension.JsonExtensionProvider
-import com.maddyhome.idea.vim.extension.VimExtensionRegistrar
-import com.maddyhome.idea.vim.group.CommandGroup
-import com.maddyhome.idea.vim.group.EditorGroup
 import com.maddyhome.idea.vim.group.EffectiveIjOptions
-import com.maddyhome.idea.vim.group.FileGroup
 import com.maddyhome.idea.vim.group.GlobalIjOptions
-import com.maddyhome.idea.vim.group.HistoryGroup
 import com.maddyhome.idea.vim.group.IjVimOptionGroup
-import com.maddyhome.idea.vim.group.IjVimPsiService
-import com.maddyhome.idea.vim.group.MacroGroup
-import com.maddyhome.idea.vim.group.MotionGroup
+import com.maddyhome.idea.vim.group.LineChangeGroup
 import com.maddyhome.idea.vim.group.TabService
 import com.maddyhome.idea.vim.group.VimWindowGroup
-import com.maddyhome.idea.vim.group.WindowGroup
-import com.maddyhome.idea.vim.group.copy.PutGroup
-import com.maddyhome.idea.vim.helper.IjActionExecutor
-import com.maddyhome.idea.vim.helper.IjEditorHelper
-import com.maddyhome.idea.vim.helper.IjVimStringParser
-import com.maddyhome.idea.vim.helper.UndoRedoHelper
 import com.maddyhome.idea.vim.history.VimHistory
 import com.maddyhome.idea.vim.macro.VimMacro
 import com.maddyhome.idea.vim.put.VimPut
 import com.maddyhome.idea.vim.register.VimRegisterGroup
-import com.maddyhome.idea.vim.thinapi.IjExtensionLoader
-import com.maddyhome.idea.vim.thinapi.IjJsonExtensionProvider
-import com.maddyhome.idea.vim.thinapi.IjVimHighlightingService
-import com.maddyhome.idea.vim.thinapi.IjVimPluginService
 import com.maddyhome.idea.vim.thinapi.VimHighlightingService
 import com.maddyhome.idea.vim.thinapi.VimPluginService
-import com.maddyhome.idea.vim.ui.VimRcFileState
+import com.maddyhome.idea.vim.undo.LineChange
 import com.maddyhome.idea.vim.undo.VimUndoRedo
-import com.maddyhome.idea.vim.vimscript.Executor
 import com.maddyhome.idea.vim.vimscript.services.VariableService
+import com.maddyhome.idea.vim.vimscript.services.VimrcPathService
 import com.maddyhome.idea.vim.yank.VimYankGroup
-import com.maddyhome.idea.vim.yank.YankGroupBase
 import javax.swing.JTextArea
 
 /**
@@ -106,7 +99,7 @@ import javax.swing.JTextArea
  * This means Project Activities, listeners, status bar widgets, statistic collectors, etc.
  * This is a bad pattern and we need to find a solution where the plugin doesn't have an "uninitialized state"
  */
-internal fun initInjector() {
+fun initInjector() {
   if (isInjectorInitialized()) return
   injector = IjVimInjector()
 }
@@ -121,51 +114,57 @@ internal class IjVimInjector : VimInjectorBase() {
   }
 
   override val actionExecutor: VimActionExecutor
-    get() = service<IjActionExecutor>()
+    get() = service()
   override val historyGroup: VimHistory
-    get() = service<HistoryGroup>()
+    get() = service()
   override val extensionRegistrator: VimExtensionRegistrator
-    get() = VimExtensionRegistrar
+    get() = service()
   override val jsonExtensionProvider: JsonExtensionProvider
-    get() = service<IjJsonExtensionProvider>()
+    get() = service()
   override val extensionLoader: ExtensionLoader
-    get() = service<IjExtensionLoader>()
+    get() = service()
   override val tabService: TabService
     get() = service()
   override val regexpService: VimRegexpService
     get() = VimRegexServiceBase()
   override val clipboardManager: VimClipboardManager
-    get() = service<IjClipboardManager>()
+    get() = service()
   override val searchHelper: VimSearchHelper
-    get() = service<IjVimSearchHelper>()
+    get() = service()
   override val motion: VimMotionGroup
-    get() = service<MotionGroup>()
+    get() = service()
   override val scroll: VimScrollGroup
     get() = service()
   override val lookupManager: VimLookupManager
-    get() = service<IjVimLookupManager>()
+    get() = service()
   override val templateManager: VimTemplateManager
-    get() = service<IjTemplateManager>()
+    get() = service()
   override val searchGroup: VimSearchGroup
-    get() = service<IjVimSearchGroup>()
+    get() = service()
+  override val virtualBufferGroup: VirtualBufferGroup
+    get() = service()
+  override val searchWindowGroup: SearchWindowGroup
+    get() = service()
   override val put: VimPut
-    get() = service<PutGroup>()
+    get() = service()
   override val window: VimWindowGroup
-    get() = service<WindowGroup>()
+    get() = service()
   override val yank: VimYankGroup
-    get() = service<YankGroupBase>()
+    get() = service()
   override val file: VimFile
-    get() = service<FileGroup>()
+    get() = service()
   override val macro: VimMacro
-    get() = service<MacroGroup>()
+    get() = service()
   override val undo: VimUndoRedo
-    get() = service<UndoRedoHelper>()
+    get() = service()
+  override val lineChange: LineChange
+    get() = LineChangeGroup
   override val psiService: VimPsiService
-    get() = service<IjVimPsiService>()
+    get() = service()
   override val nativeActionManager: NativeActionManager
-    get() = service<IjNativeActionManager>()
+    get() = service()
   override val messages: VimMessages
-    get() = service<IjVimMessages>()
+    get() = service()
   override val registerGroup: VimRegisterGroup
     get() = service()
   override val registerGroupIfCreated: VimRegisterGroup?
@@ -176,34 +175,45 @@ internal class IjVimInjector : VimInjectorBase() {
     get() = service()
   override val keyGroup: VimKeyGroup
     get() = service()
+  override val keymapGroup: VimKeymapGroup
+    get() = service()
+  override val abbreviationGroup: VimAbbreviationGroup
+    get() = service()
 
   override val markService: VimMarkService
     get() = service()
   override val jumpService: VimJumpService
     get() = service()
+  override val tagService: VimTagService
+    get() = service()
+  override val windowIdService: VimWindowIdService
+    get() = service()
   override val application: VimApplication
-    get() = service<IjVimApplication>()
+    get() = service()
   override val executionContextManager: ExecutionContextManager
-    get() = service<IjExecutionContextManager>()
+    get() = service()
   override val enabler: VimEnabler
-    get() = service<IjVimEnabler>()
+    get() = service()
   override val digraphGroup: VimDigraphGroup
     get() = service()
   override val visualMotionGroup: VimVisualMotionGroup
     get() = service()
   override val statisticsService: VimStatistics
     get() = service()
+  override val spellcheckerService: SpellcheckerService
+    get() = service()
   override val commandGroup: VimCommandGroup
-    get() = service<CommandGroup>()
+    get() = service()
 
   override val functionService: VimscriptFunctionService
     get() = service()
   override val variableService: VariableService
     get() = service()
   override val vimrcFileState: VimrcFileState
-    get() = VimRcFileState
+    get() = service()
   override val vimscriptExecutor: VimscriptExecutor
-    get() = service<Executor>()
+    get() = service()
+  override val vimrcPathService: VimrcPathService get() = service()
   override val vimscriptParser: VimscriptParser
     get() = com.maddyhome.idea.vim.vimscript.parser.VimscriptParser
   override val commandLine: VimCommandLineService
@@ -216,7 +226,7 @@ internal class IjVimInjector : VimInjectorBase() {
   override val optionGroup: VimOptionGroup
     get() = service()
   override val parser: VimStringParser
-    get() = service<IjVimStringParser>()
+    get() = service()
 
   override val systemInfoService: SystemInfoService
     get() = service()
@@ -225,16 +235,24 @@ internal class IjVimInjector : VimInjectorBase() {
   override val redrawService: VimRedrawService
     get() = service()
   override val pluginService: VimPluginService
-    get() = IjVimPluginService()
+    get() = service()
   override val highlightingService: VimHighlightingService
-    get() = IjVimHighlightingService()
+    get() = service()
 
   override val pathExpansion: VimPathExpansion = VimPathExpansionImpl()
 
   override val engineEditorHelper: EngineEditorHelper
-    get() = service<IjEditorHelper>()
+    get() = service()
   override val editorGroup: VimEditorGroup
-    get() = service<EditorGroup>()
+    get() = service()
+  override val pluginActivator: VimPluginActivator
+    get() = service()
+  override val externalOpener: VimExternalOpener
+    get() = service()
+  override val quickFixService: QuickFixService
+    get() = service()
+
+  override val autoCmd: AutoCmdService get() = service<AutoCmdService>()
 }
 
 /**

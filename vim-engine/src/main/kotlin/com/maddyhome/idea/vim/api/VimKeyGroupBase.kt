@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2023 The IdeaVim authors
+ * Copyright 2003-2026 The IdeaVim authors
  *
  * Use of this source code is governed by an MIT-style
  * license that can be found in the LICENSE.txt file or at
@@ -13,7 +13,6 @@ import com.maddyhome.idea.vim.command.MappingMode
 import com.maddyhome.idea.vim.extension.ExtensionHandler
 import com.maddyhome.idea.vim.handler.EditorActionHandlerBase
 import com.maddyhome.idea.vim.key.KeyMapping
-import com.maddyhome.idea.vim.key.KeyMappingLayer
 import com.maddyhome.idea.vim.key.KeyStrokeTrie
 import com.maddyhome.idea.vim.key.MappingOwner
 import com.maddyhome.idea.vim.key.RequiredShortcut
@@ -40,10 +39,6 @@ abstract class VimKeyGroupBase : VimKeyGroup {
     modes.map { getKeyMapping(it) }.forEach { it.clear() }
   }
 
-  override fun hasmapto(mode: MappingMode, toKeys: List<KeyStroke>): Boolean {
-    return this.getKeyMapping(mode).hasmapto(toKeys)
-  }
-
   override fun getKeyMapping(mode: MappingMode): KeyMapping {
     return keyMappings.getOrPut(mode) { KeyMapping(mode) }
   }
@@ -64,9 +59,7 @@ abstract class VimKeyGroupBase : VimKeyGroup {
    * @return The root node of the builtin command trie
    */
   override fun getBuiltinCommandsTrie(mappingMode: MappingMode): KeyStrokeTrie<LazyVimCommand> =
-    builtinCommands.getOrPut(mappingMode) { KeyStrokeTrie<LazyVimCommand>(mappingMode.name[0].lowercase()) }
-
-  override fun getKeyMappingLayer(mode: MappingMode): KeyMappingLayer = getKeyMapping(mode)
+    builtinCommands.getOrPut(mappingMode) { KeyStrokeTrie(mappingMode.name[0].lowercase()) }
 
   @Deprecated("Initialization EditorActionHandlerBase for this method breaks the point of lazy initialization")
   protected fun checkCommand(
@@ -169,13 +162,7 @@ abstract class VimKeyGroupBase : VimKeyGroup {
     val oldSize = requiredShortcutKeys.size
     for (key in fromKeys) {
       if (key.keyChar == KeyEvent.CHAR_UNDEFINED) {
-        if (
-          !injector.application.isOctopusEnabled() ||
-          !(key.keyCode == KeyEvent.VK_ESCAPE && key.modifiers == 0) &&
-          !(key.keyCode == KeyEvent.VK_ENTER && key.modifiers == 0)
-        ) {
-          requiredShortcutKeys.add(RequiredShortcut(key, owner))
-        }
+        requiredShortcutKeys.add(RequiredShortcut(key, owner))
       }
     }
     if (requiredShortcutKeys.size != oldSize) {
@@ -190,6 +177,8 @@ abstract class VimKeyGroupBase : VimKeyGroup {
       updateShortcutKeysRegistration()
     }
   }
+
+  protected abstract fun updateShortcutKeysRegistration()
 
   override fun removeKeyMapping(owner: MappingOwner) {
     MappingMode.entries.map { getKeyMapping(it) }.forEach { it.removeKeyMappingsByOwner(owner) }
@@ -233,4 +222,19 @@ abstract class VimKeyGroupBase : VimKeyGroup {
   override fun unregisterCommandActions() {
     builtinCommands.clear()
   }
+
+  // Platform-specific methods — overridden by IJ frontend's KeyGroup implementation.
+  // Not part of the VimKeyGroup interface because they deal with IntelliJ editor/lookup shortcuts.
+
+  /** Registers platform shortcut keys for the given editor so IdeaVim can intercept them. */
+  open fun registerRequiredShortcutKeys(editor: VimEditor) {}
+
+  /** Unregisters platform shortcut keys for the given editor. */
+  open fun unregisterShortcutKeys(editor: VimEditor) {}
+
+  /** Registers IdeaVim shortcuts on a code-completion lookup component. */
+  open fun registerShortcutsForLookup(lookup: Any) {}
+
+  /** Loads shortcut conflict data from a legacy state element. */
+  open fun loadShortcutConflictsData(element: Any) {}
 }

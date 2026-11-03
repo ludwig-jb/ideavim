@@ -17,11 +17,14 @@ import com.maddyhome.idea.vim.command.Command
 import com.maddyhome.idea.vim.command.OperatorArguments
 import com.maddyhome.idea.vim.handler.VimActionHandler
 
-@CommandOrMotion(keys = ["m"], modes = [Mode.NORMAL, Mode.VISUAL])
+@CommandOrMotion(
+  keys = ["m"],
+  modes = [Mode.NORMAL, Mode.VISUAL],
+  description = "Set mark {mark} at the cursor position."
+)
 class MotionMarkAction : VimActionHandler.SingleExecution() {
   override val type: Command.Type = Command.Type.OTHER_READONLY
-
-  override val argumentType: Argument.Type = Argument.Type.CHARACTER
+  override val argumentType: Argument.Type = Argument.Type.MARK
 
   override fun execute(
     editor: VimEditor,

@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2024 The IdeaVim authors
+ * Copyright 2003-2026 The IdeaVim authors
  *
  * Use of this source code is governed by an MIT-style
  * license that can be found in the LICENSE.txt file or at
@@ -9,18 +9,14 @@
 package com.maddyhome.idea.vim.api
 
 import com.maddyhome.idea.vim.KeyHandler
-import com.maddyhome.idea.vim.history.HistoryEntry
+import com.maddyhome.idea.vim.command.MappingMode
 import com.maddyhome.idea.vim.history.VimHistory
+import com.maddyhome.idea.vim.key.AbbreviationContext
+import com.maddyhome.idea.vim.key.findAndResolveAbbreviation
+import com.maddyhome.idea.vim.options.helpers.KeywordOptionHelper.isKeyword
 import org.jetbrains.annotations.TestOnly
 import javax.swing.KeyStroke
 
-/**
- * This interface is not supposed to have any implementation logic.
- * The reason why we have implementation details here is
- * that this class extended by [ExEntryPanel] that already extends [JPanel]
- * and can't extend a base implementation of [VimCommandLine].
- * TODO: Consider creating a derived instance that has-a instance of ExEntryPanel
- */
 interface VimCommandLine {
   val inputProcessing: ((String) -> Unit)?
   val finishOn: Char?
@@ -28,20 +24,52 @@ interface VimCommandLine {
   val editor: VimEditor
   val caret: VimCommandLineCaret
 
+  /**
+   * The prompt shown before the text. Use [type] to decide how the command line behaves
+   */
   fun getLabel(): String
+
+  /**
+   * The kind of command line. The default guesses it from [getLabel] for implementations that don't track it
+   */
+  val type: CommandLineType
+    get() = CommandLineType.fromLabel(getLabel())
+
   val isReplaceMode: Boolean
 
-  var histIndex: Int
   var lastEntry: String?
   val historyType: VimHistory.Type
-    get() = VimHistory.Type.getTypeByLabel(getLabel())
+    get() = type.historyType
 
   fun toggleReplaceMode()
+
+  /** Active completion session, or null if no completion is in progress */
+  var activeCompletion: CommandLineCompletion?
+
+  /** Called when a new completion session starts and candidates should be displayed */
+  fun showCompletionBar(completion: CommandLineCompletion) {}
+
+  /** Called when the selected completion item changes */
+  fun selectCompletionItem(selectedIndex: Int?) {}
+
+  /** Called when the completion bar should be hidden */
+  fun hideCompletionBar() {}
+
+  fun isExCommand(): Boolean = type == CommandLineType.Command
 
   /**
    * The entered text. It does not include any rendered text such as `<80>` or prompts such as `^` or `?`
    */
   val text: String
+
+  /**
+   * The selected text in the command line
+   *
+   * Since this is not editor based text, it does not affect the editor's mode, and is therefore a modeless selection.
+   *
+   * See `:help modeless-selection` and `:help c_CTRL-Y`.
+   */
+  val modelessSelection: String
 
   /**
    * @deprecated Use `text` instead
@@ -90,7 +118,7 @@ interface VimCommandLine {
    * commands. If a keystroke is not consumed as part of a mapping or command, it is returned to the command line for
    * further processing. If it is mapped to a new keystroke, the new keystroke is passed instead. Typically, commands
    * exist for cursor movements (`<Left>` and `<Right>`) as well as for shortcuts for Vim actions (`<Up>`, `<Down>`,
-   * `<C-U>`, etc.). Typed characters are usually not mapped, and passed back to the command line component, where they
+   * `<C-U>`, etc.). Typed characters are usually not mapped and passed back to the command line component, where they
    * are added to the text content.
    */
   fun handleKey(key: KeyStroke)
@@ -110,6 +138,18 @@ interface VimCommandLine {
   fun clearCurrentAction()
 
   /**
+   * Move the incremental search preview to the next ([next] == true, `c_CTRL-G`) or previous ([next] == false,
+   * `c_CTRL-T`) match.
+   *
+   * Called while the command line is still active during an incsearch (`/` or `?`). It moves the "current match"
+   * highlight and caret preview without closing the command line or executing the search, wrapping around the ends of
+   * the buffer. Does nothing if 'incsearch' is disabled or there is no in-progress search pattern.
+   */
+  fun advanceIncsearchMatch(next: Boolean) {}
+
+  fun getIncsearchMatchOffset(): Int = 0
+
+  /**
    * TODO remove me, close is safer
    */
   fun deactivate(refocusOwningEditor: Boolean, resetCaret: Boolean)
@@ -122,56 +162,56 @@ interface VimCommandLine {
     deactivate(refocusOwningEditor, resetCaret)
   }
 
+  /**
+   * Set by the cmdline impl when a pure cursor move (caret moved without the text length changing)
+   * has happened during the current cmdline session. Suppresses [tryExpandAbbreviation] until the
+   * cmdline is re-activated. Mirrors Vim's `arrow_used` for the cmdline.
+   */
+  val isAbbreviationInvalidated: Boolean
+    get() = false
+
+  /**
+   * If [trigger] is a non-keyword char and the text before the caret matches a `:cabbrev`-style
+   * abbreviation, replace the matched lhs in the cmdline buffer with the abbreviation's rhs.
+   */
+  fun tryExpandAbbreviation(trigger: Char) {
+    if (isKeyword(editor, trigger)) return
+    if (isAbbreviationInvalidated) return
+    val ctx = AbbreviationContext(text, lineStart = 0, editor)
+    val expansion = findAndResolveAbbreviation(ctx, caret.offset, MappingMode.CMD_LINE) ?: return
+    deleteText(expansion.lhsRange.startOffset, expansion.lhsRange.endOffset - expansion.lhsRange.startOffset)
+    insertText(expansion.lhsRange.startOffset, expansion.rhs)
+  }
+
   // FIXME I don't want it to conflict with Swings `requestFocus` and can suggest a better name
   fun focus()
 
-  fun selectHistory(isUp: Boolean, filter: Boolean) {
-    val history = injector.historyGroup.getEntries(historyType, 0, 0)
-
-    val dir = if (isUp) -1 else 1
-    if (histIndex + dir < 0 || histIndex + dir > history.size) {
-      injector.messages.indicateError()
-
+  fun selectNewerHistory(filter: Boolean) {
+    val previousCurrent = injector.historyGroup.getCurrentEntry(historyType)
+    val newCurrent = injector.historyGroup.selectNewerEntry(historyType, if (filter) lastEntry else null)
+    if (newCurrent == null) {
+      selectHistory(lastEntry)
+      if (previousCurrent == null) {
+        injector.messages.indicateError()
+      }
       return
     }
+    selectHistory(newCurrent.entry)
+  }
 
-    if (filter) {
-      var i: Int = histIndex + dir
-      while (i >= 0 && i <= history.size) {
-        var txt: String?
-        if (i == history.size) {
-          txt = lastEntry
-        } else {
-          val entry: HistoryEntry = history[i]
-          txt = entry.entry
-        }
-
-        val myLastEntry = lastEntry
-        if (txt != null && myLastEntry != null && txt.startsWith(myLastEntry)) {
-          setText(txt, updateLastEntry = false)
-          caret.offset = txt.length
-          histIndex = i
-
-          return
-        }
-        i += dir
-      }
-
+  fun selectOlderHistory(filter: Boolean) {
+    val newCurrent = injector.historyGroup.selectOlderEntry(historyType, if (filter) lastEntry else null)
+    if (newCurrent == null) {
       injector.messages.indicateError()
-    } else {
-      histIndex += dir
-      val txt: String?
-      if (histIndex == history.size) {
-        txt = lastEntry
-      } else {
-        val entry: HistoryEntry = history[histIndex]
-        txt = entry.entry
-      }
+      return
+    }
+    selectHistory(newCurrent.entry)
+  }
 
-      if (txt != null) {
-        setText(txt, updateLastEntry = false)
-        caret.offset = txt.length
-      }
+  private fun selectHistory(entry: String?) {
+    if (entry != null) {
+      setText(entry, updateLastEntry = false)
+      caret.offset = entry.length
     }
   }
 }

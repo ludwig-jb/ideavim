@@ -11,6 +11,7 @@ package com.maddyhome.idea.vim.action.ex
 import com.intellij.vim.annotations.CommandOrMotion
 import com.intellij.vim.annotations.Mode
 import com.maddyhome.idea.vim.KeyHandler
+import com.maddyhome.idea.vim.api.CommandLineType
 import com.maddyhome.idea.vim.api.ExecutionContext
 import com.maddyhome.idea.vim.api.ImmutableVimCaret
 import com.maddyhome.idea.vim.api.VimEditor
@@ -19,7 +20,6 @@ import com.maddyhome.idea.vim.command.Argument
 import com.maddyhome.idea.vim.command.CommandFlags
 import com.maddyhome.idea.vim.command.MotionType
 import com.maddyhome.idea.vim.command.OperatorArguments
-import com.maddyhome.idea.vim.common.Direction
 import com.maddyhome.idea.vim.ex.ExException
 import com.maddyhome.idea.vim.handler.Motion
 import com.maddyhome.idea.vim.handler.MotionActionHandler
@@ -27,7 +27,11 @@ import com.maddyhome.idea.vim.handler.toMotionOrError
 import com.maddyhome.idea.vim.vimscript.model.CommandLineVimLContext
 import java.util.*
 
-@CommandOrMotion(keys = ["<CR>", "<C-M>", "<C-J>"], modes = [Mode.CMD_LINE])
+@CommandOrMotion(
+  keys = ["<CR>", "<C-M>", "<C-J>"],
+  modes = [Mode.CMD_LINE],
+  description = "In Command-line mode, execute the entered Ex command or search for the entered pattern."
+)
 class ProcessExEntryAction : MotionActionHandler.AmbiguousExecution() {
   override val flags: EnumSet<CommandFlags> = EnumSet.of(CommandFlags.FLAG_SAVE_JUMP, CommandFlags.FLAG_END_EX)
   override var motionType: MotionType = MotionType.EXCLUSIVE
@@ -35,7 +39,57 @@ class ProcessExEntryAction : MotionActionHandler.AmbiguousExecution() {
   override fun getMotionActionHandler(argument: Argument?): MotionActionHandler {
     check(argument is Argument.ExString)
     if (argument.processing != null) return ExecuteDefinedInputProcessingAction()
-    return if (argument.label == ':') ProcessExCommandEntryAction() else ProcessSearchEntryAction(this)
+    return when (argument.type) {
+      CommandLineType.Command -> ProcessExCommandEntryAction()
+      is CommandLineType.Search -> ProcessSearchEntryAction(this)
+      // Nothing to execute: the text of an input prompt is only passed to its processing
+      CommandLineType.Expression, CommandLineType.Input -> IgnoreInputEntryAction()
+    }
+  }
+}
+
+/**
+ * `c_CTRL-G` / `c_CTRL-T` - during an incremental search (`/` or `?` with 'incsearch' set), move the preview to the
+ * next (`c_CTRL-G`) or previous (`c_CTRL-T`) match.
+ *
+ * Unlike [ProcessExEntryAction], these deliberately do not carry [CommandFlags.FLAG_END_EX]: the command line stays
+ * open and the search is not executed. They simply move the incsearch "current match" highlight and caret preview.
+ */
+@CommandOrMotion(
+  keys = ["<C-G>"],
+  modes = [Mode.CMD_LINE],
+  description = "While entering a search pattern with 'incsearch', move to the next match."
+)
+class SearchAgainNextActionCommandLine : MotionActionHandler.SingleExecution() {
+  override val motionType: MotionType = MotionType.EXCLUSIVE
+
+  override fun getOffset(
+    editor: VimEditor,
+    context: ExecutionContext,
+    argument: Argument?,
+    operatorArguments: OperatorArguments,
+  ): Motion {
+    injector.commandLine.getActiveCommandLine()?.advanceIncsearchMatch(next = true)
+    return Motion.NoMotion
+  }
+}
+
+@CommandOrMotion(
+  keys = ["<C-T>"],
+  modes = [Mode.CMD_LINE],
+  description = "While entering a search pattern with 'incsearch', move to the previous match."
+)
+class SearchAgainPreviousActionCommandLine : MotionActionHandler.SingleExecution() {
+  override val motionType: MotionType = MotionType.EXCLUSIVE
+
+  override fun getOffset(
+    editor: VimEditor,
+    context: ExecutionContext,
+    argument: Argument?,
+    operatorArguments: OperatorArguments,
+  ): Motion {
+    injector.commandLine.getActiveCommandLine()?.advanceIncsearchMatch(next = false)
+    return Motion.NoMotion
   }
 }
 
@@ -57,6 +111,17 @@ class ExecuteDefinedInputProcessingAction : MotionActionHandler.SingleExecution(
   }
 }
 
+class IgnoreInputEntryAction : MotionActionHandler.SingleExecution() {
+  override val motionType: MotionType = MotionType.EXCLUSIVE
+
+  override fun getOffset(
+    editor: VimEditor,
+    context: ExecutionContext,
+    argument: Argument?,
+    operatorArguments: OperatorArguments,
+  ): Motion = Motion.NoMotion
+}
+
 class ProcessSearchEntryAction(private val parentAction: ProcessExEntryAction) : MotionActionHandler.ForEachCaret() {
   override val motionType: MotionType
     get() = throw RuntimeException("Parent motion type should be used, as only it is accessed by other code")
@@ -69,25 +134,15 @@ class ProcessSearchEntryAction(private val parentAction: ProcessExEntryAction) :
     operatorArguments: OperatorArguments,
   ): Motion {
     if (argument !is Argument.ExString) return Motion.Error
-    val offsetAndMotion = when (argument.label) {
-      '/' -> injector.searchGroup.processSearchCommand(
-        editor,
-        argument.string,
-        caret.offset,
-        operatorArguments.count1,
-        Direction.FORWARDS
-      )
+    val originalDirection = (argument.type as? CommandLineType.Search)?.direction ?: return Motion.Error
 
-      '?' -> injector.searchGroup.processSearchCommand(
-        editor,
-        argument.string,
-        caret.offset,
-        operatorArguments.count1,
-        Direction.BACKWARDS
-      )
+    val effectiveCount = operatorArguments.count1 + argument.incSearchOffset
+    val direction = if (effectiveCount >= 1) originalDirection else originalDirection.reverse()
+    val count = if (effectiveCount >= 1) effectiveCount else 1 - effectiveCount
 
-      else -> throw ExException("Unexpected search label ${argument.label}")
-    }
+    val offsetAndMotion = injector.searchGroup.processSearchCommand(
+      editor, argument.string, caret.offset, count, direction
+    )
     // Vim doesn't treat not finding something as an error, although it might report either an error or warning message
     if (offsetAndMotion == null) return Motion.NoMotion
     parentAction.motionType = offsetAndMotion.second

@@ -12,6 +12,7 @@ import com.intellij.vim.api.VimApi
 import com.intellij.vim.api.scopes.commandline.CommandLineRead
 import com.intellij.vim.api.scopes.commandline.CommandLineScope
 import com.intellij.vim.api.scopes.commandline.CommandLineTransaction
+import com.maddyhome.idea.vim.api.CommandLineType
 import com.maddyhome.idea.vim.api.ExecutionContext
 import com.maddyhome.idea.vim.api.VimEditor
 import com.maddyhome.idea.vim.api.injector
@@ -22,17 +23,18 @@ import com.maddyhome.idea.vim.thinapi.VimApiImpl
 class CommandLineScopeImpl(
   private val listenerOwner: ListenerOwner,
   private val mappingOwner: MappingOwner,
+  private val projectId: String?,
 ) : CommandLineScope() {
   private val vimEditor: VimEditor
-    get() = injector.editorGroup.getFocusedEditor()!!
+    get() = projectId?.let { injector.editorGroup.getSelectedEditor(it) } ?: injector.fallbackWindow
 
   private val vimContext: ExecutionContext
     get() = injector.executionContextManager.getEditorExecutionContext(vimEditor)
 
-  override fun input(prompt: String, finishOn: Char?, callback: VimApi.(String) -> Unit) {
-    val vimApi = VimApiImpl(listenerOwner, mappingOwner)
-    injector.commandLine.readInputAndProcess(vimEditor, vimContext, prompt, finishOn) {
-      vimApi.callback(it)
+  override fun input(prompt: String, finishOn: Char?, callback: suspend VimApi.(String) -> Unit) {
+    val vimApi = VimApiImpl(listenerOwner, mappingOwner, projectId)
+    injector.commandLine.readInputAndProcess(vimEditor, vimContext, CommandLineType.Input, prompt, finishOn) {
+      kotlinx.coroutines.runBlocking { vimApi.callback(it) }
     }
   }
 

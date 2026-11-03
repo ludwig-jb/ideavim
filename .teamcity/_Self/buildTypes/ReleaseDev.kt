@@ -39,7 +39,11 @@ object ReleaseDev : IdeaVimBuildType({
   steps {
     script {
       name = "Pull git tags"
-      scriptContent = "git fetch --tags origin"
+      scriptContent = """
+        mkdir -p ~/.ssh && chmod 700 ~/.ssh
+        ssh-keyscan -H github.com >> ~/.ssh/known_hosts
+        git fetch --tags --force origin
+      """.trimIndent()
     }
     script {
       name = "Pull git history"
@@ -51,11 +55,14 @@ object ReleaseDev : IdeaVimBuildType({
       gradleParams = "--build-cache --configuration-cache"
       jdkHome = "/usr/lib/jvm/java-21-amazon-corretto"
     }
-    gradle {
+    script {
       name = "Set TeamCity build number"
-      tasks = "scripts:setTeamCityBuildNumber"
-      gradleParams = "--build-cache --configuration-cache"
-      jdkHome = "/usr/lib/jvm/java-21-amazon-corretto"
+      scriptContent = """
+        set -e
+        cd scripts-ts
+        npm ci --silent --no-fund --no-audit
+        npx tsx src/setTeamCityBuildNumber.ts
+      """.trimIndent()
     }
     gradle {
       tasks = "publishPlugin"

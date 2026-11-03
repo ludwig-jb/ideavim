@@ -5,21 +5,33 @@
     <option name="linkedExternalProjectsSettings">
       <GradleProjectSettings>
         <option name="externalProjectPath" value="$PROJECT_DIR$" />
+        <option name="gradleJvm" value="jbr-21" />
         <option name="modules">
           <set>
             <option value="$PROJECT_DIR$" />
             <option value="$PROJECT_DIR$/annotation-processors" />
             <option value="$PROJECT_DIR$/api" />
-            <option value="$PROJECT_DIR$/modules" />
-            <option value="$PROJECT_DIR$/modules/ideavim-acejump" />
-            <option value="$PROJECT_DIR$/modules/ideavim-clion-nova" />
-            <option value="$PROJECT_DIR$/modules/ideavim-rider" />
-            <option value="$PROJECT_DIR$/modules/ideavim-terminal" />
+            <option value="$PROJECT_DIR$/ideavim-acejump" />
+            <option value="$PROJECT_DIR$/ideavim-air" />
+            <option value="$PROJECT_DIR$/ideavim-backend" />
+            <option value="$PROJECT_DIR$/ideavim-backend-bookmarks" />
+            <option value="$PROJECT_DIR$/ideavim-backend-bookmarks-core" />
+            <option value="$PROJECT_DIR$/ideavim-backend-git" />
+            <option value="$PROJECT_DIR$/ideavim-backend-git-legacy" />
+            <option value="$PROJECT_DIR$/ideavim-clion-nova" />
+            <option value="$PROJECT_DIR$/ideavim-common" />
+            <option value="$PROJECT_DIR$/ideavim-frontend" />
+            <option value="$PROJECT_DIR$/ideavim-rider" />
+            <option value="$PROJECT_DIR$/ideavim-rpc" />
+            <option value="$PROJECT_DIR$/ideavim-terminal" />
+            <option value="$PROJECT_DIR$/ideavim-vcs" />
             <option value="$PROJECT_DIR$/scripts" />
             <option value="$PROJECT_DIR$/tests" />
             <option value="$PROJECT_DIR$/tests/java-tests" />
+            <option value="$PROJECT_DIR$/tests/large-file-tests" />
             <option value="$PROJECT_DIR$/tests/long-running-tests" />
             <option value="$PROJECT_DIR$/tests/property-tests" />
+            <option value="$PROJECT_DIR$/tests/split-mode-tests" />
             <option value="$PROJECT_DIR$/tests/ui-fixtures" />
             <option value="$PROJECT_DIR$/tests/ui-ij-tests" />
             <option value="$PROJECT_DIR$/tests/ui-py-tests" />
@@ -29,5 +41,6 @@
         </option>
       </GradleProjectSettings>
     </option>
+    <option name="parallelModelFetch" value="true" />
   </component>
 </project>

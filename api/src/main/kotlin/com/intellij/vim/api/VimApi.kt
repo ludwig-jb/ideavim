@@ -9,19 +9,23 @@
 package com.intellij.vim.api
 
 import com.intellij.vim.api.models.Mode
-import com.intellij.vim.api.models.Path
+import com.intellij.vim.api.scopes.CommandScope
 import com.intellij.vim.api.scopes.DigraphScope
 import com.intellij.vim.api.scopes.MappingScope
 import com.intellij.vim.api.scopes.ModalInput
 import com.intellij.vim.api.scopes.OptionScope
 import com.intellij.vim.api.scopes.OutputPanelScope
+import com.intellij.vim.api.scopes.StorageScope
+import com.intellij.vim.api.scopes.TabScope
 import com.intellij.vim.api.scopes.TextObjectScope
+import com.intellij.vim.api.scopes.TextScope
+import com.intellij.vim.api.scopes.VariableScope
 import com.intellij.vim.api.scopes.VimApiDsl
+import com.intellij.vim.api.scopes.get
+import com.intellij.vim.api.scopes.set
 import com.intellij.vim.api.scopes.commandline.CommandLineScope
 import com.intellij.vim.api.scopes.editor.EditorScope
 import org.jetbrains.annotations.ApiStatus
-import kotlin.reflect.KType
-import kotlin.reflect.typeOf
 
 /**
  * Entry point of the Vim API
@@ -32,79 +36,95 @@ import kotlin.reflect.typeOf
 @VimApiDsl
 interface VimApi {
   /**
-   * Represents the current mode in Vim.
+   * Represents the current mode in Vim (read-only).
+   *
+   * To change modes, use [normal] with the appropriate key sequence:
+   * - `normal("i")` — enter Insert mode
+   * - `normal("<Esc>")` — exit to Normal mode (like pressing Escape)
+   * - `normal("v")` — enter Visual character mode
+   * - `normal("V")` — enter Visual line mode
    *
    * Example usage:
-   *
-   * **Getting the Current Mode**
    * ```kotlin
    * val currentMode = mode
-   * println("Current Vim Mode: $currentMode")
+   * if (currentMode == Mode.INSERT) {
+   *   normal("<Esc>")  // exit to normal
+   * }
    * ```
-   *
-   * The set of mode is currently an experimental operation as the contracts of it are getting polished.
-   *   We suggest currently not using it.
    */
-  @set:ApiStatus.Experimental
-  var mode: Mode
+  val mode: Mode
 
   /**
-   * Retrieves a variable of the specified type and name.
-   * Use the extension function `getVariable<String>("name")`
-   */
-  fun <T : Any> getVariable(name: String, type: KType): T?
-
-  /**
-   * Sets a variable with the specified name and value.
-   * Use the extension function `setVariable<String>("name", 1)`
-   *
-   * In Vim, this is equivalent to `let varname = value`.
-   */
-  fun setVariable(name: String, value: Any, type: KType)
-
-  /**
-   * Exports a function that can be used as an operator function in Vim.
-   *
-   * In Vim, operator functions are used with the `g@` operator to create custom operators.
+   * Provides access to Vim variables.
    *
    * Example usage:
    * ```kotlin
-   * exportOperatorFunction("MyOperator") {
-   *     editor {
-   *         // Perform operations on the selected text
-   *         true // Return success
-   *     }
-   * }
+   * // Lambda style
+   * val name = variables { get<String>("g:name") }
+   *
+   * // Direct object style
+   * variables().set("g:x", 1)
    * ```
    *
-   * @param name The name to register the function under
-   * @param function The function to execute when the operator is invoked
+   * @param block The code block to execute within the variable scope
+   * @return The result of the block execution
    */
-  fun exportOperatorFunction(name: String, function: suspend VimApi.() -> Boolean)
+  fun <T> variables(block: VariableScope.() -> T): T
 
   /**
-   * Sets the current operator function to use with the `g@` operator.
+   * Provides direct access to Vim variables scope.
    *
-   * In Vim, this is equivalent to setting the 'operatorfunc' option.
-   *
-   * @param name The name of the previously exported operator function
+   * @return The VariableScope for chaining
    */
-  fun setOperatorFunction(name: String)
+  fun variables(): VariableScope
+
+  /**
+   * Provides access to command registration and operator functions.
+   *
+   * Example usage:
+   * ```kotlin
+   * // Lambda style
+   * commands {
+   *     register("MyCommand") { cmd, startLine, endLine ->
+   *         println("Command executed: $cmd")
+   *     }
+   * }
+   *
+   * // Direct object style
+   * commands().exportOperatorFunction("MyOperator") { true }
+   * ```
+   *
+   * @param block The code block to execute within the command scope
+   * @return The result of the block execution
+   */
+  fun <T> commands(block: CommandScope.() -> T): T
+
+  /**
+   * Provides direct access to command scope.
+   *
+   * @return The CommandScope for chaining
+   */
+  fun commands(): CommandScope
 
   /**
    * Executes normal mode commands as if they were typed.
    *
-   * In Vim, this is equivalent to the `:normal` command.
+   * In Vim, this is equivalent to the `:normal!` command (without remapping).
+   * Supports Vim key notation: `<Esc>`, `<CR>`, `<C-O>`, `<C-V>`, etc.
    *
    * Example usage:
    * ```kotlin
-   * normal("gg")  // Go to the first line
-   * normal("dw")  // Delete word
+   * normal("gg")     // Go to the first line
+   * normal("dw")     // Delete word
+   * normal("i")      // Enter Insert mode
+   * normal("<Esc>")  // Exit to Normal mode (like pressing Escape)
+   * normal("v")      // Enter Visual character mode
+   * normal("V")      // Enter Visual line mode
    * ```
    *
    * @param command The normal mode command string to execute
    */
-  fun normal(command: String)
+  suspend fun normal(command: String)
 
   /**
    * Executes a block of code in the context of the currently focused editor.
@@ -121,7 +141,7 @@ interface VimApi {
    * @param block The code block to execute within editor scope
    * @return The result of the block execution
    */
-  fun <T> editor(block: EditorScope.() -> T): T
+  suspend fun <T> editor(block: suspend EditorScope.() -> T): T
 
   /**
    * Executes a block of code for each editor.
@@ -138,7 +158,7 @@ interface VimApi {
    * @param block The code block to execute for each editor
    * @return A list containing the results of executing the block on each editor
    */
-  fun <T> forEachEditor(block: EditorScope.() -> T): List<T>
+  suspend fun <T> forEachEditor(block: suspend EditorScope.() -> T): List<T>
 
   /**
    * Provides access to key mapping functionality.
@@ -157,7 +177,8 @@ interface VimApi {
    * @param block The code block to execute within the mapping scope
    * @return The MappingScope for chaining
    */
-  fun mappings(block: MappingScope.() -> Unit = {}): MappingScope
+  fun <T> mappings(block: MappingScope.() -> T): T
+  fun mappings(): MappingScope
 
   /**
    * Provides access to text object registration.
@@ -183,7 +204,8 @@ interface VimApi {
    * @param block The code block to execute within the text object scope
    * @return The TextObjectScope for chaining
    */
-  fun textObjects(block: TextObjectScope.() -> Unit = {}): TextObjectScope
+  fun <T> textObjects(block: TextObjectScope.() -> T): T
+  fun textObjects(): TextObjectScope
 
 //  /**
 //   * Provides access to event listener functionality.
@@ -220,7 +242,8 @@ interface VimApi {
    * @param block The code block to execute within the output panel scope
    * @return The OutputPanelScope for chaining
    */
-  fun outputPanel(block: OutputPanelScope.() -> Unit = {}): OutputPanelScope
+  suspend fun <T> outputPanel(block: suspend OutputPanelScope.() -> T): T
+  suspend fun outputPanel(): OutputPanelScope
 
   /**
    * Provides access to modal input functionality.
@@ -235,7 +258,7 @@ interface VimApi {
    *
    * @return A ModalInput instance that can be used to request user input
    */
-  fun modalInput(): ModalInput
+  suspend fun modalInput(): ModalInput
 
   /**
    * Provides access to Vim's command line functionality.
@@ -258,7 +281,8 @@ interface VimApi {
    * @param block The code block to execute with command line scope
    * @return The CommandLineScope for chaining
    */
-  fun commandLine(block: CommandLineScope.() -> Unit = {}): CommandLineScope
+  suspend fun <T> commandLine(block: suspend CommandLineScope.() -> T): T
+  suspend fun commandLine(): CommandLineScope
 
   /**
    * Provides access to Vim's options functionality.
@@ -284,7 +308,7 @@ interface VimApi {
    * @param block The code block to execute within the option scope
    * @return The result of the block execution
    */
-  fun <T> option(block: OptionScope.() -> T): T
+  suspend fun <T> option(block: suspend OptionScope.() -> T): T
 
   /**
    * Provides access to Vim's digraph functionality.
@@ -304,105 +328,108 @@ interface VimApi {
    * @param block The code block to execute within the digraph scope
    * @return The DigraphScope for chaining
    */
-  fun digraph(block: DigraphScope.() -> Unit = {}): DigraphScope
+  suspend fun <T> digraph(block: suspend DigraphScope.() -> T): T
+  suspend fun digraph(): DigraphScope
 
   /**
-   * Gets the number of tabs in the current window.
-   */
-  val tabCount: Int
-
-  /**
-   * The index of the current tab or null if there is no tab selected or no tabs are open
-   */
-  val currentTabIndex: Int?
-
-  /**
-   * Removes a tab at the specified index and selects another tab.
+   * Provides access to tab management.
    *
-   * @param indexToDelete The index of the tab to delete
-   * @param indexToSelect The index of the tab to select after deletion
-   */
-  fun removeTabAt(indexToDelete: Int, indexToSelect: Int)
-
-  /**
-   * Moves the current tab to the specified index.
+   * Example usage:
+   * ```kotlin
+   * // Lambda style
+   * val count = tabs { count }
    *
-   * @param index The index to move the current tab to
-   * @throws IllegalStateException if there is no tab selected or no tabs are open
-   */
-  fun moveCurrentTabToIndex(index: Int)
-
-  /**
-   * Closes all tabs except the current one.
+   * // Direct object style
+   * tabs().closeAllExceptCurrent()
+   * ```
    *
-   * @throws IllegalStateException if there is no tab selected
+   * @param block The code block to execute within the tab scope
+   * @return The result of the block execution
    */
-  fun closeAllExceptCurrentTab()
+  suspend fun <T> tabs(block: suspend TabScope.() -> T): T
 
   /**
-   * Checks if a pattern matches a text.
+   * Provides direct access to tab scope.
    *
-   * @param pattern The regular expression pattern to match
-   * @param text The text to check against the pattern
-   * @param ignoreCase Whether to ignore case when matching
-   * @return True if the pattern matches the text, false otherwise
+   * @return The TabScope for chaining
    */
-  fun matches(pattern: String, text: String, ignoreCase: Boolean = false): Boolean
+  suspend fun tabs(): TabScope
 
   /**
-   * Finds all matches of a pattern in a text.
+   * Provides access to text pattern matching and word-boundary utilities.
    *
-   * @param text The text to search in
-   * @param pattern The regular expression pattern to search for
-   * @return A list of pairs representing the start and end offsets of each match
-   */
-  fun getAllMatches(text: String, pattern: String): List<Pair<Int, Int>>
-
-  /**
-   * Selects the next window in the editor.
-   */
-  fun selectNextWindow()
-
-  /**
-   * Selects the previous window in the editor.
-   */
-  fun selectPreviousWindow()
-
-  /**
-   * Selects a window by its index.
+   * Example usage:
+   * ```kotlin
+   * // Lambda style
+   * val found = text { matches("\\w+", "hello") }
    *
-   * @param index The index of the window to select (1-based).
-   */
-  fun selectWindow(index: Int)
-
-  /**
-   * Splits the current window vertically and optionally opens a file in the new window.
+   * // Direct object style
+   * val offset = text().getNextCamelStartOffset(chars, 0)
+   * ```
    *
-   * @param filePath Path of the file to open in the new window. If null, the new window will show the same file.
+   * @param block The code block to execute within the text scope
+   * @return The result of the block execution
    */
-  fun splitWindowVertically(filePath: Path? = null)
+  suspend fun <T> text(block: suspend TextScope.() -> T): T
 
   /**
-   * Splits the current window horizontally and optionally opens a file in the new window.
+   * Provides direct access to text scope.
    *
-   * @param filePath Path of the file to open in the new window. If null, the new window will show the same file.
+   * @return The TextScope for chaining
    */
-  fun splitWindowHorizontally(filePath: Path? = null)
+  suspend fun text(): TextScope
 
-  /**
-   * Closes all windows except the current one.
-   */
-  fun closeAllExceptCurrentWindow()
-
-  /**
-   * Closes the current window.
-   */
-  fun closeCurrentWindow()
-
-  /**
-   * Closes all windows in the editor.
-   */
-  fun closeAllWindows()
+  // Window management APIs commented out — see IJPL-235369.
+  // After switching windows, FileEditorManager.getSelectedTextEditor() does not
+  // immediately reflect the change because EditorsSplitters.currentCompositeFlow
+  // is derived asynchronously (flatMapLatest + stateIn), and there is no way to
+  // observe when the propagation completes.
+  //
+  // /**
+  //  * Selects the next window in the editor.
+  //  */
+  // fun selectNextWindow()
+  //
+  // /**
+  //  * Selects the previous window in the editor.
+  //  */
+  // fun selectPreviousWindow()
+  //
+  // /**
+  //  * Selects a window by its index.
+  //  *
+  //  * @param index The index of the window to select (1-based).
+  //  */
+  // fun selectWindow(index: Int)
+  //
+  // /**
+  //  * Splits the current window vertically and optionally opens a file in the new window.
+  //  *
+  //  * @param filePath Path of the file to open in the new window. If null, the new window will show the same file.
+  //  */
+  // fun splitWindowVertically(filePath: Path? = null)
+  //
+  // /**
+  //  * Splits the current window horizontally and optionally opens a file in the new window.
+  //  *
+  //  * @param filePath Path of the file to open in the new window. If null, the new window will show the same file.
+  //  */
+  // fun splitWindowHorizontally(filePath: Path? = null)
+  //
+  // /**
+  //  * Closes all windows except the current one.
+  //  */
+  // fun closeAllExceptCurrentWindow()
+  //
+  // /**
+  //  * Closes the current window.
+  //  */
+  // fun closeCurrentWindow()
+  //
+  // /**
+  //  * Closes all windows in the editor.
+  //  */
+  // fun closeAllWindows()
 
   /**
    * Parses and executes the given Vimscript string.
@@ -410,151 +437,43 @@ interface VimApi {
    * @param script The Vimscript string to execute
    * @return The result of the execution, which can be Success or Error
    */
-  fun execute(script: String): Boolean
+  suspend fun execute(script: String): Boolean
+
 
   /**
-   * Registers a new Vim command.
+   * Provides access to keyed data storage for windows, buffers, and tabs.
    *
    * Example usage:
+   * ```kotlin
+   * // Lambda style
+   * val data = storage { getWindowData<String>("myKey") }
+   *
+   * // Direct object style
+   * storage().putWindowData("myKey", "value")
    * ```
-   * command("MyCommand") { cmd ->
-   *     println("Command executed: $cmd")
-   * }
-   * ```
    *
-   * @param command The name of the command to register, as entered by the user.
-   * @param block The logic to execute when the command is invoked. Receives the command name
-   *              entered by the user as a parameter.
+   * @param block The code block to execute within the storage scope
+   * @return The result of the block execution
    */
-  fun command(command: String, block: VimApi.(String) -> Unit)
+  suspend fun <T> storage(block: suspend StorageScope.() -> T): T
 
   /**
-   * Gets keyed data from a Vim window.
+   * Provides direct access to storage scope.
    *
-   * @param key The key to retrieve data for
-   * @return The data associated with the key, or null if no data is found
+   * @return The StorageScope for chaining
    */
-  fun <T> getDataFromWindow(key: String): T?
-
-  /**
-   * Stores keyed user data in a Vim window.
-   *
-   * @param key The key to store data for
-   * @param data The data to store
-   */
-  fun <T> putDataToWindow(key: String, data: T)
-
-  /**
-   * Gets data from buffer.
-   *
-   * @param key The key to retrieve data for
-   * @return The data associated with the key, or null if no data is found
-   */
-  fun <T> getDataFromBuffer(key: String): T?
-
-  /**
-   * Puts data to buffer.
-   *
-   * @param key The key to store data for
-   * @param data The data to store
-   */
-  fun <T> putDataToBuffer(key: String, data: T)
-
-  /**
-   * Gets data from tab (group of windows).
-   *
-   * @param key The key to retrieve data for
-   * @return The data associated with the key, or null if no data is found
-   */
-  fun <T> getDataFromTab(key: String): T?
-
-  /**
-   * Puts data to tab (group of windows).
-   *
-   * @param key The key to store data for
-   * @param data The data to store
-   */
-  fun <T> putDataToTab(key: String, data: T)
-
-  /**
-   * Gets data from window or puts it if it doesn't exist.
-   *
-   * @param key The key to retrieve or store data for
-   * @param provider A function that provides the data if it doesn't exist
-   * @return The existing data or the newly created data
-   */
-  fun <T> getOrPutWindowData(key: String, provider: () -> T): T =
-    getDataFromWindow(key) ?: provider().also { putDataToWindow(key, it) }
-
-  /**
-   * Gets data from buffer or puts it if it doesn't exist.
-   *
-   * @param key The key to retrieve or store data for
-   * @param provider A function that provides the data if it doesn't exist
-   * @return The existing data or the newly created data
-   */
-  fun <T> getOrPutBufferData(key: String, provider: () -> T): T =
-    getDataFromBuffer(key) ?: provider().also { putDataToBuffer(key, it) }
-
-  /**
-   * Gets data from tab or puts it if it doesn't exist.
-   *
-   * @param key The key to retrieve or store data for
-   * @param provider A function that provides the data if it doesn't exist
-   * @return The existing data or the newly created data
-   */
-  fun <T> getOrPutTabData(key: String, provider: () -> T): T =
-    getDataFromTab(key) ?: provider().also { putDataToTab(key, it) }
+  suspend fun storage(): StorageScope
 
   /**
    * Saves the current file.
    */
-  fun saveFile()
+  suspend fun saveFile()
 
   /**
    * Closes the current file.
    */
-  fun closeFile()
+  suspend fun closeFile()
 
-  /**
-   * Finds the start offset of the next word in camel case or snake case text.
-   *
-   * @param chars The character sequence to search in (e.g., document text)
-   * @param startIndex The index to start searching from (inclusive). Must be within the bounds of chars: [0, chars.length)
-   * @param count Find the [count]-th occurrence. Must be greater than 0.
-   * @return The offset of the next word start, or null if not found
-   */
-  fun getNextCamelStartOffset(chars: CharSequence, startIndex: Int, count: Int = 1): Int?
-
-  /**
-   * Finds the start offset of the previous word in camel case or snake case text.
-   *
-   * @param chars The character sequence to search in (e.g., document text)
-   * @param endIndex The index to start searching backward from (exclusive). Must be within the bounds of chars: [0, chars.length]
-   * @param count Find the [count]-th occurrence. Must be greater than 0.
-   * @return The offset of the previous word start, or null if not found
-   */
-  fun getPreviousCamelStartOffset(chars: CharSequence, endIndex: Int, count: Int = 1): Int?
-
-  /**
-   * Finds the end offset of the next word in camel case or snake case text.
-   *
-   * @param chars The character sequence to search in (e.g., document text)
-   * @param startIndex The index to start searching from (inclusive). Must be within the bounds of chars: [0, chars.length)
-   * @param count Find the [count]-th occurrence. Must be greater than 0.
-   * @return The offset of the next word end, or null if not found
-   */
-  fun getNextCamelEndOffset(chars: CharSequence, startIndex: Int, count: Int = 1): Int?
-
-  /**
-   * Finds the end offset of the previous word in camel case or snake case text.
-   *
-   * @param chars The character sequence to search in (e.g., document text)
-   * @param endIndex The index to start searching backward from (exclusive). Must be within the bounds of chars: [0, chars.length]
-   * @param count Find the [count]-th occurrence. Must be greater than 0.
-   * @return The offset of the previous word end, or null if not found
-   */
-  fun getPreviousCamelEndOffset(chars: CharSequence, endIndex: Int, count: Int = 1): Int?
 }
 
 /**
@@ -571,8 +490,7 @@ interface VimApi {
  * @param value The value to set
  */
 inline fun <reified T : Any> VimApi.setVariable(name: String, value: T) {
-  val kType: KType = typeOf<T>()
-  setVariable(name, value, kType)
+  variables().set(name, value)
 }
 
 /**
@@ -587,6 +505,5 @@ inline fun <reified T : Any> VimApi.setVariable(name: String, value: T) {
  * @return The variable of type `T` if found, otherwise `null`.
  */
 inline fun <reified T : Any> VimApi.getVariable(name: String): T? {
-  val kType: KType = typeOf<T>()
-  return getVariable(name, kType)
+  return variables().get(name)
 }

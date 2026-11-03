@@ -43,6 +43,21 @@ sealed class MotionActionHandler : EditorActionHandlerBase(false) {
   open val keepFold: Boolean = false
 
   /**
+   * Whether operators using this motion should expand ranges to include whole collapsed folds.
+   * Fold boundary motions (`zj`, `zk`) set this to false.
+   */
+  open val expandCollapsedFolds: Boolean = true
+
+  /**
+   * True if a failed motion should still apply a pending operator to the end of the file
+   *
+   * Vim's forward word motions fail at the end of the file, but the failure is only reported when there is no
+   * pending operator. With an operator, the operator is applied from the caret to the end of the file, so that e.g.
+   * `dw` on the last character of the file deletes that character (see `nv_wordcmd` in `normal.c`).
+   */
+  open val clampToEndOfFileWhenOperatorPending: Boolean = false
+
+  /**
    * Base class for motion handlers.
    * This handler executes an action for each caret. That means that if you have 5 carets, [getOffset] will be
    *   called 5 times.
@@ -132,12 +147,18 @@ sealed class MotionActionHandler : EditorActionHandlerBase(false) {
     cmd: Command,
     operatorArguments: OperatorArguments,
   ): Boolean {
+    // Moving the caret ends the run of replaced characters, so a later backspace no longer restores them.
+    // See `start_arrow` in Vim's edit.c.
+    if (editor.mode == Mode.REPLACE) {
+      editor.replaceMask = null
+    }
+
     val blockSelectionActive = editor.inBlockSelection
 
     val handler = if (this is AmbiguousExecution) this.getMotionActionHandler(cmd.argument) else this
     when (handler) {
       is SingleExecution -> run {
-        if (editor.mode == Mode.INSERT) {
+        if (editor.mode is Mode.INSERT) {
           val undo = injector.undo
           when (undo) {
             is VimKeyBasedUndoService -> undo.setMergeUndoKey()
@@ -197,7 +218,7 @@ sealed class MotionActionHandler : EditorActionHandlerBase(false) {
     cmd: Command,
     operatorArguments: OperatorArguments,
   ) {
-    if (editor.mode == Mode.INSERT) {
+    if (editor.mode is Mode.INSERT) {
       val undo = injector.undo
       when (undo) {
         is VimKeyBasedUndoService -> undo.setMergeUndoKey()

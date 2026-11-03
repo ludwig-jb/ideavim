@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2024 The IdeaVim authors
+ * Copyright 2003-2026 The IdeaVim authors
  *
  * Use of this source code is governed by an MIT-style
  * license that can be found in the LICENSE.txt file or at
@@ -9,6 +9,7 @@ package com.maddyhome.idea.vim.ui.ex
 
 import com.intellij.openapi.application.ApplicationManager
 import com.maddyhome.idea.vim.action.change.Extension
+import com.maddyhome.idea.vim.api.CommandLineType
 import com.maddyhome.idea.vim.api.ExecutionContext
 import com.maddyhome.idea.vim.api.VimCommandLine
 import com.maddyhome.idea.vim.api.VimCommandLineServiceBase
@@ -31,7 +32,7 @@ class ExEntryPanelService : VimCommandLineServiceBase() {
   }
 
   @Deprecated("Please use readInputAndProcess")
-  fun inputString(vimEditor: VimEditor, context: ExecutionContext, prompt: String, finishOn: Char?): String? {
+  override fun inputString(vimEditor: VimEditor, context: ExecutionContext, prompt: String, finishOn: Char?): String? {
     val editor = vimEditor.ij
     if (vimEditor.inRepeatMode) {
       val input = Extension.consumeString()
@@ -52,6 +53,8 @@ class ExEntryPanelService : VimCommandLineServiceBase() {
         }
         key = inputModel.nextKeyStroke()
       }
+      // Cancelled, like closing the command line with <Esc>
+      if (key != null && key.isCloseKeyStroke()) return null
       if (finishOn != null && key != null && key.keyChar == finishOn) {
         builder.append(key.keyChar)
       }
@@ -60,7 +63,7 @@ class ExEntryPanelService : VimCommandLineServiceBase() {
     } else {
       var text: String? = null
       // XXX: The Ex entry panel is used only for UI here, its logic might be inappropriate for input()
-      val commandLine = injector.commandLine.createSearchPrompt(vimEditor, context, prompt.ifEmpty { " " }, "")
+      val commandLine = injector.commandLine.createInputPrompt(vimEditor, context, prompt.ifEmpty { " " })
       ModalEntry.activate(editor.vim) { key: KeyStroke ->
         return@activate when {
           key.isCloseKeyStroke() -> {
@@ -81,6 +84,13 @@ class ExEntryPanelService : VimCommandLineServiceBase() {
             false
           }
 
+          // The typed character of <BS> would be inserted as text
+          key.keyChar == '\b' -> {
+            val offset = commandLine.caret.offset
+            if (offset > 0) commandLine.deleteText(offset - 1, 1)
+            true
+          }
+
           else -> {
             commandLine.handleKey(key)
             true
@@ -97,6 +107,7 @@ class ExEntryPanelService : VimCommandLineServiceBase() {
   override fun readInputAndProcess(
     vimEditor: VimEditor,
     context: ExecutionContext,
+    type: CommandLineType,
     prompt: String,
     finishOn: Char?,
     processing: (String) -> Unit,
@@ -120,21 +131,27 @@ class ExEntryPanelService : VimCommandLineServiceBase() {
     val panel = ExEntryPanel.getOrCreatePanelInstance()
     panel.finishOn = finishOn
     panel.inputProcessing = processing
-    panel.activate(vimEditor.ij, context.ij, prompt, "")
+    panel.activate(vimEditor.ij, context.ij, type, prompt, "")
   }
 
   override fun createPanel(
     editor: VimEditor,
     context: ExecutionContext,
+    type: CommandLineType,
     label: String,
     initText: String,
   ): VimCommandLine {
     val panel = ExEntryPanel.getOrCreatePanelInstance()
-    panel.activate(editor.ij, context.ij, label, initText)
+    panel.activate(editor.ij, context.ij, type, label, initText)
     return panel
   }
 
   override fun fullReset() {
     ExEntryPanel.fullReset()
+  }
+
+  override fun getActiveCommandLineHeight(): Int {
+    val instance = ExEntryPanel.instance ?: return 0
+    return if (instance.isActive) instance.height else 0
   }
 }

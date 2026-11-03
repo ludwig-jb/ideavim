@@ -22,13 +22,11 @@ import org.jetbrains.plugins.ideavim.VimTestCase
 import org.jetbrains.plugins.ideavim.annotations.TestWithPrimaryClipboard
 import org.jetbrains.plugins.ideavim.rangeOf
 import org.junit.jupiter.api.BeforeEach
-import org.junit.jupiter.api.Disabled
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestInfo
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
-@Disabled("The test is flaky because of an unknown reason")
 class ReplaceWithRegisterNewTest : VimTestCase() {
 
   @BeforeEach
@@ -516,6 +514,25 @@ class ReplaceWithRegisterNewTest : VimTestCase() {
   }
 
   @Test
+  fun `test visual replace across lines keeps the text outside the selection`() {
+    val text = """
+            ${c}one two three
+            four five six
+            seven eight
+    """.trimIndent()
+
+    configureByText(text)
+    typeText(injector.parser.parseKeys("yiw" + "2w" + "vj" + "gr"))
+    assertState(
+      """
+            one two on${c}e six
+            seven eight
+      """.trimIndent(),
+    )
+    assertMode(Mode.NORMAL())
+  }
+
+  @Test
   fun `test visual line replace`() {
     val text = """
             I fo${c}und it in a legendary land
@@ -589,7 +606,7 @@ class ReplaceWithRegisterNewTest : VimTestCase() {
     """.trimIndent()
     configureByText(text)
     enterCommand("set clipboard+=unnamedplus")
-    typeText(injector.parser.parseKeys("ye" + "j" + "<A-n><A-n><A-n><A-n>" + "gr"))
+    typeText(injector.parser.parseKeys("ye" + "j" + "<C-n><C-n><C-n><C-n>" + "gr"))
     assertState(
       """
         copyMe
@@ -620,7 +637,7 @@ class ReplaceWithRegisterNewTest : VimTestCase() {
     enableExtensions("multiple-cursors")
     enterCommand("set clipboard+=unnamed")
 
-    typeText(injector.parser.parseKeys("yiw" + "j" + "griw" + "jj" + "<A-n><A-n><A-n><A-n>" + "gr"))
+    typeText(injector.parser.parseKeys("yiw" + "j" + "griw" + "jj" + "<C-n><C-n><C-n><C-n>" + "gr"))
     assertState(
       """
       test

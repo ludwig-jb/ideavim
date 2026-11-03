@@ -22,24 +22,26 @@ import com.maddyhome.idea.vim.thinapi.editor.caret.CaretTransactionImpl
 import com.maddyhome.idea.vim.thinapi.getFilePath
 import com.maddyhome.idea.vim.mark.Jump as EngineJump
 
-class TransactionImpl : Transaction, EditorAccessor by EditorAccessorImpl() {
+class TransactionImpl(
+  private val projectId: String?,
+) : Transaction, EditorAccessor by EditorAccessorImpl(projectId) {
   private val vimEditor: VimEditor
-    get() = injector.editorGroup.getFocusedEditor()!!
+    get() = projectId?.let { injector.editorGroup.getSelectedEditor(it) } ?: injector.fallbackWindow
 
   override fun <T> forEachCaret(block: CaretTransaction.() -> T): List<T> {
     return vimEditor.sortedCarets()
-      .map { caret -> CaretTransactionImpl(caret.caretId).block() }
+      .map { caret -> CaretTransactionImpl(projectId, caret.caretId).block() }
   }
 
   override fun <T> with(
     caretId: CaretId,
     block: CaretTransaction.() -> T,
   ): T {
-    return CaretTransactionImpl(caretId).block()
+    return CaretTransactionImpl(projectId, caretId).block()
   }
 
   override fun <T> withPrimaryCaret(block: CaretTransaction.() -> T): T {
-    return CaretTransactionImpl(vimEditor.primaryCaret().caretId).block()
+    return CaretTransactionImpl(projectId, vimEditor.primaryCaret().caretId).block()
   }
 
   override fun addCaret(offset: Int): CaretId? {
@@ -108,21 +110,21 @@ class TransactionImpl : Transaction, EditorAccessor by EditorAccessorImpl() {
     val protocol = jump.filepath.protocol
     val filePath = jump.filepath.getFilePath()
     val engineJump = EngineJump(jump.line, jump.col, filePath, protocol)
-    injector.jumpService.addJump(vimEditor.projectId, engineJump, reset)
+    injector.jumpService.addJump(vimEditor.jumpListId, engineJump, reset)
   }
 
   override fun removeJump(jump: Jump) {
     val protocol = jump.filepath.protocol
     val filePath = jump.filepath.getFilePath()
     val engineJump = EngineJump(jump.line, jump.col, filePath, protocol)
-    injector.jumpService.removeJump(vimEditor.projectId, engineJump)
+    injector.jumpService.removeJump(vimEditor.jumpListId, engineJump)
   }
 
   override fun dropLastJump() {
-    injector.jumpService.dropLastJump(vimEditor.projectId)
+    injector.jumpService.dropLastJump(vimEditor.jumpListId)
   }
 
   override fun clearJumps() {
-    injector.jumpService.clearJumps(vimEditor.projectId)
+    injector.jumpService.clearJumps(vimEditor.jumpListId)
   }
 }

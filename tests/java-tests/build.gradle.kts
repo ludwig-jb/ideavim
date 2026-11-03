@@ -1,3 +1,11 @@
+/*
+ * Copyright 2003-2026 The IdeaVim authors
+ *
+ * Use of this source code is governed by an MIT-style
+ * license that can be found in the LICENSE.txt file or at
+ * https://opensource.org/licenses/MIT.
+ */
+
 import org.jetbrains.intellij.platform.gradle.TestFrameworkType
 
 /*
@@ -20,8 +28,7 @@ val ideaVersion: String by project
 val javaVersion: String by project
 
 repositories {
-  mavenCentral()
-
+  maven { url = uri("https://cache-redirector.jetbrains.com/repo.maven.apache.org/maven2") }
   intellijPlatform {
     defaultRepositories()
   }
@@ -32,7 +39,7 @@ dependencies {
   compileOnly("org.jetbrains.kotlin:kotlin-stdlib:$kotlinVersion")
   testImplementation("org.jetbrains.kotlin:kotlin-test:$kotlinVersion")
   testImplementation(testFixtures(project(":"))) // The root project
-  testImplementation("org.junit.vintage:junit-vintage-engine:6.0.1")
+  testImplementation("org.junit.vintage:junit-vintage-engine:6.1.3")
 
   intellijPlatform {
     // Snapshots don't use installers
@@ -46,7 +53,7 @@ dependencies {
     create(ideaType, ideaVersion) { this.useInstaller = useInstaller }
     testFramework(TestFrameworkType.Platform)
     testFramework(TestFrameworkType.JUnit5)
-    bundledPlugins("com.intellij.java", "org.jetbrains.plugins.yaml")
+    bundledPlugins("com.intellij.java", "org.jetbrains.plugins.yaml", "org.jetbrains.plugins.textmate")
   }
 }
 
@@ -58,10 +65,20 @@ tasks {
   test {
     useJUnitPlatform()
 
+    // Without this the test IDE starts every plugin bundled with the product; a startup
+    // error in any of them is rethrown as a failure of whichever IdeaVim test ran first.
+    systemProperty(
+      "idea.load.plugins.id",
+      "com.intellij,com.intellij.java,org.jetbrains.plugins.yaml,org.jetbrains.plugins.textmate,IdeaVIM",
+    )
+
     // Set teamcity env variable locally to run additional tests for leaks.
     println("Project leak checks: If you experience project leaks on TeamCity that doesn't reproduce locally")
     println("Uncomment the following line in build.gradle to enable leak checks (see build.gradle config)")
 //      environment("TEAMCITY_VERSION" to "X")
+
+    // Their .properties files shadow, rather than complement, the originals they translate.
+    classpath -= classpath.filter { it.name.startsWith("localization-") && it.name.endsWith(".jar") }
   }
 }
 

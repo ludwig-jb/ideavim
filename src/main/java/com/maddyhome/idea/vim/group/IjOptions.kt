@@ -41,17 +41,12 @@ object IjOptions {
   // Vim options that are implemented purely by existing IntelliJ features and not used by vim-engine
   val breakindent: ToggleOption = addOption(ToggleOption("breakindent", LOCAL_TO_WINDOW, "bri", false))
   val colorcolumn: StringListOption = addOption(object : StringListOption("colorcolumn", LOCAL_TO_WINDOW, "cc", "") {
-    override fun checkIfValueValid(value: VimDataType, token: String) {
-      super.checkIfValueValid(value, token)
-      if (value is VimString && value != VimString.EMPTY) {
-        // Each element in the comma-separated string list needs to be a number. No spaces. Vim supports numbers
-        // beginning "+" or "-" to draw a highlight column relative to the 'textwidth' value. We don't fully support
-        // that, but we do automatically add "+0" because IntelliJ always displays the right margin
-        split(value.value).forEach {
-          if (!it.matches(Regex("[+-]?[0-9]+"))) {
-            throw exExceptionMessage("E474.arg", token)
-          }
-        }
+    override fun checkIfSplitValueValid(value: String, token: String) {
+      // Each element in the comma-separated string list needs to be a number. No spaces. Vim supports numbers beginning
+      // "+" or "-" to draw a highlight column relative to the 'textwidth' value. We don't fully support that, but we do
+      // automatically add "+0" because IntelliJ always displays the right margin
+      if (!value.matches(Regex("[+-]?[0-9]+"))) {
+        throw exExceptionMessage("E474.arg", token)
       }
     }
   })
@@ -86,15 +81,40 @@ object IjOptions {
     )
   )
 
-  // IntelliJ specific functionality - custom options
+  // IntelliJ specific functionality - custom options.
+  // These options are all prefixed with "idea", to distinguish them from Vim's own options. Some were introduced
+  // without the prefix and have since been renamed - they pass their old name to `addOption` as a deprecated name, so
+  // that existing `~/.ideavimrc` files keep working. See `Options.addOption`.
   val ide: StringOption = addOption(
     StringOption("ide", GLOBAL, "ide", ApplicationNamesInfo.getInstance().fullProductNameWithEdition)
   )
   val ideacopypreprocess: ToggleOption = addOption(
     ToggleOption("ideacopypreprocess", GLOBAL_OR_LOCAL_TO_BUFFER, "ideacopypreprocess", false)
   )
+  /**
+   * Which non-file editors get Vim support. See `EditorHelper.isAllowedFileEditor`.
+   */
+  val ideaeditor: StringListOption = addOption(
+    StringListOption(
+      "ideaeditor",
+      GLOBAL,
+      "ideaeditor",
+      "python,debug",
+      IjOptionConstants.ideaEditorValues
+    )
+  )
   val ideajoin: ToggleOption = addOption(ToggleOption("ideajoin", GLOBAL_OR_LOCAL_TO_BUFFER, "ideajoin", false))
+  val idealookupkeys: StringListOption = addOption(
+    StringListOption(
+      "idealookupkeys",
+      GLOBAL,
+      "idealookupkeys",
+      "<Tab>,<Down>,<Up>,<Enter>,<Left>,<Right>,<C-Down>,<C-Up>,<PageUp>,<PageDown>,<C-J>,<C-Q>"
+    ),
+    "lookupkeys"
+  )
   val ideamarks: ToggleOption = addOption(ToggleOption("ideamarks", GLOBAL, "ideamarks", true))
+
   val idearefactormode: StringOption = addOption(
     StringOption(
       "idearefactormode",
@@ -104,6 +124,11 @@ object IjOptions {
       IjOptionConstants.ideaRefactorModeValues
     )
   )
+  /**
+   * Move the caret with the text when scrolling with the mouse wheel or the scrollbar, like Vim does
+   */
+  val ideascrollcursor: ToggleOption =
+    addOption(ToggleOption("ideascrollcursor", GLOBAL, "ideascrollcursor", false))
   val ideastatusicon: StringOption = addOption(
     StringOption(
       "ideastatusicon",
@@ -113,6 +138,8 @@ object IjOptions {
       IjOptionConstants.ideaStatusIconValues
     )
   )
+  val ideatrackactionids: ToggleOption =
+    addOption(ToggleOption("ideatrackactionids", GLOBAL, "tai", false), "trackactionids")
   val ideavimsupport: StringListOption = addOption(
     StringListOption(
       "ideavimsupport",
@@ -122,28 +149,31 @@ object IjOptions {
       IjOptionConstants.ideavimsupportValues
     )
   )
+  val ideavisualdelay: UnsignedNumberOption =
+    addOption(UnsignedNumberOption("ideavisualdelay", GLOBAL, "ideavisualdelay", 100), "visualdelay")
 
   @JvmField
   val ideawrite: StringOption = addOption(
     StringOption("ideawrite", GLOBAL, "ideawrite", "all", IjOptionConstants.ideaWriteValues)
   )
-  val lookupkeys: StringListOption = addOption(
-    StringListOption(
-      "lookupkeys",
-      GLOBAL,
-      "lookupkeys",
-      "<Tab>,<Down>,<Up>,<Enter>,<Left>,<Right>,<C-Down>,<C-Up>,<PageUp>,<PageDown>,<C-J>,<C-Q>"
-    )
-  )
-  val trackactionids: ToggleOption = addOption(ToggleOption("trackactionids", GLOBAL, "tai", false))
-  val visualdelay: UnsignedNumberOption = addOption(UnsignedNumberOption("visualdelay", GLOBAL, "visualdelay", 100))
 
   // Temporary feature flags during development, not really intended for external use
-  val closenotebooks: ToggleOption =
-    addOption(ToggleOption("closenotebooks", GLOBAL, "closenotebooks", true, isHidden = true))
-  val oldundo: ToggleOption = addOption(ToggleOption("oldundo", GLOBAL, "oldundo", false, isHidden = true))
-  val unifyjumps: ToggleOption = addOption(ToggleOption("unifyjumps", GLOBAL, "unifyjumps", true, isHidden = true))
+  val ideaclosenotebooks: ToggleOption = addOption(
+    ToggleOption("ideaclosenotebooks", GLOBAL, "ideaclosenotebooks", true, isHidden = true),
+    "closenotebooks"
+  )
+  val ideaoldundo: ToggleOption =
+    addOption(ToggleOption("ideaoldundo", GLOBAL, "ideaoldundo", false, isHidden = true), "oldundo")
+  /**
+   * VIM-3667: handle mappings to IDE actions when no editor is open. See `OutsideEditorKeyDispatcher`.
+   */
+  val ideaoutsideeditor: ToggleOption =
+    addOption(ToggleOption("ideaoutsideeditor", GLOBAL, "ideaoutsideeditor", true, isHidden = true))
+  val ideaunifyjumps: ToggleOption =
+    addOption(ToggleOption("ideaunifyjumps", GLOBAL, "ideaunifyjumps", true, isHidden = true), "unifyjumps")
+
   // This needs to be Option<out VimDataType> so that it can work with derived option types, such as NumberOption, which
   // derives from Option<VimInt>
-  private fun <T : Option<out VimDataType>> addOption(option: T) = option.also { Options.addOption(option) }
+  private fun <T : Option<out VimDataType>> addOption(option: T, vararg deprecatedNames: String) =
+    option.also { Options.addOption(option, *deprecatedNames) }
 }

@@ -9,20 +9,18 @@
 package com.maddyhome.idea.vim.extension.paragraphmotion
 
 import com.intellij.vim.api.VimApi
+import com.intellij.vim.api.VimInitApi
 import com.intellij.vim.api.getVariable
 import com.intellij.vim.api.scopes.nmapPluginAction
 import com.intellij.vim.api.scopes.omapPluginAction
 import com.intellij.vim.api.scopes.xmapPluginAction
 import com.maddyhome.idea.vim.extension.VimExtension
-import com.maddyhome.idea.vim.extension.api
 
 internal class ParagraphMotion : VimExtension {
   override fun getName(): String = "vim-paragraph-motion"
 
-  override fun init() {
-    val api = api()
-
-    api.mappings {
+  override fun init(initApi: VimInitApi) {
+    initApi.mappings {
       nmapPluginAction("}", "<Plug>(ParagraphNextMotion)", keepDefaultMapping = true) {
         moveParagraph(1)
       }
@@ -45,7 +43,7 @@ internal class ParagraphMotion : VimExtension {
   }
 }
 
-internal fun VimApi.moveParagraph(direction: Int) {
+internal suspend fun VimApi.moveParagraph(direction: Int) {
   val count = getVariable<Int>("v:count1") ?: 1
   val actualCount = count * direction
 

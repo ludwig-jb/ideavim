@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2023 The IdeaVim authors
+ * Copyright 2003-2026 The IdeaVim authors
  *
  * Use of this source code is governed by an MIT-style
  * license that can be found in the LICENSE.txt file or at
@@ -9,22 +9,77 @@
 package com.maddyhome.idea.vim.api
 
 interface VimFile {
-  fun displayFileInfo(vimEditor: VimEditor, fullPath: Boolean)
+  companion object {
+    /**
+     * Sentinel [selectFile] count value meaning "select the last open file" (used by `:last`).
+     *
+     * This value must stay in sync between every caller and every implementation. It was previously
+     * a bare magic number that drifted apart (`:last` passed `999` while the implementations checked
+     * for `99`), which silently broke the `:last` command. Naming it keeps the two ends from diverging.
+     */
+    const val LAST_FILE_SENTINEL: Int = 99
+  }
+
+  /**
+   * Builds the `:file` / Ctrl-G message string for the given editor.
+   * @return the message to display, or null if no info is available
+   */
+  fun displayFileInfo(vimEditor: VimEditor, fullPath: Boolean): String?
   fun displayHexInfo(editor: VimEditor)
   fun displayLocationInfo(editor: VimEditor)
-  fun selectPreviousTab(context: ExecutionContext)
+
+  /**
+   * Selects the previous (alternate) tab/buffer.
+   * @return true on success, false if there is no previous tab (caller should indicate error)
+   */
+  fun selectPreviousTab(context: ExecutionContext): Boolean
   fun saveFile(editor: VimEditor, context: ExecutionContext)
   fun saveFiles(editor: VimEditor, context: ExecutionContext)
   fun closeFile(editor: VimEditor, context: ExecutionContext)
   fun closeFile(number: Int, context: ExecutionContext)
   fun selectFile(count: Int, context: ExecutionContext): Boolean
   fun selectNextFile(count: Int, context: ExecutionContext)
-  fun openFile(filename: String, context: ExecutionContext): Boolean
+  fun createFile(filename: String, context: ExecutionContext, content: String?, editor: VimEditor)
+  fun bufferName(editor: VimEditor): String?
+  fun fullPathBufferName(editor: VimEditor): String?
+  fun alternateBufferName(editor: VimEditor): String?
+
+  /**
+   * Opens a file by name or path.
+   * @return null on success, or an error message string on failure
+   */
+  fun openFile(filename: String, context: ExecutionContext, focusEditor: Boolean = true): String?
+
+  /**
+   * Finds a file by name or path, searching home directory, absolute path, content roots, and PSI index.
+   * Returns the absolute file path as a String, or null if not found.
+   *
+   * In split (Remote Development) mode this goes via RPC to the backend where
+   * ProjectRootManager and FilenameIndex are available.
+   */
+  fun findFile(filename: String, context: ExecutionContext): String? = null
+
+  /**
+   * Lists files and directories matching a partial path prefix for command-line completion.
+   *
+   * @param pathPrefix The partial path typed by the user (may be empty, relative, absolute, or start with ~/)
+   * @param context Execution context for project resolution
+   * @return List of matching file/directory paths (directories end with '/'), sorted alphabetically
+   */
+  fun listFilesForCompletion(pathPrefix: String, context: ExecutionContext): List<String> = emptyList()
 
   fun getProjectId(project: Any): String
 
   /**
-   * Focuses or opens a new VimEditor by [documentPath]
+   * Focuses or opens a new VimEditor by [documentPath], with its caret at [position] if it is given
+   *
+   * Returns null if the editor can't be found right away. In split mode the frontend gets the editor of a file it just
+   * opened later, so the caret is only at [position] because the file was opened there.
    */
-  fun selectEditor(projectId: String, documentPath: String, protocol: String?): VimEditor?
+  fun selectEditor(
+    projectId: String,
+    documentPath: String,
+    protocol: String,
+    position: BufferPosition? = null,
+  ): VimEditor?
 }

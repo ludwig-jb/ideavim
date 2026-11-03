@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2023 The IdeaVim authors
+ * Copyright 2003-2026 The IdeaVim authors
  *
  * Use of this source code is governed by an MIT-style
  * license that can be found in the LICENSE.txt file or at
@@ -9,12 +9,13 @@
 package com.maddyhome.idea.vim.api
 
 import com.maddyhome.idea.vim.ex.exExceptionMessage
-import com.maddyhome.idea.vim.helper.StrictMode
 import com.maddyhome.idea.vim.helper.indexOfOrNull
+import com.maddyhome.idea.vim.options.KeyValuePairOption
 import com.maddyhome.idea.vim.options.NumberOption
 import com.maddyhome.idea.vim.options.Option
 import com.maddyhome.idea.vim.options.OptionAccessScope
 import com.maddyhome.idea.vim.options.OptionConstants
+import com.maddyhome.idea.vim.options.OptionDeclaredScope
 import com.maddyhome.idea.vim.options.OptionDeclaredScope.GLOBAL
 import com.maddyhome.idea.vim.options.OptionDeclaredScope.GLOBAL_OR_LOCAL_TO_BUFFER
 import com.maddyhome.idea.vim.options.OptionDeclaredScope.GLOBAL_OR_LOCAL_TO_WINDOW
@@ -26,6 +27,7 @@ import com.maddyhome.idea.vim.options.ToggleOption
 import com.maddyhome.idea.vim.options.UnsignedNumberOption
 import com.maddyhome.idea.vim.options.helpers.GuiCursorOptionHelper
 import com.maddyhome.idea.vim.options.helpers.KeywordOptionHelper
+import com.maddyhome.idea.vim.options.helpers.LangMapOptionHelper
 import com.maddyhome.idea.vim.vimscript.model.datatypes.VimDataType
 import com.maddyhome.idea.vim.vimscript.model.datatypes.VimInt
 import com.maddyhome.idea.vim.vimscript.model.datatypes.VimString
@@ -49,14 +51,20 @@ object Options {
    *
    * Note that the generic type is `Option<out VimDataType>` so that it will handle derived types that have a more
    * derived type parameter. E.g. `NumberOption`, which derives from `Option<VimInt>`.
+   *
+   * @param option  The option to register
+   * @param deprecatedNames Names that the option used to be known by, and which are still accepted by `:set` and by
+   * the `&{option}` expression, so that existing `~/.ideavimrc` files keep working. A deprecated name is an alias only
+   * - the option's canonical [Option.name] is always used to store the value and to report it back to the user, and a
+   * deprecated name is never listed by `:set` or `:set all`.
    */
-  fun <T : Option<out VimDataType>> addOption(option: T): T {
+  fun <T : Option<out VimDataType>> addOption(option: T, vararg deprecatedNames: String): T {
     return option.also {
       // This suppresses a variance problem. We need to be generic with an upper bound of `Option<out VimDataType` so
       // that we can both accept and then return a derived type which is generic by a type derived from `VimDataType`.
       // But we don't want the stored option to be covariant everywhere, as it's not a covariant type
       @Suppress("UNCHECKED_CAST")
-      options.put(option.name, option.abbrev, option as Option<VimDataType>)
+      options.put(option.name, option.abbrev, deprecatedNames.asList(), option as Option<VimDataType>)
     }
   }
 
@@ -102,6 +110,19 @@ object Options {
    */
 
   // Simple options, sorted by name
+
+  // Default differs from Vim (which uses off), and matches Neovim. IdeaVim has always kept the indent of the changed
+  // line for `cc` and `S`, and indented the new line for `o`, `O` and Enter in Insert mode, so 'autoindent' on keeps
+  // the existing behaviour
+  val autoindent: ToggleOption = addOption(ToggleOption("autoindent", LOCAL_TO_BUFFER, "ai", true))
+  val comments: StringListOption = addOption(
+    StringListOption(
+      "comments",
+      LOCAL_TO_BUFFER,
+      "com",
+      "s1:/*,mb:*,ex:*/,://,b:#,:%,:XCOMM,n:>,fb:-",
+    )
+  )
   val digraph: ToggleOption = addOption(ToggleOption("digraph", GLOBAL, "dg", false))
 
   // Default differs from Vim (which uses 0). In Vim, foldlevel=0 means all folds are closed on window open.
@@ -114,6 +135,7 @@ object Options {
   val hlsearch: ToggleOption = addOption(ToggleOption("hlsearch", GLOBAL, "hls", false))
   val ignorecase: ToggleOption = addOption(ToggleOption("ignorecase", GLOBAL, "ic", false))
   val incsearch: ToggleOption = addOption(ToggleOption("incsearch", GLOBAL, "is", false))
+  val iminsert: NumberOption = addOption(UnsignedNumberOption("iminsert", LOCAL_TO_BUFFER, "imi", 0))
   val isfname: StringListOption = addOption(
     StringListOption(
       "isfname",
@@ -126,6 +148,8 @@ object Options {
       }
     )
   )
+  val keymap: StringOption =
+    addOption(StringOption("keymap", OptionDeclaredScope.LOCAL_TO_BUFFER, "kmp", VimString.EMPTY))
   val keymodel: StringListOption = addOption(
     StringListOption(
       "keymodel",
@@ -142,7 +166,44 @@ object Options {
       )
     )
   )
+
+  /**
+   * This is the inverse of `'langremap'`. Only for backwards compatibility
+   */
+  val langnoremap: ToggleOption = addOption(ToggleOption("langnoremap", GLOBAL, "lnr", true))
+
+  /**
+   * On if `'langmap'` applies to the results of a mapping
+   *
+   * Vim defaults to "on", but sets to "off" in defaults.vim. Neovim defaults to "off". Off is the better default value,
+   * and Vim clearly thinks so too, but maintains the old "on" default to avoid breaking changes.
+   *
+   * Changing this value sets `'langnoremap'` and vice versa.
+   */
+  val langremap: ToggleOption = addOption(ToggleOption("langremap", GLOBAL, "lrm", false))
+
+  val mouse: StringOption = addOption(object : StringOption("mouse", GLOBAL, "mouse", "nvi") {
+    private val validFlags = setOf('n', 'v', 'i', 'c', 'h', 'a', 'r')
+
+    override fun checkIfValueValid(value: VimDataType, token: String) {
+      super.checkIfValueValid(value, token)
+      if (value is VimString && value.value.any { it !in validFlags }) {
+        throw exExceptionMessage("E474.arg", token)
+      }
+    }
+  })
   val maxmapdepth: NumberOption = addOption(NumberOption("maxmapdepth", GLOBAL, "mmd", 20))
+  val maxsearchcount: UnsignedNumberOption = addOption(
+    object : UnsignedNumberOption("maxsearchcount", GLOBAL, "msc", 999) {
+      override fun checkIfValueValid(value: VimDataType, token: String) {
+        super.checkIfValueValid(value, token)
+        val count = (value as VimInt).value
+        if (count < 1 || count > 9999) {
+          throw exExceptionMessage("E474.arg", token)
+        }
+      }
+    }
+  )
   val more: ToggleOption = addOption(ToggleOption("more", GLOBAL, "more", true))
   val nrformats: StringListOption = addOption(
     StringListOption("nrformats", LOCAL_TO_BUFFER, "nf", "hex", setOf("octal", "hex", "alpha"))
@@ -195,8 +256,18 @@ object Options {
   )
   val smartcase: ToggleOption = addOption(ToggleOption("smartcase", GLOBAL, "scs", false))
   val startofline: ToggleOption = addOption(ToggleOption("startofline", GLOBAL, "sol", true))
+  val tagstack: ToggleOption = addOption(ToggleOption("tagstack", GLOBAL, "ts", true))
   val timeout: ToggleOption = addOption(ToggleOption("timeout", GLOBAL, "to", true))
   val timeoutlen: UnsignedNumberOption = addOption(UnsignedNumberOption("timeoutlen", GLOBAL, "tm", 1000))
+  val inccommand: StringOption = addOption(
+    StringOption(
+      "inccommand",
+      GLOBAL,
+      "icm",
+      "",
+      setOf("nosplit", "split")
+    )
+  )
   val undolevels: NumberOption = addOption(
     // -1 means no undo. Vim uses -123456 as "unset". See `:help undolevels`
     // TODO: This option doesn't appear to be used anywhere...
@@ -223,9 +294,19 @@ object Options {
     )
   )
   val wrapscan: ToggleOption = addOption(ToggleOption("wrapscan", GLOBAL, "ws", true))
+  val wildmenu: ToggleOption = addOption(ToggleOption("wildmenu", GLOBAL, "wmnu", true))
 
 
   // More complex options, with additional validation, etc.
+  val cmdheight: UnsignedNumberOption = addOption(object : UnsignedNumberOption("cmdheight", GLOBAL, "ch", 1) {
+    override fun checkIfValueValid(value: VimDataType, token: String) {
+      super.checkIfValueValid(value, token)
+      if (value.toVimNumber().value == 0) {
+        throw exExceptionMessage("E487", token)
+      }
+    }
+  })
+
   val guicursor: StringListOption = addOption(object : StringListOption(
     "guicursor", GLOBAL, "gcr",
     "n-v-c:block-Cursor/lCursor," +
@@ -235,37 +316,124 @@ object Options {
       "r-cr:hor20-Cursor/lCursor," +
       "sm:block-Cursor-blinkwait175-blinkoff150-blinkon175"
   ) {
-    override fun checkIfValueValid(value: VimDataType, token: String) {
-      super.checkIfValueValid(value, token)
-      val valueAsString = (value as VimString).value
-      valueAsString.split(",").forEach { GuiCursorOptionHelper.convertToken(it) }
+    override fun checkIfSplitValueValid(value: String, token: String) {
+      GuiCursorOptionHelper.convertToken(value)
     }
   })
 
   val iskeyword: StringListOption =
     addOption(object : StringListOption("iskeyword", LOCAL_TO_BUFFER, "isk", "@,48-57,_") {
-      override fun checkIfValueValid(value: VimDataType, token: String) {
-        super.checkIfValueValid(value, token)
-        if (KeywordOptionHelper.isValueInvalid((value as VimString).value)) {
+      override fun split(value: String): List<String> {
+        return KeywordOptionHelper.parseValues(value) ?: listOf(value)
+      }
+
+      override fun checkIfSplitValueValid(value: String, token: String) {
+        if (!KeywordOptionHelper.isValueValid(value)) {
           throw exExceptionMessage("E474.arg", token)
         }
       }
-
-      override fun split(value: String): List<String> {
-        val result = KeywordOptionHelper.parseValues(value)
-        StrictMode.assert(result != null, "Cannot split iskeyword value: $ value")
-
-        return result ?: split(defaultValue.value)
-      }
     })
+
+  val langmap: StringListOption = addOption(object : StringListOption("langmap", GLOBAL, "lmap", VimString.EMPTY) {
+    override fun split(value: String): List<String> {
+      return LangMapOptionHelper.split(value)
+    }
+
+    override fun checkIfValueValid(value: VimString, token: String, isPartialValue: Boolean) {
+      LangMapOptionHelper.parse(value.value, token)
+    }
+
+    override fun parseValue(value: String, token: String): VimString {
+      // TODO: This should probably be handled when parsing the command argument
+      // Firstly, unescape any quotes or bars. These are escaped to prevent comments and starting a new command. Vim
+      // appears to handle this separately to parsing the option value.
+      val unescapedValue = value.replace("\\" + "\"", "\"").replace("\\|", "|")
+
+      // TODO: We should probably be doing this for other options too
+      // See `:help option-backslash`
+      // Whitespace (and for 'langmap' semicolon, comma, quote and bar) needs to be escaped with a backslash, but to
+      // include a backslash, you have to use two. I.e. `:set langmap=a\,` fails, because Vim sees this as `langmap=a,`.
+      // You need to use `:set langmap=a\\,` to map `a` to `,`.
+      // We see this in action with the Dvorak langmap which starts `:set langmap='q,\\,w,.e`. The first pair is `'q`,
+      // the second is `\,w` and then `.e`. We can check this with `:set langmap?`, and Vim will print
+      // `langmap='q,\,w,.e` - the double backslash has become an escape for the comma.
+      val processedValue = if (!unescapedValue.contains('\\')) unescapedValue else buildString {
+        // Note that this loop means we drop a trailing backslash, which is what appears to happen with Vim - the docs
+        // say that the number of backslashes is halved (rounded down)
+        // E.g. `:set langmap=\\\ab` is parsed as `\ab` (`:set langmap?`)
+        var inBackslash = false
+        for (c in unescapedValue) {
+          if (c == '\\') {
+            if (inBackslash) {
+              append('\\')
+              inBackslash = false
+            } else {
+              inBackslash = true
+            }
+          } else {
+            append(c)
+            inBackslash = false
+          }
+        }
+
+        if (inBackslash) append('\\')
+      }
+      return super.parseValue(processedValue, token)
+    }
+  })
 
   val matchpairs: StringListOption =
     addOption(object : StringListOption("matchpairs", LOCAL_TO_BUFFER, "mps", "(:),{:},[:]") {
-      override fun checkIfValueValid(value: VimDataType, token: String) {
-        super.checkIfValueValid(value, token)
-        for (v in split((value as VimString).value)) {
-          if (!v.matches(Regex(".:."))) {
+      override fun checkIfSplitValueValid(value: String, token: String) {
+        if (!value.matches(Regex(".:."))) {
+          throw exExceptionMessage("E474.arg", token)
+        }
+      }
+    })
+
+  // The default Vim value is "hit-enter,history:500" and the "wait" value is only used when "hit-enter" is removed.
+  // IdeaVim additionally uses "wait" to automatically hide the output panel when it's showing a single-line message.
+  // Setting to 0 with "hit-enter" will behave like Vim (no waiting at the end of the pager). Setting to 0 for
+  // single-line messages will disable the wait and require dismissing the message manually.
+  val messagesopt: KeyValuePairOption =
+    addOption(object : KeyValuePairOption(
+      "messagesopt",
+      GLOBAL,
+      "mopt",
+      "hit-enter,history:500,wait:10000",
+      validKeys = listOf("history", "wait"),
+      validFlags = listOf("hit-enter")
+    ) {
+      override fun checkIfValueValid(value: VimString, token: String, isPartialValue: Boolean) {
+        super.checkIfValueValid(value, token, isPartialValue)
+        if (!isPartialValue) {
+          val values = splitToPairs(value.value).toMap()
+          // "history" is required
+          if (!values.containsKey("history")) {
             throw exExceptionMessage("E474.arg", token)
+          }
+
+          // "wait" is required if "hit-enter" is not present
+          if (!values.containsKey("hit-enter") && !values.containsKey("wait")) {
+            throw exExceptionMessage("E474.arg", token)
+          }
+        }
+      }
+
+      override fun checkIfPairValid(key: String, value: String, token: String) {
+        when (key) {
+          "wait" -> {
+            val value = value.toIntOrNull()
+            if (value == null || value < 0 || value > 10000) {
+              throw exExceptionMessage("E474.arg", token)
+            }
+          }
+
+          "history" -> {
+            val value = value.toIntOrNull()
+            if (value == null || value < 0) {
+              throw exExceptionMessage("E474.arg", token)
+            }
           }
         }
       }
@@ -295,7 +463,7 @@ object Options {
   val scrolljump: NumberOption = addOption(object : NumberOption("scrolljump", GLOBAL, "sj", 1) {
     override fun checkIfValueValid(value: VimDataType, token: String) {
       super.checkIfValueValid(value, token)
-      if ((value as VimInt).value < -100) {
+      if (value.toVimNumber().value < -100) {
         throw exExceptionMessage("E49", token)
       }
     }
@@ -363,6 +531,9 @@ object Options {
 
   // IdeaVim specific options. Put any editor or IDE specific options in IjOptionProperties
 
+  val ideawindowjumps: ToggleOption =
+    addOption(ToggleOption("ideawindowjumps", GLOBAL, "ideawindowjumps", false, isHidden = true), "windowjumps")
+
   // Temporary feature flags for work-in-progress behaviour, diagnostic switches, etc. Hidden from the output of `:set all`
   val ideastrictmode: ToggleOption =
     addOption(ToggleOption("ideastrictmode", GLOBAL, "ideastrictmode", false, isHidden = true))
@@ -370,34 +541,36 @@ object Options {
     addOption(ToggleOption("ideatracetime", GLOBAL, "ideatracetime", false, isHidden = true))
 }
 
-private class MultikeyMap(vararg entries: Option<VimDataType>) {
+/**
+ * Stores options by name, by abbreviation and by any deprecated names
+ *
+ * Only [values] (i.e. the options stored by name) is enumerable, so that neither abbreviations nor deprecated names
+ * are ever listed as options in their own right.
+ */
+private class MultikeyMap {
   private val primaryKeyStorage: MutableMap<String, Option<VimDataType>> = mutableMapOf()
   private val secondaryKeyStorage: MutableMap<String, Option<VimDataType>> = mutableMapOf()
+  private val deprecatedKeyStorage: MutableMap<String, Option<VimDataType>> = mutableMapOf()
 
-  init {
-    for (entry in entries) {
-      primaryKeyStorage[entry.name] = entry
-      secondaryKeyStorage[entry.abbrev] = entry
-    }
-  }
-
-  fun put(key1: String, key2: String, value: Option<VimDataType>) {
+  fun put(key1: String, key2: String, deprecatedKeys: Collection<String>, value: Option<VimDataType>) {
     primaryKeyStorage[key1] = value
     secondaryKeyStorage[key2] = value
+    deprecatedKeys.forEach { deprecatedKeyStorage[it] = value }
   }
 
   fun get(key: String): Option<VimDataType>? {
-    return primaryKeyStorage[key] ?: secondaryKeyStorage[key]
+    return primaryKeyStorage[key] ?: secondaryKeyStorage[key] ?: deprecatedKeyStorage[key]
   }
 
   fun remove(key: String) {
-    val option = primaryKeyStorage[key] ?: secondaryKeyStorage[key]
-    primaryKeyStorage.values.remove(option)
-    secondaryKeyStorage.values.remove(option)
+    val option = get(key) ?: return
+    primaryKeyStorage.values.removeAll { it === option }
+    secondaryKeyStorage.values.removeAll { it === option }
+    deprecatedKeyStorage.values.removeAll { it === option }
   }
 
   fun contains(key: String): Boolean {
-    return primaryKeyStorage.containsKey(key) || secondaryKeyStorage.containsKey(key)
+    return get(key) != null
   }
 
   val values get() = primaryKeyStorage.values

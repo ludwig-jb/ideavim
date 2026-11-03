@@ -25,16 +25,32 @@ import com.maddyhome.idea.vim.handler.toMotionOrError
 import com.maddyhome.idea.vim.helper.enumSetOf
 import java.util.*
 
-@CommandOrMotion(keys = ["[]"], modes = [Mode.NORMAL, Mode.VISUAL, Mode.OP_PENDING])
+@CommandOrMotion(
+  keys = ["[]"],
+  modes = [Mode.NORMAL, Mode.VISUAL, Mode.OP_PENDING],
+  description = "Move [count] sections backward, or to the previous '}' in the first column."
+)
 class MotionSectionBackwardEndAction : MotionSectionAction('}', Direction.BACKWARDS)
 
-@CommandOrMotion(keys = ["[["], modes = [Mode.NORMAL, Mode.VISUAL, Mode.OP_PENDING])
+@CommandOrMotion(
+  keys = ["[["],
+  modes = [Mode.NORMAL, Mode.VISUAL, Mode.OP_PENDING],
+  description = "Move [count] sections backward, or to the previous '{' in the first column."
+)
 class MotionSectionBackwardStartAction : MotionSectionAction('{', Direction.BACKWARDS)
 
-@CommandOrMotion(keys = ["]["], modes = [Mode.NORMAL, Mode.VISUAL, Mode.OP_PENDING])
+@CommandOrMotion(
+  keys = ["]["],
+  modes = [Mode.NORMAL, Mode.VISUAL, Mode.OP_PENDING],
+  description = "Move [count] sections forward, or to the next '}' in the first column."
+)
 class MotionSectionForwardEndAction : MotionSectionAction('}', Direction.FORWARDS)
 
-@CommandOrMotion(keys = ["]]"], modes = [Mode.NORMAL, Mode.VISUAL, Mode.OP_PENDING])
+@CommandOrMotion(
+  keys = ["]]"],
+  modes = [Mode.NORMAL, Mode.VISUAL, Mode.OP_PENDING],
+  description = "Move [count] sections forward, or to the next '{' in the first column."
+)
 class MotionSectionForwardStartAction : MotionSectionAction('{', Direction.FORWARDS)
 
 sealed class MotionSectionAction(private val charType: Char, val direction: Direction) :
@@ -72,7 +88,7 @@ private fun getCaretToSectionMotion(
   } else {
     var res = injector.searchHelper.findSection(editor, caret, type, dir, count)
     if (res != -1) {
-      res = editor.normalizeOffset(res, false)
+      res = editor.normalizeOffset(res, true)
     }
     res
   }

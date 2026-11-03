@@ -16,13 +16,18 @@ import com.maddyhome.idea.vim.api.injector
 import com.maddyhome.idea.vim.command.Command
 import com.maddyhome.idea.vim.command.OperatorArguments
 import com.maddyhome.idea.vim.group.visual.VimSelection
+import com.maddyhome.idea.vim.group.visual.toJoinRange
 import com.maddyhome.idea.vim.handler.VisualOperatorActionHandler
 import com.maddyhome.idea.vim.newapi.ijOptions
 
 /**
  * @author vlan
  */
-@CommandOrMotion(keys = ["gJ"], modes = [Mode.VISUAL])
+@CommandOrMotion(
+  keys = ["gJ"],
+  modes = [Mode.VISUAL],
+  description = "Join the highlighted lines without inserting or removing any spaces."
+)
 class DeleteJoinVisualLinesAction : VisualOperatorActionHandler.SingleExecution() {
   override val type: Command.Type = Command.Type.DELETE
 
@@ -46,7 +51,7 @@ class DeleteJoinVisualLinesAction : VisualOperatorActionHandler.SingleExecution(
           editor,
           context,
           caret,
-          range.toVimTextRange(true).normalize(),
+          range.toJoinRange(),
           false,
           operatorArguments,
         )

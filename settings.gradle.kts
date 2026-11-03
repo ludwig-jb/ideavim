@@ -6,11 +6,21 @@
  * https://opensource.org/licenses/MIT.
  */
 
-// Set repository for snapshot versions of gradle plugin
 pluginManagement {
+  val kspVersion: String by settings
+  plugins {
+    id("com.google.devtools.ksp") version kspVersion
+  }
+
   repositories {
     maven {
-      url = uri("https://oss.sonatype.org/content/repositories/snapshots/")
+      url = uri("https://cache-redirector.jetbrains.com/repo.maven.apache.org/maven2")
+    }
+    maven {
+      url = uri("https://cache-redirector.jetbrains.com/plugins.gradle.org/m2")
+    }
+    maven {
+      url = uri("https://cache-redirector.jetbrains.com/packages.jetbrains.team/maven/p/ij/intellij-dependencies")
     }
     mavenCentral()
     gradlePluginPortal()
@@ -34,8 +44,20 @@ include("tests:ui-ij-tests")
 include("tests:ui-py-tests")
 include("tests:ui-fixtures")
 include("api")
-include("modules:ideavim-acejump")
-include("modules:ideavim-rider")
-include("modules:ideavim-clion-nova")
-include("modules:ideavim-terminal")
+include("ideavim-common")
+include("ideavim-frontend")
+include("ideavim-backend")
+include("ideavim-backend-bookmarks")
+include("ideavim-backend-bookmarks-core")
+include("ideavim-backend-git")
+include("ideavim-backend-git-legacy")
+include("ideavim-acejump")
+include("ideavim-rider")
+include("ideavim-clion-nova")
+include("ideavim-terminal")
+include("ideavim-vcs")
+include("ideavim-air")
+include("ideavim-rpc")
 include("tests:ui-rd-tests")
+include("tests:split-mode-tests")
+include("tests:large-file-tests")

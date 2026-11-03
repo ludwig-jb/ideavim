@@ -9,23 +9,30 @@
 package com.maddyhome.idea.vim.extension.hints
 
 import com.maddyhome.idea.vim.extension.VimExtension
+import com.maddyhome.idea.vim.extension.nerdtree.EscEverywhere
 import com.maddyhome.idea.vim.extension.nerdtree.NerdTreeEverywhere
 import com.maddyhome.idea.vim.extension.windownavigation.ToolWindowNavEverywhere
 
 internal class VimHintsExtension : VimExtension {
   private val nerdTreeEverywhere = NerdTreeEverywhere()
   private val toolWindowNavEverywhere = ToolWindowNavEverywhere()
+  private val tableEverywhere = TableEverywhere()
+  private val escEverywhere = EscEverywhere()
 
   override fun getName() = "VimEverywhere"
 
   override fun init() {
     nerdTreeEverywhere.init()
     toolWindowNavEverywhere.init()
+    tableEverywhere.init()
+    escEverywhere.init()
   }
 
   override fun dispose() {
     nerdTreeEverywhere.dispose()
     toolWindowNavEverywhere.dispose()
+    tableEverywhere.dispose()
+    escEverywhere.dispose()
     super.dispose()
   }
 }

@@ -23,13 +23,16 @@ import com.maddyhome.idea.vim.command.Command
 import com.maddyhome.idea.vim.command.OperatorArguments
 import com.maddyhome.idea.vim.handler.ChangeEditorActionHandler
 
-@CommandOrMotion(keys = ["<C-Y>"], modes = [Mode.INSERT])
-class InsertCharacterAboveCursorAction : ChangeEditorActionHandler.ForEachCaret() {
+@CommandOrMotion(
+  keys = ["<C-Y>"],
+  modes = [Mode.INSERT],
+  description = "In Insert mode, insert the character found above the cursor."
+)
+class InsertCharacterAboveCursorAction : ChangeEditorActionHandler.SingleExecution() {
   override val type: Command.Type = Command.Type.INSERT
 
   override fun execute(
     editor: VimEditor,
-    caret: VimCaret,
     context: ExecutionContext,
     argument: Argument?,
     operatorArguments: OperatorArguments,
@@ -37,12 +40,19 @@ class InsertCharacterAboveCursorAction : ChangeEditorActionHandler.ForEachCaret(
     return if (editor.isOneLineMode()) {
       false
     } else {
-      insertCharacterAroundCursor(editor, caret, -1)
+      editor.carets().forEach { caret ->
+        insertCharacterAroundCursor(editor, caret, -1)
+      }
+      true
     }
   }
 }
 
-@CommandOrMotion(keys = ["<C-E>"], modes = [Mode.INSERT])
+@CommandOrMotion(
+  keys = ["<C-E>"],
+  modes = [Mode.INSERT],
+  description = "In Insert mode, insert the character found below the cursor."
+)
 class InsertCharacterBelowCursorAction : ChangeEditorActionHandler.ForEachCaret() {
   override val type: Command.Type = Command.Type.INSERT
 
@@ -53,11 +63,7 @@ class InsertCharacterBelowCursorAction : ChangeEditorActionHandler.ForEachCaret(
     argument: Argument?,
     operatorArguments: OperatorArguments,
   ): Boolean {
-    return if (editor.isOneLineMode()) {
-      false
-    } else {
-      insertCharacterAroundCursor(editor, caret, 1)
-    }
+    return !editor.isOneLineMode() && insertCharacterAroundCursor(editor, caret, 1)
   }
 }
 

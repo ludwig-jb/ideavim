@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2023 The IdeaVim authors
+ * Copyright 2003-2026 The IdeaVim authors
  *
  * Use of this source code is governed by an MIT-style
  * license that can be found in the LICENSE.txt file or at
@@ -10,6 +10,27 @@ package com.maddyhome.idea.vim.api
 
 interface VimEditorGroup {
   fun notifyIdeaJoin(editor: VimEditor)
+
+  /** Called when a new editor is created and needs to be initialised by IdeaVim */
+  fun editorCreated(editor: VimEditor) {}
+
+  /** Called when an editor is being deinitialised by IdeaVim */
+  fun editorDeinit(editor: VimEditor) {}
+
+  /** Returns the current key repeat state, or null if not set (Mac-specific) */
+  fun isKeyRepeat(): Boolean? = null
+
+  /** Sets the key repeat state (Mac-specific) */
+  fun setKeyRepeat(value: Boolean?) {}
+
+  /** Closes any active editor search session for the given editor */
+  fun closeEditorSearchSession(editor: VimEditor) {}
+
+  /** Called when the 'number' or 'relativenumber' options change for the given editor */
+  fun onNumberOptionChanged(editor: VimEditor) {}
+
+  /** Loads editor state from a legacy state element */
+  fun loadEditorStateData(element: Any) {}
 
   /**
    * Get a collection of all editors, including those that have not yet been initialised.
@@ -61,4 +82,24 @@ interface VimEditorGroup {
   fun updateCaretsVisualPosition(editor: VimEditor)
 
   fun getFocusedEditor(): VimEditor?
+
+  /**
+   * Get the currently selected editor from the internal model.
+   *
+   * This uses FileEditorManager's selected editor, which updates when window-switching
+   * commands like :wincmd execute, even before focus changes.
+   *
+   * @param projectId The project identifier to get the editor from.
+   * @return The selected editor, or null if no editor is selected. Null can also be returned during the
+   *   project initialization. If the null is returned, fallback to `injector.fallbackWindow`
+   */
+  fun getSelectedEditor(projectId: String): VimEditor?
+
+  /**
+   * Get the currently selected editor, checking any open project.
+   *
+   * Prefer this over [getFocusedEditor]: focus is a UI-model concept and unreliable when panels take focus, whereas
+   * the selection is updated by window-switching commands directly. Returns null if no project has a selected editor.
+   */
+  fun getSelectedEditor(): VimEditor?
 }

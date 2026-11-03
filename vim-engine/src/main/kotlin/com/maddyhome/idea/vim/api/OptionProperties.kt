@@ -19,15 +19,24 @@ import com.maddyhome.idea.vim.options.OptionAccessScope
 @Suppress("unused", "SpellCheckingInspection")
 open class GlobalOptions(scope: OptionAccessScope) : OptionsPropertiesBase(scope) {
   val clipboard: StringListOptionValue by optionProperty(Options.clipboard)
+  var cmdheight: Int by optionProperty(Options.cmdheight)
   var digraph: Boolean by optionProperty(Options.digraph)
   var gdefault: Boolean by optionProperty(Options.gdefault)
   val guicursor: StringListOptionValue by optionProperty(Options.guicursor)
   var history: Int by optionProperty(Options.history)
   var hlsearch: Boolean by optionProperty(Options.hlsearch)
   var ignorecase: Boolean by optionProperty(Options.ignorecase)
+  var ideawindowjumps: Boolean by optionProperty(Options.ideawindowjumps)
   var incsearch: Boolean by optionProperty(Options.incsearch)
+  var inccommand: String by optionProperty(Options.inccommand)
   val keymodel: StringListOptionValue by optionProperty(Options.keymodel)
+  val langmap: StringListOptionValue by optionProperty(Options.langmap)
+  var langnoremap: Boolean by optionProperty(Options.langnoremap)
+  var langremap: Boolean by optionProperty(Options.langremap)
+  var mouse: String by optionProperty(Options.mouse)
   var maxmapdepth: Int by optionProperty(Options.maxmapdepth)
+  var maxsearchcount: Int by optionProperty(Options.maxsearchcount)
+  val messagesopt: KeyValuePairOptionValue by optionProperty(Options.messagesopt)
   var more: Boolean by optionProperty(Options.more)
   var operatorfunc: String by optionProperty(Options.operatorfunc)
   var scrolljump: Int by optionProperty(Options.scrolljump)
@@ -42,12 +51,14 @@ open class GlobalOptions(scope: OptionAccessScope) : OptionsPropertiesBase(scope
   var sidescroll: Int by optionProperty(Options.sidescroll)
   var smartcase: Boolean by optionProperty(Options.smartcase)
   var startofline: Boolean by optionProperty(Options.startofline)
+  val tagstack: Boolean by optionProperty(Options.tagstack)
   val timeout: Boolean by optionProperty(Options.timeout)
   var timeoutlen: Int by optionProperty(Options.timeoutlen)
   val viminfo: StringListOptionValue by optionProperty(Options.viminfo)
   var visualbell: Boolean by optionProperty(Options.visualbell)
   val whichwrap: StringListOptionValue by optionProperty(Options.whichwrap)
   var wrapscan: Boolean by optionProperty(Options.wrapscan)
+  var wildmenu: Boolean by optionProperty(Options.wildmenu)
 
   // IdeaVim specific options. Put any editor or IDE specific options in IjOptionProperties
 
@@ -63,6 +74,7 @@ open class GlobalOptions(scope: OptionAccessScope) : OptionsPropertiesBase(scope
  */
 @Suppress("unused")
 open class EffectiveOptions(scope: OptionAccessScope.EFFECTIVE) : GlobalOptions(scope) {
+  var autoindent: Boolean by optionProperty(Options.autoindent)
   val iskeyword: StringListOptionValue by optionProperty(Options.iskeyword)
   val matchpairs: StringListOptionValue by optionProperty(Options.matchpairs)
   val nrformats: StringListOptionValue by optionProperty(Options.nrformats)

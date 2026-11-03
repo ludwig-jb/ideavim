@@ -11,7 +11,11 @@ package com.maddyhome.idea.vim.api
 import com.maddyhome.idea.vim.common.TextRange
 import com.maddyhome.idea.vim.common.VimCopiedText
 import com.maddyhome.idea.vim.helper.VimLockLabel
+import com.maddyhome.idea.vim.state.mode.SelectionType
 import java.awt.datatransfer.Transferable
+
+/** Text published to the PRIMARY selection, paired with the selection type PRIMARY itself cannot store. */
+data class OwnedPrimaryContent(val copiedText: VimCopiedText, val selectionType: SelectionType)
 
 /**
  * Interface representing a clipboard manager for the Vim text editor.
@@ -25,7 +29,43 @@ interface VimClipboardManager {
   fun getClipboardContent(editor: VimEditor, context: ExecutionContext): VimCopiedText?
 
   fun setClipboardContent(editor: VimEditor, context: ExecutionContext, textData: VimCopiedText): Boolean
-  fun setPrimaryContent(editor: VimEditor, context: ExecutionContext, textData: VimCopiedText): Boolean
+
+  /**
+   * Publishes [textData] to PRIMARY. [selectionType] is remembered alongside it, because the windowing
+   * system stores text only and cannot carry it — see [getOwnedPrimaryContent].
+   */
+  fun setPrimaryContent(
+    editor: VimEditor,
+    context: ExecutionContext,
+    textData: VimCopiedText,
+    selectionType: SelectionType,
+  ): Boolean
+
+  /**
+   * What we last published via [setPrimaryContent], while the selection is provably still ours, so the
+   * type survives instead of being guessed from the text. Neovim's clipboard provider does the same,
+   * reusing the `[lines, regtype]` it last handed out while its `xclip`/`wl-copy` job is alive.
+   *
+   * Default: `null` — platforms without a PRIMARY selection never own one.
+   */
+  fun getOwnedPrimaryContent(): OwnedPrimaryContent? = null
+
+  /**
+   * The same value, but claiming nothing about who owns PRIMARY now — for recognising our own content
+   * after a lossy round trip. Callers must confirm the text before trusting it.
+   *
+   * Default: `null`.
+   */
+  fun getLastPublishedPrimaryContent(): OwnedPrimaryContent? = null
+
+  /**
+   * Fired when the user's visible visual selection changes. Whether to republish the new
+   * selection to the windowing system's PRIMARY is platform policy, so vim-engine just notifies
+   * and the IDE-specific implementation decides what (if anything) to do.
+   *
+   * Default: no-op.
+   */
+  fun onVisualSelectionChange(editor: VimEditor, caret: ImmutableVimCaret) {}
 
   @Deprecated("Please use com.maddyhome.idea.vim.api.VimClipboardManager#setClipboardContent")
   fun setClipboardText(text: String, rawText: String = text, transferableData: List<Any>): Transferable?

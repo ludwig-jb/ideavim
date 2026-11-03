@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2023 The IdeaVim authors
+ * Copyright 2003-2026 The IdeaVim authors
  *
  * Use of this source code is governed by an MIT-style
  * license that can be found in the LICENSE.txt file or at
@@ -123,7 +123,8 @@ private enum class HandledModes {
   VISUAL_AND_SELECT_VIM,
 }
 
-private val GROUP = EventLogGroup("vim.handlers", 1, "FUS", "Group: Information about Vim handlers for different shortcuts")
+private val GROUP =
+  EventLogGroup("vim.handlers", 1, "FUS", "Group: Information about Vim handlers for different shortcuts")
 private val keyStrokes = listOf(
   KeyStroke.getKeyStroke('1'.code, CTRL_DOWN_MASK),
   KeyStroke.getKeyStroke('2'.code, CTRL_DOWN_MASK),
@@ -206,5 +207,6 @@ private val keyStrokes = listOf(
   KeyStroke.getKeyStroke(']'.code, CTRL_DOWN_MASK + SHIFT_DOWN_MASK),
 )
 private val KEY_STROKE = EventFields.String("key_stroke", keyStrokes.map { it.toReadableString() })
-private val HANDLER_MODE = EventFields.Enum<HandledModes>("handler")
-private val HANDLER = GROUP.registerEvent("vim.handler", KEY_STROKE, HANDLER_MODE, "Information about Vim handlers for different shortcuts")
+private val HANDLER_MODE = EventFields.Enum("handler", HandledModes::class.java)
+private val HANDLER =
+  GROUP.registerEvent("vim.handler", KEY_STROKE, HANDLER_MODE, "Information about Vim handlers for different shortcuts")

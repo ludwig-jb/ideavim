@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2023 The IdeaVim authors
+ * Copyright 2003-2026 The IdeaVim authors
  *
  * Use of this source code is governed by an MIT-style
  * license that can be found in the LICENSE.txt file or at
@@ -19,20 +19,24 @@ import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.editor.Document
 import com.intellij.openapi.editor.toolbar.floating.AbstractFloatingToolbarProvider
 import com.intellij.openapi.editor.toolbar.floating.FloatingToolbarComponent
+import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.project.DumbAwareAction
 import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.util.io.FileUtil
+import com.maddyhome.idea.vim.api.MessageType
 import com.maddyhome.idea.vim.api.VimrcFileState
 import com.maddyhome.idea.vim.api.injector
 import com.maddyhome.idea.vim.helper.MessageHelper
 import com.maddyhome.idea.vim.icons.VimIcons
 import com.maddyhome.idea.vim.key.MappingOwner
+import com.maddyhome.idea.vim.newapi.IjVimEditor
 import com.maddyhome.idea.vim.newapi.vim
 import com.maddyhome.idea.vim.troubleshooting.Troubleshooter
 import com.maddyhome.idea.vim.ui.ReloadFloatingToolbarActionGroup.Companion.ACTION_GROUP
+import com.maddyhome.idea.vim.vimscript.model.commands.IdeaPlug
 import com.maddyhome.idea.vim.vimscript.parser.VimscriptParser
+import com.maddyhome.idea.vim.vimscript.services.VimRcService
 import com.maddyhome.idea.vim.vimscript.services.VimRcService.VIMRC_FILE_NAME
-import com.maddyhome.idea.vim.vimscript.services.VimRcService.executeIdeaVimRc
 import org.jetbrains.annotations.TestOnly
 import java.nio.file.Path
 import kotlin.io.path.readText
@@ -69,9 +73,7 @@ internal object VimRcFileState : VimrcFileState {
 
   override fun saveFileState(filePath: String) {
     val ideaVimRcText = Path.of(filePath).let {
-      kotlin.runCatching { it.readText() }
-        .onFailure { LOG.error(it) }
-        .getOrNull()
+      kotlin.runCatching { it.readText() }.onFailure { LOG.error(it) }.getOrNull()
     } ?: ""
     saveFileState(filePath, ideaVimRcText)
   }
@@ -106,6 +108,29 @@ internal object VimRcFileState : VimrcFileState {
 
   fun unregisterStateListener(action: () -> Unit) {
     saveStateListeners.remove(action)
+  }
+}
+
+/**
+ * Drops the state that the previous execution of the ideavimrc file left behind, so that a reload does not
+ * accumulate mappings and problems from the old configuration.
+ */
+internal fun clearIdeaVimRcState() {
+  injector.keyGroup.removeKeyMapping(MappingOwner.IdeaVim.InitScript)
+  Troubleshooter.getInstance().removeByType("old-action-notation-in-mappings")
+}
+
+/**
+ * Re-reads the ideavimrc file from disk and executes it against the fallback window, the same way the file is
+ * executed on startup. Used when the location of the file changes.
+ */
+internal fun reloadIdeaVimRc() {
+  clearIdeaVimRcState()
+  try {
+    injector.optionGroup.startInitVimRc()
+    VimRcService.executeIdeaVimRc(injector.fallbackWindow)
+  } finally {
+    injector.optionGroup.endInitVimRc()
   }
 }
 
@@ -149,11 +174,30 @@ internal class ReloadVimRc : DumbAwareAction() {
 
   override fun actionPerformed(e: AnActionEvent) {
     val editor = e.getData(PlatformDataKeys.EDITOR) ?: return
-    injector.keyGroup.removeKeyMapping(MappingOwner.IdeaVim.InitScript)
-    Troubleshooter.getInstance().removeByType("old-action-notation-in-mappings")
+    clearIdeaVimRcState()
 
-    // Reload the ideavimrc in the context of the current window, as though we had called `:source ~/.ideavimrc`
-    executeIdeaVimRc(editor.vim)
+    val ideaVimRc = VimRcService.findIdeaVimRc() ?: return
+
+    // Read content from the editor document directly instead of from disk.
+    // In split mode, .ideavimrc is on the local filesystem while VFS is remote,
+    // so reading through VFS or NIO can cause File Cache Conflict dialogs.
+    val document = editor.document
+    FileDocumentManager.getInstance().saveDocumentAsIs(document)
+    val content = document.text
+
+    IdeaPlug.Companion.EnabledExtensions.clearExtensions()
+    val context = injector.executionContextManager.getEditorExecutionContext(editor.vim)
+    injector.vimscriptExecutor.executingIdeaVimRcConfiguration = true
+    try {
+      injector.vimscriptExecutor.execute(content, editor.vim, context, skipHistory = true, indicateErrors = true)
+    } catch (e: Exception) {
+      injector.outputPanel.output(
+        IjVimEditor(editor), context, e.message ?: "Error while executing ideavimrc file", MessageType.ERROR
+      )
+    } finally {
+      VimRcFileState.saveFileState(ideaVimRc.toAbsolutePath().toString(), content)
+      injector.vimscriptExecutor.executingIdeaVimRcConfiguration = false
+    }
   }
 }
 

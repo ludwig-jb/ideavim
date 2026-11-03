@@ -1,3 +1,11 @@
+/*
+ * Copyright 2003-2026 The IdeaVim authors
+ *
+ * Use of this source code is governed by an MIT-style
+ * license that can be found in the LICENSE.txt file or at
+ * https://opensource.org/licenses/MIT.
+ */
+
 @file:Suppress("ClassName")
 
 package _Self.buildTypes
@@ -15,7 +23,10 @@ open class TestingBuildType(
   private val testName: String,
   private val branch: String = "<default>",
   private val version: String = testName,
-  private val javaVersion: String? = null,
+  // JVM used to compile & run the tests. Must match the target platform's bytecode level:
+  // 2026.1 / Latest EAP are built with JVM target 25, 2025.3 and earlier with 21.
+  // 21 is the default (matches gradle.properties); newer platforms override to 25.
+  private val javaVersion: String = "21",
   private val javaPlugin: Boolean = true,
 ) : IdeaVimBuildType({
   id("IdeaVimTests_${testName.vanish()}")
@@ -26,9 +37,7 @@ open class TestingBuildType(
     param("env.ORG_GRADLE_PROJECT_legacyNoJavaPlugin", javaPlugin.not().toString())
     param("env.ORG_GRADLE_PROJECT_ideaVersion", version)
     param("env.ORG_GRADLE_PROJECT_instrumentPluginCode", "false")
-    if (javaVersion != null) {
-      param("env.ORG_GRADLE_PROJECT_javaVersion", javaVersion)
-    }
+    param("env.ORG_GRADLE_PROJECT_javaVersion", javaVersion)
   }
 
   vcs {
@@ -41,11 +50,11 @@ open class TestingBuildType(
   steps {
     gradle {
       clearConditions()
-      tasks = "test -x :tests:property-tests:test -x :tests:long-running-tests:test"
+      tasks = "clean test -x :tests:property-tests:test -x :tests:long-running-tests:test"
       buildFile = ""
       enableStacktrace = true
-      gradleParams = "--build-cache --configuration-cache"
-      jdkHome = "/usr/lib/jvm/java-21-amazon-corretto"
+      gradleParams = "--no-build-cache --configuration-cache"
+      jdkHome = "/usr/lib/jvm/java-$javaVersion-amazon-corretto"
     }
   }
 

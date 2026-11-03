@@ -1,0 +1,644 @@
+/*
+ * Copyright 2003-2026 The IdeaVim authors
+ *
+ * Use of this source code is governed by an MIT-style
+ * license that can be found in the LICENSE.txt file or at
+ * https://opensource.org/licenses/MIT.
+ */
+
+package com.maddyhome.idea.vim.split
+
+import com.intellij.driver.client.Driver
+import com.intellij.driver.client.Remote
+import com.intellij.driver.model.OnDispatcher
+import com.intellij.driver.model.RdTarget
+import com.intellij.driver.sdk.invokeAction
+import com.intellij.driver.sdk.openFile
+import com.intellij.driver.sdk.singleProject
+import com.intellij.driver.sdk.ui.Finder
+import com.intellij.driver.sdk.ui.components.UiComponent.Companion.waitFound
+import com.intellij.driver.sdk.ui.components.common.JEditorUiComponent
+import com.intellij.driver.sdk.ui.keyboard.RemoteKeyboard
+import com.intellij.driver.sdk.ui.components.common.codeEditor
+import com.intellij.driver.sdk.ui.components.common.codeEditorForFile
+import com.intellij.driver.sdk.ui.components.common.ideFrame
+import com.intellij.driver.sdk.ui.requestFocusFromIde
+import com.intellij.driver.sdk.waitForIndicators
+import com.intellij.ide.starter.config.ConfigurationStorage
+import com.intellij.ide.starter.config.splitMode
+import com.intellij.ide.starter.driver.engine.BackgroundRun
+import com.intellij.ide.starter.driver.engine.runIdeWithDriver
+import com.intellij.ide.starter.ide.IDERemDevTestContext
+import com.intellij.ide.starter.ide.IDETestContext
+import com.intellij.ide.starter.models.IdeInfo
+import com.intellij.ide.starter.models.TestCase
+import com.intellij.ide.starter.plugins.PluginConfigurator
+import com.intellij.ide.starter.project.LocalProjectInfo
+import com.intellij.ide.starter.runner.Starter
+import org.junit.jupiter.api.AfterAll
+import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertTrue
+import org.junit.jupiter.api.BeforeAll
+import org.junit.jupiter.api.TestInstance
+import java.nio.file.Path
+import kotlin.io.path.Path
+import kotlin.io.path.absolutePathString
+import kotlin.io.path.createDirectories
+import kotlin.io.path.writeText
+import kotlin.time.Duration.Companion.minutes
+
+/**
+ * Base class for IdeaVim split-mode tests.
+ *
+ * Launches a single IDE instance in split mode (backend + frontend) once per test class.
+ * Individual tests create their own files and interact via high-level helpers:
+ *
+ * ```kotlin
+ * openFile("src/Test.java")
+ * typeVim("gcc")               // type vim keys
+ * assertEditorContains("//")   // check editor text
+ * assertCaretAtLine(2)         // check caret position
+ * ```
+ */
+@TestInstance(TestInstance.Lifecycle.PER_CLASS)
+abstract class IdeaVimStarterTestBase {
+
+  private lateinit var bgRun: BackgroundRun
+  private lateinit var driver: Driver
+  protected lateinit var projectDir: Path
+
+  @BeforeAll
+  fun launchIde() {
+    projectDir = kotlin.io.path.createTempDirectory("ideavim-split-test")
+    projectDir.resolve("src").createDirectories()
+    projectDir.resolve("src/placeholder.txt").writeText("placeholder\n")
+
+    ConfigurationStorage.splitMode(true)
+    beforeContextCreated()
+
+    val context = Starter.newContext(
+      this::class.simpleName ?: "split-test",
+      TestCase(IDEA_ULTIMATE, LocalProjectInfo(projectDir)).useRelease("2026.1")
+    )
+
+    val pluginPath = resolvePluginPath()
+    PluginConfigurator(context).installPluginFromPath(pluginPath)
+    context.useTestIdeaVimRc()
+
+    if (ConfigurationStorage.splitMode()) {
+      if (context is IDERemDevTestContext) {
+        PluginConfigurator(context.frontendIDEContext).installPluginFromPath(pluginPath)
+        // Mappings come from the frontend, so the frontend is the context that really matters here.
+        context.frontendIDEContext.useTestIdeaVimRc()
+      }
+      context.patchForMacOsSplitMode()
+    }
+
+    configureContext(context)
+
+    bgRun = context.runIdeWithDriver()
+    driver = bgRun.driver
+
+    driver.withContext { waitForIndicators(5.minutes) }
+  }
+
+  @AfterAll
+  fun closeIde() {
+    if (::bgRun.isInitialized) bgRun.closeIdeAndWait()
+    ConfigurationStorage.splitMode(false)
+  }
+
+  protected open fun beforeContextCreated() {}
+  protected open fun configureContext(context: IDETestContext) {}
+
+  /**
+   * Content of the ideavimrc the launched IDE will use. Empty by default so tests run against
+   * plain Vim defaults. Override to enable options or extensions a test actually needs.
+   */
+  protected open fun ideaVimRcContent(): String = ""
+
+  /**
+   * Points the launched IDE at a test-owned ideavimrc via `IDEA_VIM_CUSTOM_VIMRC`, which
+   * [com.maddyhome.idea.vim.vimscript.services.VimRcService.findIdeaVimRc] checks before
+   * `~/.ideavimrc` and the XDG location.
+   *
+   * Without this the IDE loads the *developer's* real `~/.ideavimrc`, so results depend on whose
+   * machine the tests run on: e.g. `set sneak` rebinds `s` to the two-char sneak motion, and a test
+   * typing `0sX<Esc>` then makes no edit at all while passing on CI (which has no ideavimrc).
+   */
+  private fun IDETestContext.useTestIdeaVimRc() {
+    val vimrc = kotlin.io.path.createTempDirectory("ideavim-split-vimrc").resolve(".ideavimrc")
+    vimrc.writeText(ideaVimRcContent())
+    applyVMOptionsPatch { withEnv("IDEA_VIM_CUSTOM_VIMRC", vimrc.absolutePathString()) }
+  }
+
+  // ── File helpers ────────────────────────────────────────────
+
+  /** Creates a file in the project. Returns relative path for [openFile]. */
+  protected fun createFile(relativePath: String, content: String): String {
+    val file = projectDir.resolve(relativePath)
+    file.parent.createDirectories()
+    file.writeText(content)
+    return relativePath
+  }
+
+  // ── IDE interaction helpers ─────────────────────────────────
+
+  /** Opens a file in the editor by relative path and waits until the editor is ready for input. */
+  protected fun openFile(relativePath: String) {
+    driver.withContext { openFile(relativePath) }
+    ensureEditorReady(relativePath)
+  }
+
+  private fun ensureEditorReady(relativePath: String, timeoutMs: Long = 10_000) {
+    val deadline = System.currentTimeMillis() + timeoutMs
+    var lastText = ""
+    while (System.currentTimeMillis() < deadline) {
+      try {
+        lastText = editorText()
+        if (lastText.isNotBlank()) break
+      } catch (_: Exception) {
+        // Editor component not yet available — retry
+      }
+      Thread.sleep(200)
+    }
+    check(lastText.isNotBlank()) {
+      "Editor for '$relativePath' did not become ready within ${timeoutMs}ms"
+    }
+    clickEditor()
+
+    // Verify IdeaVim's key handler is actually attached by sending `gg` (go to first line)
+    // and checking the caret moves to line 1. This confirms vim is processing keystrokes.
+    val vimReady = waitUntil(timeoutMs = 10_000, pollMs = 500) {
+      try {
+        driver.withContext {
+          ideFrame { codeEditor().apply { waitFound(); keyboard { typeText("gg") } } }
+        }
+        Thread.sleep(300)
+        caretLine() <= 1
+      } catch (_: Exception) {
+        false
+      }
+    }
+    check(vimReady) {
+      "IdeaVim key handler did not attach for '$relativePath' within timeout"
+    }
+  }
+
+  /**
+   * Types vim keys in the active editor, and returns once no modal progress is shown
+   *
+   * Commands like `cc` ask the backend over RPC, and the frontend shows a modal progress while it waits. Keys typed
+   * meanwhile go to its Cancel button, and Escape cancels the command. A user waits for the progress to close before
+   * typing on, so the test does too: type such a command in a call of its own, and the keys after it in the next one.
+   */
+  protected fun typeVim(keys: String) {
+    driver.withContext {
+      requestFocusFromIde(singleProject())
+      ideFrame {
+        codeEditor().apply {
+          waitFound()
+          component.requestFocus()
+          keyboard { typeText(keys) }
+        }
+      }
+    }
+    waitForNoModalProgress()
+  }
+
+  /** Types vim keys followed by Escape, see [typeVim] */
+  protected fun typeVimAndEscape(keys: String) {
+    driver.withContext {
+      requestFocusFromIde(singleProject())
+      ideFrame {
+        codeEditor().apply {
+          waitFound()
+          component.requestFocus()
+          keyboard { typeText(keys); escape() }
+        }
+      }
+    }
+    waitForNoModalProgress()
+  }
+
+  private fun waitForNoModalProgress() {
+    val closed = waitUntil(timeoutMs = 30_000) {
+      driver.withContext(OnDispatcher.EDT) {
+        !utility(LaterInvocator::class, RdTarget.FRONTEND).isInModalContext()
+      }
+    }
+    check(closed) { "The modal progress was still shown after 30s" }
+  }
+
+  /** Types an ex command (without the leading `:`). */
+  protected fun exCommand(command: String) {
+    driver.withContext {
+      ideFrame {
+        codeEditor().apply {
+          waitFound(); keyboard {
+          typeText(
+            ":$command",
+            delayBetweenCharsInMs = 50
+          ); enter()
+        }
+        }
+      }
+    }
+  }
+
+  protected fun enter() {
+    driver.withContext {
+      ideFrame { codeEditor().apply { waitFound(); keyboard { enter() } } }
+    }
+  }
+
+  /** Invokes basic completion (`CodeCompletion`, Ctrl+Space) in the active editor. */
+  protected fun invokeBasicCompletion() {
+    driver.withContext {
+      ideFrame { codeEditor().apply { waitFound(); invokeAction("CodeCompletion", component = component) } }
+    }
+  }
+
+  protected fun esc() {
+    driver.withContext {
+      ideFrame { codeEditor().apply { waitFound(); keyboard { hotKey(java.awt.event.KeyEvent.VK_ESCAPE) } } }
+    }
+  }
+
+  /** Presses Ctrl-O (jump backward). */
+  protected fun ctrlO() {
+    driver.withContext {
+      ideFrame {
+        codeEditor().apply {
+          keyboard { hotKey(java.awt.event.KeyEvent.VK_CONTROL, java.awt.event.KeyEvent.VK_O) }
+        }
+      }
+    }
+  }
+
+  /** Presses Ctrl-V (visual-block mode). */
+  protected fun ctrlV() {
+    driver.withContext {
+      ideFrame {
+        codeEditor().apply {
+          keyboard { hotKey(java.awt.event.KeyEvent.VK_CONTROL, java.awt.event.KeyEvent.VK_V) }
+        }
+      }
+    }
+  }
+
+  /** Triggers the IDE "Navigate > Back" action (Cmd+[ on macOS, Ctrl+Alt+Left on Linux). */
+  protected fun ideaGoBack() {
+    driver.withContext {
+      ideFrame {
+        codeEditor().apply {
+          if (System.getProperty("os.name").lowercase().contains("mac")) {
+            keyboard { hotKey(java.awt.event.KeyEvent.VK_META, java.awt.event.KeyEvent.VK_OPEN_BRACKET) }
+          } else {
+            keyboard {
+              hotKey(
+                java.awt.event.KeyEvent.VK_CONTROL,
+                java.awt.event.KeyEvent.VK_ALT,
+                java.awt.event.KeyEvent.VK_LEFT
+              )
+            }
+          }
+        }
+      }
+    }
+  }
+
+  /** Presses Ctrl-G (file info). */
+  protected fun ctrlG() {
+    driver.withContext {
+      ideFrame {
+        codeEditor().apply {
+          keyboard { hotKey(java.awt.event.KeyEvent.VK_CONTROL, java.awt.event.KeyEvent.VK_G) }
+        }
+      }
+    }
+  }
+
+  /** Moves the caret to a specific line using the Driver SDK (not vim). */
+  protected fun goToLine(line: Int) {
+    driver.withContext {
+      ideFrame { codeEditor().apply { waitFound(); goToLine(line) } }
+    }
+  }
+
+  /** Forces focus on the editor.
+   *
+   * In automated split-mode tests on macOS, `Robot.click()` and Swing's `requestFocus()`
+   * alone aren't enough — the IDE window may not be the OS-focused window when keystrokes
+   * are dispatched, so `Robot.keyPress` events go elsewhere and IdeaVim never sees them.
+   * `requestFocusFromIde(project)` calls `ProjectUtil.focusProjectWindow(stealFocusIfAppInactive=true)`,
+   * which brings the IDE window to OS foreground. After that the click+component.requestFocus()
+   * pair places focus inside the editor itself.
+   */
+  protected fun clickEditor() {
+    driver.withContext {
+      requestFocusFromIde(singleProject())
+      ideFrame {
+        codeEditor().apply {
+          waitFound()
+          component.requestFocus()
+          click()
+        }
+      }
+    }
+  }
+
+  // ── Helpers for more than one editor ────────────────────────
+  //
+  // `codeEditor()` requires exactly one editor component to be present, so it throws as soon as the editor is split.
+  // These variants address an editor by the file it shows, which means splits have to show *different* files to be
+  // addressable - two splits of the same buffer are indistinguishable in the component tree.
+
+  /**
+   * Opens a file in the *current* editor window, without going through [openFile]'s readiness check
+   *
+   * [openFile] waits on `codeEditor()`, which throws once the editor is split. Use this to give a split a file of its
+   * own, then address both editors with the helpers below.
+   */
+  protected fun openFileInCurrentWindow(relativePath: String, fileName: String) {
+    driver.withContext { openFile(relativePath) }
+    val opened = waitUntil(timeoutMs = 15_000, pollMs = 500) {
+      try {
+        driver.withContext { ideFrame { codeEditorForFile(fileName).apply { waitFound() } } }
+        true
+      } catch (_: Exception) {
+        false
+      }
+    }
+    check(opened) { "Editor for '$fileName' did not appear within timeout" }
+  }
+
+  /** Types vim keys in the editor showing the given file (its simple name, e.g. `Jump1.txt`). */
+  protected fun typeVimInFile(fileName: String, keys: String) {
+    driver.withContext {
+      requestFocusFromIde(singleProject())
+      ideFrame {
+        codeEditorForFile(fileName).apply {
+          waitFound()
+          // No click: clicking would move the caret of the editor under test
+          component.requestFocus()
+          keyboard { typeText(keys) }
+        }
+      }
+    }
+  }
+
+  /** Presses Ctrl-O (jump backward) in the editor showing the given file. */
+  protected fun ctrlOInFile(fileName: String) {
+    driver.withContext {
+      requestFocusFromIde(singleProject())
+      ideFrame {
+        codeEditorForFile(fileName).apply {
+          waitFound()
+          component.requestFocus()
+          keyboard { hotKey(java.awt.event.KeyEvent.VK_CONTROL, java.awt.event.KeyEvent.VK_O) }
+        }
+      }
+    }
+  }
+
+  /** Reads the caret line (1-based) of the editor showing the given file. */
+  protected fun caretLineInFile(fileName: String): Int {
+    var result = 0
+    driver.withContext {
+      ideFrame { result = codeEditorForFile(fileName).apply { waitFound() }.getCaretLine() }
+    }
+    return result
+  }
+
+  /** Asserts the caret in the given file's editor is before the given line, polling until timeout. */
+  protected fun assertCaretInFileBefore(fileName: String, line: Int, message: String? = null) {
+    var actual = 0
+    val found = waitUntil { actual = caretLineInFile(fileName); actual < line }
+    assertTrue(found) {
+      (message ?: "Caret in $fileName should be before line $line") + ". Actual line: $actual"
+    }
+  }
+
+  /** Asserts the caret in the given file's editor is past the given line, polling until timeout. */
+  protected fun assertCaretInFileAfter(fileName: String, line: Int, message: String? = null) {
+    var actual = 0
+    val found = waitUntil { actual = caretLineInFile(fileName); actual > line }
+    assertTrue(found) {
+      (message ?: "Caret in $fileName should be after line $line") + ". Actual line: $actual"
+    }
+  }
+
+  // ── Helpers for diff tabs ───────────────────────────────────
+  //
+  // A side-by-side diff shows two editors in the selected tab, a plain editor tab shows one. The order of the two
+  // editors in the component tree is not the order on screen, so a side is found by its text.
+
+  /** Opens the diff of the file in the active editor against its version in the repository */
+  protected fun compareWithRepository() {
+    driver.withContext {
+      ideFrame { codeEditor().apply { waitFound(); invokeAction("Compare.SameVersion", component = component) } }
+    }
+    check(waitUntil(timeoutMs = 30_000, pollMs = 500) { isDiffShown() }) { "The diff did not open within timeout" }
+  }
+
+  /** Whether the selected editor tab is a side-by-side diff */
+  protected fun isDiffShown(): Boolean = visibleEditorCount() == 2
+
+  /**
+   * Clicks the side of the diff that shows [sideText], then types [keys] in it
+   *
+   * Only a click puts the keys into an editor of a diff - `requestFocus()` on it doesn't. The click moves the caret, so
+   * start the keys with a motion, and type everything that must happen at one position in a single call.
+   */
+  protected fun typeInDiffSide(sideText: String, keys: RemoteKeyboard.() -> Unit) {
+    driver.withContext {
+      requestFocusFromIde(singleProject())
+      ideFrame {
+        diffSide(sideText).apply {
+          click()
+          keyboard(keys)
+        }
+      }
+    }
+    waitForNoModalProgress()
+  }
+
+  /** Runs an IDE action in the side of the diff that shows [sideText], as its shortcut would */
+  protected fun invokeActionInDiffSide(sideText: String, actionId: String) {
+    driver.withContext {
+      ideFrame { diffSide(sideText).apply { invokeAction(actionId, component = component) } }
+    }
+  }
+
+  /** Reads the caret line (1-based) of the side of the diff that shows [sideText] */
+  protected fun caretLineInDiffSide(sideText: String): Int {
+    var result = 0
+    driver.withContext { ideFrame { result = diffSide(sideText).getCaretLine() } }
+    return result
+  }
+
+  /** Closes every editor tab but the selected one */
+  protected fun closeOtherEditors() {
+    driver.withContext { invokeAction("CloseAllEditorsButActive") }
+  }
+
+  protected fun closeAllEditors() {
+    driver.withContext { invokeAction("CloseAllEditors") }
+    waitUntil { visibleEditorCount() == 0 }
+  }
+
+  private fun visibleEditorCount(): Int {
+    var result = 0
+    driver.withContext { ideFrame { result = visibleEditors().size } }
+    return result
+  }
+
+  private fun Finder.diffSide(sideText: String): JEditorUiComponent =
+    visibleEditors().singleOrNull { it.text == sideText } ?: error("No side of the diff shows the expected text")
+
+  private fun Finder.visibleEditors(): List<JEditorUiComponent> =
+    xx("//div[@class='EditorTabs']//div[@class='EditorComponentImpl']", JEditorUiComponent::class.java).list()
+
+  /** Waits for a short time to let async operations settle. */
+  protected fun pause(ms: Long = 500) {
+    Thread.sleep(ms)
+  }
+
+  /**
+   * Retries [check] every [pollMs] until it returns true or [timeoutMs] elapses.
+   * Use instead of fixed pauses to handle variable split-mode RPC latency on CI.
+   */
+  protected fun waitUntil(
+    timeoutMs: Long = 5000,
+    pollMs: Long = 200,
+    check: () -> Boolean,
+  ): Boolean {
+    val deadline = System.currentTimeMillis() + timeoutMs
+    while (System.currentTimeMillis() < deadline) {
+      if (check()) return true
+      Thread.sleep(pollMs)
+    }
+    return false
+  }
+
+  // ── Editor state helpers ────────────────────────────────────
+
+  /** Reads the current editor text. */
+  protected fun editorText(): String {
+    var result = ""
+    driver.withContext {
+      ideFrame { result = codeEditor().apply { waitFound() }.text }
+    }
+    return result
+  }
+
+  /** Reads the current caret line (1-based). */
+  protected fun caretLine(): Int {
+    var result = 0
+    driver.withContext {
+      ideFrame { result = codeEditor().apply { waitFound() }.getCaretLine() }
+    }
+    return result
+  }
+
+  // ── Assertions ──────────────────────────────────────────────
+
+  /** Asserts the editor contains the given text, polling until timeout. */
+  protected fun assertEditorContains(expected: String, message: String? = null) {
+    var text = ""
+    val found = waitUntil { text = editorText(); text.contains(expected) }
+    assertTrue(found) {
+      (message ?: "Editor should contain '$expected'") + ". Actual: $text"
+    }
+  }
+
+  /** Asserts the editor does NOT contain the given text, polling until timeout. */
+  protected fun assertEditorNotContains(unexpected: String, message: String? = null) {
+    // Give operations time to settle, then check
+    pause(1000)
+    val text = editorText()
+    assertFalse(text.contains(unexpected)) {
+      (message ?: "Editor should not contain '$unexpected'") + ". Actual: $text"
+    }
+  }
+
+  /**
+   * Reads the search count shown in IdeaVim's output panel, e.g. `[2/3]`, or `[?/??]` while it's still counting.
+   * Returns an empty string if no count is shown.
+   */
+  protected fun searchCountText(): String {
+    var result = ""
+    driver.withContext {
+      ideFrame {
+        val panel = x("//div[@class='OutputPanel']")
+        if (panel.present()) {
+          result = panel.getAllTexts().map { it.text.trim() }.firstOrNull { SEARCH_COUNT.matches(it) } ?: ""
+        }
+      }
+    }
+    return result
+  }
+
+  /** Asserts the output panel shows the given search count, polling until timeout. */
+  protected fun assertSearchCount(expected: String, timeoutMs: Long = 5000, message: String? = null) {
+    var actual = ""
+    val found = waitUntil(timeoutMs = timeoutMs) { actual = searchCountText(); actual == expected }
+    assertTrue(found) { (message ?: "Search count should be $expected") + ". Actual: '$actual'" }
+  }
+
+  /** Asserts the caret is at the given line (1-based), polling until timeout. */
+  protected fun assertCaretAtLine(expected: Int, message: String? = null) {
+    var actual = 0
+    val found = waitUntil { actual = caretLine(); actual == expected }
+    assertTrue(found) {
+      (message ?: "Caret should be at line $expected") + ". Actual line: $actual"
+    }
+  }
+
+  /** Asserts the caret is before the given line, polling until timeout. */
+  protected fun assertCaretBefore(line: Int, message: String? = null) {
+    var actual = 0
+    val found = waitUntil { actual = caretLine(); actual < line }
+    assertTrue(found) {
+      (message ?: "Caret should be before line $line") + ". Actual line: $actual"
+    }
+  }
+
+  /** Asserts the caret is past the given line, polling until timeout. */
+  protected fun assertCaretAfter(line: Int, message: String? = null) {
+    var actual = 0
+    val found = waitUntil { actual = caretLine(); actual > line }
+    assertTrue(found) {
+      (message ?: "Caret should be after line $line") + ". Actual line: $actual"
+    }
+  }
+
+  companion object {
+    private val SEARCH_COUNT = Regex("""\[[^/\]]+/[^/\]]+]""")
+
+    // Inlined IdeInfo for IntelliJ IDEA Ultimate. Avoids the IdeProductProvider/IdeInfo.IdeaUltimate
+    // API that varies across IntelliJ build numbers (renamed/removed in 262 EAP).
+    private val IDEA_ULTIMATE = IdeInfo(
+      productCode = "IU",
+      platformPrefix = "idea",
+      executableFileName = "idea",
+      fullName = "IDEA",
+      qodanaProductCode = "QDJVM",
+    )
+
+    fun resolvePluginPath(): Path {
+      val pathStr = System.getProperty("ideavim.plugin.path")
+        ?: error(
+          "System property 'ideavim.plugin.path' is not set. " +
+            "Run via: ./gradlew :tests:split-mode-tests:testSplitMode"
+        )
+      return Path(pathStr)
+    }
+  }
+}
+
+@Remote("com.intellij.openapi.application.impl.LaterInvocator")
+interface LaterInvocator {
+  fun isInModalContext(): Boolean
+}

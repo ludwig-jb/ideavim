@@ -261,11 +261,13 @@ fun VimEditor.anyNonWhitespace(offset: Int, dir: Int): Boolean {
   val end: Int
   val fileSize = fileSize().toInt()
   if (dir > 0) {
-    start = (offset + 1).coerceAtMost(fileSize - 1)
+    start = offset.coerceAtMost(fileSize - 1)
     end = getLineEndForOffset(offset).coerceAtMost(fileSize - 1)
   } else {
     start = getLineStartForOffset(offset)
-    end = (offset - 1).coerceAtLeast(0)
+    // Do not coerce to 0. At offset 0 there is nothing before the caret, and the range 0..-1 is correctly empty,
+    // while 0..0 would inspect the character *under* the caret
+    end = offset - 1
   }
   val chars: CharSequence = text()
   for (i in start..end) {
@@ -299,6 +301,56 @@ fun VimEditor.coerceOffset(offset: Int): Int {
   if (offset < 0) return 0
   if (offset > this.fileSize()) return this.fileSize().toInt()
   return offset
+}
+
+/**
+ * The buffer line where a fold visually starts when collapsed.
+ *
+ * IDE structural folds often place [VimFoldRegion.startOffset] on the first hidden character (e.g. the
+ * body line after `{`), while manual `zf` folds place it on the first line of the selected region.
+ * We detect the visual header by probing which line's offsets are associated with this fold region.
+ */
+fun VimFoldRegion.getVisualStartLine(editor: VimEditor): Int {
+  val startLine = editor.offsetToBufferPosition(startOffset).line
+  val lineStart = editor.getLineStartOffset(startLine)
+
+  if (startOffset > lineStart) {
+    return startLine
+  }
+
+  if (startLine == 0) {
+    return 0
+  }
+
+  val prevLine = startLine - 1
+  return detectVisualStartLine(editor, prevLine, startLine, lineStart)
+}
+
+private fun VimFoldRegion.detectVisualStartLine(
+  editor: VimEditor,
+  prevLine: Int,
+  startLine: Int,
+  startLineStart: Int,
+): Int {
+  fun matchesThisFold(offset: Int): Boolean {
+    if (offset < 0 || offset >= editor.fileSize()) return false
+    return editor.getFoldRegionsAtOffset(offset).any { fold ->
+      fold.startOffset == startOffset && fold.endOffset == endOffset
+    }
+  }
+
+  val prevLineStart = editor.getLineStartOffset(prevLine)
+  val prevLineEndOffset = (editor.getLineEndOffset(prevLine) - 1).coerceAtLeast(prevLineStart)
+
+  if (matchesThisFold(prevLineEndOffset)) {
+    return prevLine
+  }
+
+  if (matchesThisFold(startLineStart)) {
+    return startLine
+  }
+
+  return prevLine
 }
 
 interface VimRangeMarker {

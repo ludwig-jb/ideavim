@@ -57,6 +57,36 @@ abstract class EditorActionHandlerBase(private val myRunForEachCaret: Boolean) {
    */
   abstract val type: Command.Type
 
+  /**
+   * Macro-like actions replay other keystrokes, and each replayed keystroke must form its own undoable command.
+   *
+   * If such an action were itself wrapped in an outer [com.intellij.openapi.command.CommandProcessor] command, every
+   * change made during playback would be merged into that single still-open command. A `u` replayed inside the macro
+   * could then not undo an earlier change made by the same macro: the earlier change has not been committed as a
+   * separate undo entry yet, so IntelliJ throws `UnexpectedUndoException` ("Unexpected document state") and disposes
+   * the editor.
+   *
+   * Returning `true` tells the key handler to execute this action without an outer command wrapper, so the replayed
+   * keystrokes each open their own top-level command and can be undone independently (as in Vim).
+   */
+  open val executesNestedCommands: Boolean = false
+
+  /**
+   * Whether a characterwise delete using this motion / text object may be promoted to a linewise delete.
+   *
+   * Vim performs this promotion in `op_delete` (see `src/nvim/ops.c`): a multi-line characterwise delete whose deleted
+   * region is bounded by whitespace becomes linewise — but only when `!oap->is_VIsual`. Vim's built-in text objects and
+   * motions (`at`, `ap`, `ip`, `}`, …) are applied directly in operator-pending mode (`is_VIsual == false`) and are
+   * subject to the promotion, while plugin text objects (vim-textobj-*, matchit, …) select their range via Visual mode
+   * first (`is_VIsual == true`) and are therefore never promoted.
+   *
+   * IdeaVim implements extension text objects as ordinary operator-pending handlers rather than Visual selections, so
+   * there is no `is_VIsual` flag to read. This property models the same distinction: it defaults to `true` for
+   * IdeaVim's built-in motions / text objects and is overridden to `false` by extension-provided handlers so that a
+   * `dam` / `die` / `d%` matches Vim (stays characterwise) while `dat` is promoted to linewise.
+   */
+  open val supportsLinewiseDeletePromotion: Boolean = true
+
   open val argumentType: Argument.Type? = null
 
   /**
@@ -149,7 +179,7 @@ abstract class EditorActionHandlerBase(private val myRunForEachCaret: Boolean) {
   private fun updateUndoKey(editor: VimEditor, command: Command) {
     val undo = (injector.undo as? VimKeyBasedUndoService) ?: return
 
-    if (editor.mode == Mode.INSERT) return // typing handles undo on its own
+    if (editor.mode is Mode.INSERT) return // typing handles undo on its own
     if (command.flags.contains(CommandFlags.FLAG_UNDO_AWARE)) return
 
     if (command.type == Command.Type.MOTION || command.type == Command.Type.MODE_CHANGE) {

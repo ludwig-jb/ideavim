@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2025 The IdeaVim authors
+ * Copyright 2003-2026 The IdeaVim authors
  *
  * Use of this source code is governed by an MIT-style
  * license that can be found in the LICENSE.txt file or at
@@ -10,19 +10,19 @@ package com.maddyhome.idea.vim.extension.nerdtree
 
 import com.intellij.ide.projectView.ProjectView
 import com.intellij.ide.projectView.impl.ProjectViewImpl
-import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.actionSystem.CommonDataKeys
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.components.service
-import com.intellij.openapi.fileEditor.ex.FileEditorManagerEx
-import com.intellij.openapi.fileEditor.impl.EditorWindow
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.project.ProjectManager
 import com.intellij.openapi.startup.ProjectActivity
 import com.intellij.openapi.wm.ToolWindowId
 import com.intellij.openapi.wm.ex.ToolWindowManagerEx
+import com.intellij.ui.treeStructure.Tree
+import com.maddyhome.idea.vim.VimPlugin
 import com.maddyhome.idea.vim.api.ExecutionContext
 import com.maddyhome.idea.vim.api.VimEditor
+import com.maddyhome.idea.vim.api.injector
 import com.maddyhome.idea.vim.common.CommandAliasHandler
 import com.maddyhome.idea.vim.diagnostic.vimLogger
 import com.maddyhome.idea.vim.ex.ranges.Range
@@ -30,9 +30,11 @@ import com.maddyhome.idea.vim.extension.VimExtension
 import com.maddyhome.idea.vim.extension.VimExtensionFacade
 import com.maddyhome.idea.vim.newapi.ij
 import com.maddyhome.idea.vim.newapi.vim
+import java.awt.KeyboardFocusManager
+import java.beans.PropertyChangeListener
 import java.util.concurrent.locks.ReentrantReadWriteLock
 import javax.swing.KeyStroke
-import javax.swing.SwingConstants
+import javax.swing.SwingUtilities
 import kotlin.concurrent.read
 import kotlin.concurrent.write
 
@@ -111,9 +113,11 @@ internal class NerdTree : VimExtension {
       VimExtensionFacade.addCommand("NERDTreeRefreshRoot", IjCommandHandler("Synchronize"))
     }
     ProjectManager.getInstance().openProjects.forEach(::installDispatcher)
+    KeyboardFocusManager.getCurrentKeyboardFocusManager().addPropertyChangeListener("focusOwner", focusListener)
   }
 
   override fun dispose() {
+    KeyboardFocusManager.getCurrentKeyboardFocusManager().removePropertyChangeListener("focusOwner", focusListener)
     lock.write {
       enabled = false
       // TODO remove ex-commands
@@ -131,7 +135,7 @@ internal class NerdTree : VimExtension {
 
   class IjCommandHandler(private val actionId: String) : CommandAliasHandler {
     override fun execute(command: String, range: Range, editor: VimEditor, context: ExecutionContext) {
-      NerdTreeAction.callAction(editor, actionId, context)
+      NerdTreeAction.callAction(editor, actionId)
     }
   }
 
@@ -142,7 +146,7 @@ internal class NerdTree : VimExtension {
       if (toolWindow.isVisible) {
         toolWindow.hide()
       } else {
-        NerdTreeAction.callAction(editor, "ActivateProjectToolWindow", context)
+        NerdTreeAction.callAction(editor, "ActivateProjectToolWindow")
       }
     }
   }
@@ -164,7 +168,7 @@ internal class NerdTree : VimExtension {
   }
 
   @Service(Service.Level.PROJECT)
-  class NerdDispatcher : AbstractDispatcher(PLUGIN_NAME, createMappings()) {
+  class NerdDispatcher : AbstractDispatcher(PLUGIN_NAME, ::createMappings) {
     companion object {
       fun getInstance(project: Project): NerdDispatcher {
         return project.service<NerdDispatcher>()
@@ -178,21 +182,23 @@ internal class NerdTree : VimExtension {
   }
 }
 
-private fun createMappings(): Map<List<KeyStroke>, NerdTreeAction> = navigationMappings.toMutableMap().apply {
+private fun createMappings(): Map<List<KeyStroke>, NerdTreeAction> = createNavigationMappings().toMutableMap().apply {
+  // File opening actions use injector.file.openFile() which routes through RPC in split mode:
+  //   monolith:    injector.file → IjFileGroup.openFile() → rpc() → FileRemoteApiImpl (local)
+  //   split mode:  injector.file → IjFileGroup.openFile() → rpc() → FileRemoteApiImpl (backend)
   register(
     "NERDTreeMapActivateNode",
     "o",
     NerdTreeAction { event, tree ->
-      val array = CommonDataKeys.NAVIGATABLE_ARRAY.getData(event.dataContext)?.filter { it.canNavigateToSource() }
-      if (array.isNullOrEmpty()) {
+      val file = event.getData(CommonDataKeys.VIRTUAL_FILE)
+      if (file == null || file.isDirectory) {
+        // Directory or unknown node — expand/collapse (pure frontend)
         val row = tree.selectionRows?.getOrNull(0) ?: return@NerdTreeAction
-        if (tree.isExpanded(row)) {
-          tree.collapseRow(row)
-        } else {
-          tree.expandRow(row)
-        }
+        if (tree.isExpanded(row)) tree.collapseRow(row) else tree.expandRow(row)
       } else {
-        array.forEach { it.navigate(true) }
+        // File — open via injector which routes through RPC in split mode
+        injector.file.openFile(file.path, event.dataContext.vim)
+        closeEditorTree()
       }
     },
   )
@@ -200,8 +206,10 @@ private fun createMappings(): Map<List<KeyStroke>, NerdTreeAction> = navigationM
     "NERDTreeMapPreview",
     "go",
     NerdTreeAction { event, _ ->
-      CommonDataKeys.NAVIGATABLE_ARRAY.getData(event.dataContext)?.filter { it.canNavigateToSource() }
-        ?.forEach { it.navigate(false) }
+      // Open file but keep focus on NERDTree (focusEditor = false)
+      val file = event.getData(CommonDataKeys.VIRTUAL_FILE) ?: return@NerdTreeAction
+      if (file.isDirectory) return@NerdTreeAction
+      injector.file.openFile(file.path, event.dataContext.vim, focusEditor = false)
     },
   )
   register(
@@ -209,8 +217,9 @@ private fun createMappings(): Map<List<KeyStroke>, NerdTreeAction> = navigationM
     "t",
     NerdTreeAction { event, _ ->
       // FIXME: 22.01.2021 Doesn't work correct
-      CommonDataKeys.NAVIGATABLE_ARRAY.getData(event.dataContext)?.filter { it.canNavigateToSource() }
-        ?.forEach { it.navigate(true) }
+      val file = event.getData(CommonDataKeys.VIRTUAL_FILE) ?: return@NerdTreeAction
+      if (file.isDirectory) return@NerdTreeAction
+      injector.file.openFile(file.path, event.dataContext.vim)
     },
   )
   register(
@@ -218,45 +227,51 @@ private fun createMappings(): Map<List<KeyStroke>, NerdTreeAction> = navigationM
     "T",
     NerdTreeAction { event, _ ->
       // FIXME: 22.01.2021 Doesn't work correct
-      CommonDataKeys.NAVIGATABLE_ARRAY.getData(event.dataContext)?.filter { it.canNavigateToSource() }
-        ?.forEach { it.navigate(true) }
+      val file = event.getData(CommonDataKeys.VIRTUAL_FILE) ?: return@NerdTreeAction
+      if (file.isDirectory) return@NerdTreeAction
+      injector.file.openFile(file.path, event.dataContext.vim, focusEditor = false)
     },
   )
 
-  // TODO: 21.01.2021 Should option in left split
-  register("NERDTreeMapOpenVSplit", "s", NerdTreeAction.ij("OpenInRightSplit"))
-  // TODO: 21.01.2021 Should option in above split
+  // Split actions: use injector.window which routes through RPC in split mode.
+  // TODO: 21.01.2021 Should open in left split
+  register(
+    "NERDTreeMapOpenVSplit",
+    "s",
+    NerdTreeAction { event, _ ->
+      val file = event.getData(CommonDataKeys.VIRTUAL_FILE) ?: return@NerdTreeAction
+      if (file.isDirectory) return@NerdTreeAction
+      injector.window.splitWindowVertical(event.dataContext.vim, file.path)
+    },
+  )
+  // TODO: 21.01.2021 Should open in above split
   register(
     "NERDTreeMapOpenSplit",
     "i",
     NerdTreeAction { event, _ ->
       val file = event.getData(CommonDataKeys.VIRTUAL_FILE) ?: return@NerdTreeAction
       if (file.isDirectory) return@NerdTreeAction
-      val currentWindow = getSplittersCurrentWindow(event)
-      currentWindow?.split(SwingConstants.HORIZONTAL, true, file, true)
+      injector.window.splitWindowHorizontal(event.dataContext.vim, file.path)
     },
   )
   register(
     "NERDTreeMapPreviewVSplit",
     "gs",
-    NerdTreeAction { event, _ ->
+    NerdTreeAction { event, tree ->
       val file = event.getData(CommonDataKeys.VIRTUAL_FILE) ?: return@NerdTreeAction
-      val currentWindow = getSplittersCurrentWindow(event)
-      currentWindow?.split(SwingConstants.VERTICAL, true, file, true)
-
-      // FIXME: 22.01.2021 This solution bouncing a bit
-      NerdTreeAction.callAction(null, "ActivateProjectToolWindow", event.dataContext.vim)
+      if (file.isDirectory) return@NerdTreeAction
+      injector.window.splitWindowVertical(event.dataContext.vim, file.path, focusNew = false)
+      tree.requestFocus()
     },
   )
   register(
     "NERDTreeMapPreviewSplit",
     "gi",
-    NerdTreeAction { event, _ ->
+    NerdTreeAction { event, tree ->
       val file = event.getData(CommonDataKeys.VIRTUAL_FILE) ?: return@NerdTreeAction
-      val currentWindow = getSplittersCurrentWindow(event)
-      currentWindow?.split(SwingConstants.HORIZONTAL, true, file, true)
-
-      NerdTreeAction.callAction(null, "ActivateProjectToolWindow", event.dataContext.vim)
+      if (file.isDirectory) return@NerdTreeAction
+      injector.window.splitWindowHorizontal(event.dataContext.vim, file.path, focusNew = false)
+      tree.requestFocus()
     },
   )
   register(
@@ -281,13 +296,40 @@ private fun createMappings(): Map<List<KeyStroke>, NerdTreeAction> = navigationM
   )
 }
 
-private fun getSplittersCurrentWindow(event: AnActionEvent): EditorWindow? {
-  val splitters = FileEditorManagerEx.getInstanceEx(event.project ?: return null).splitters
-  return splitters.currentWindow
+fun closeEditorTree() {
+  val quitOnOpen = VimPlugin.getVariableService()
+    .getGlobalVariableValue("NERDTreeQuitOnOpen")
+    ?.toVimNumber()?.value ?: 0
+  if (quitOnOpen == 1) {
+    ProjectManager.getInstance().openProjects.forEach { project ->
+      ToolWindowManagerEx.getInstanceEx(project).getToolWindow(ToolWindowId.PROJECT_VIEW)?.hide()
+    }
+  }
 }
+
 
 private val lock = ReentrantReadWriteLock()
 private var enabled = false
+
+/**
+ * Reloads the mappings every time the project view gets focus, so the changed `g:NERDTreeMap*` variables are applied
+ * without restarting the IDE.
+ */
+private val focusListener = PropertyChangeListener { evt ->
+  val newFocusOwner = evt.newValue as? Tree ?: return@PropertyChangeListener
+  lock.read {
+    if (!enabled) return@PropertyChangeListener
+    for (project in ProjectManager.getInstance().openProjects) {
+      val component = (ProjectView.getInstance(project) as ProjectViewImpl).component ?: continue
+      if (SwingUtilities.isDescendingFrom(newFocusOwner, component)) {
+        val dispatcher = NerdTree.NerdDispatcher.getInstance(project)
+        dispatcher.reloadMappings()
+        dispatcher.register(component)
+        return@PropertyChangeListener
+      }
+    }
+  }
+}
 
 private fun installDispatcher(project: Project) {
   lock.read {

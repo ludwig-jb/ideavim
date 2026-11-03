@@ -18,7 +18,10 @@ import com.maddyhome.idea.vim.key.ShortcutOwner
 import com.maddyhome.idea.vim.key.ShortcutOwnerInfo
 import com.maddyhome.idea.vim.vimscript.model.ExecutionResult
 
-@ExCommand(command = "sethandler")
+@ExCommand(
+  command = "sethandler",
+  description = "Choose whether Vim or the IDE handles a shortcut, per mode, e.g. :sethandler <C-V> n-v:vim i:ide. Without a shortcut, apply to all conflicting shortcuts."
+)
 data class SetHandlerCommand(val range: Range, val modifier: CommandModifier, val argument: String) :
   Command.SingleExecution(range, modifier, argument) {
 
@@ -55,9 +58,9 @@ data class SetHandlerCommand(val range: Range, val modifier: CommandModifier, va
     if (key != null) {
       injector.keyGroup.savedShortcutConflicts[key] = resultingOwner
     } else {
-      injector.keyGroup.shortcutConflicts.keys.forEach { conflictKey ->
-        injector.keyGroup.savedShortcutConflicts[conflictKey] = resultingOwner
-      }
+      injector.keyGroup.shortcutConflicts.keys
+        .filterNot { injector.keyGroup.isVimByDefaultShortcut(it) }
+        .forEach { conflictKey -> injector.keyGroup.savedShortcutConflicts[conflictKey] = resultingOwner }
     }
     return true
   }
@@ -81,7 +84,14 @@ data class SetHandlerCommand(val range: Range, val modifier: CommandModifier, va
           "v" -> currentOwner.copy(visual = right, select = right)
           "x" -> currentOwner.copy(visual = right)
           "s" -> currentOwner.copy(select = right)
-          "a" -> currentOwner.copy(normal = right, insert = right, visual = right, select = right)
+          "c" -> currentOwner.copy(cmdLine = right)
+          "a" -> currentOwner.copy(
+            normal = right,
+            insert = right,
+            visual = right,
+            select = right,
+            cmdLine = right,
+          )
           else -> return null
         }
       }

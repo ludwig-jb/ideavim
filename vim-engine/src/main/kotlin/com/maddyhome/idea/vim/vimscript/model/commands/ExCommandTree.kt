@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2023 The IdeaVim authors
+ * Copyright 2003-2026 The IdeaVim authors
  *
  * Use of this source code is governed by an MIT-style
  * license that can be found in the LICENSE.txt file or at
@@ -30,6 +30,18 @@ class ExCommandTree {
 
   fun getCommand(command: String): LazyExCommandInstance? {
     return abbrevToCommand[command]?.let { commandToInstance[it] }
+  }
+
+  fun getFullCommandName(abbreviation: String): String? {
+    return abbrevToCommand[abbreviation]
+  }
+
+  /**
+   * Results are sorted alphabetically; command-name Tab completion relies on this
+   * order to cycle through matches deterministically (e.g. `:set` -> `set`, `setglobal`, `sethandler`, ...).
+   */
+  fun findFullCommandsByPrefix(prefix: String): List<String> {
+    return commandToInstance.keys.filter { it.startsWith(prefix) }.sorted()
   }
 
   private fun parseCommandPattern(commandsPattern: String): List<Pair<String, String>> {

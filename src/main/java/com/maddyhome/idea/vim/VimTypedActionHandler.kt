@@ -19,6 +19,7 @@ import com.maddyhome.idea.vim.api.injector
 import com.maddyhome.idea.vim.helper.inInsertMode
 import com.maddyhome.idea.vim.helper.isIdeaVimDisabledHere
 import com.maddyhome.idea.vim.key.KeyHandlerKeeper
+import com.maddyhome.idea.vim.listener.ModelessSelection
 import com.maddyhome.idea.vim.newapi.vim
 import java.awt.event.KeyAdapter
 import java.awt.event.KeyEvent
@@ -79,10 +80,12 @@ class VimTypedActionHandler(origHandler: TypedActionHandler) : TypedActionHandle
 
     try {
       LOG.trace("Executing typed action")
+      // Vim removes a modeless selection as soon as a command is typed
+      ModelessSelection.clearIfOwned(editor)
       val modifiers = if (charTyped == ' ' && VimKeyListener.isSpaceShift) KeyEvent.SHIFT_DOWN_MASK else 0
       val keyStroke = KeyStroke.getKeyStroke(charTyped, modifiers)
       val startTime = if (traceTime) System.currentTimeMillis() else null
-      handler.handleKey(editor.vim, keyStroke, context.vim, handler.keyHandlerState)
+      handler.handleUserKey(editor.vim, keyStroke, context.vim)
       if (startTime != null) {
         val duration = System.currentTimeMillis() - startTime
         LOG.info("VimTypedAction '$charTyped': $duration ms")

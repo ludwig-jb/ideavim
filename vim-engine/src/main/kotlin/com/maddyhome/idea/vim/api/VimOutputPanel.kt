@@ -8,8 +8,6 @@
 
 package com.maddyhome.idea.vim.api
 
-import javax.swing.KeyStroke
-
 interface VimOutputPanel {
   /**
    * The current text displayed in the output panel.
@@ -18,9 +16,12 @@ interface VimOutputPanel {
   val text: String
 
   /**
-   * The text in the bottom of the output panel, e.g. `-- MORE --`
+   * Supplementary text displayed on the right side of the panel, on the same row as the output text.
+   *
+   * Useful for showing extra information such as a search match count, mirroring the way Vim shows the 'searchcount'
+   * on the right of the command line.
    */
-  var label: String
+  var statusText: String
 
   /**
    * Appends the specified text to the existing content of the output panel.
@@ -37,7 +38,7 @@ interface VimOutputPanel {
   /**
    * This method shows the text output or updates the output text if the panel was already shown
    */
-  fun show()
+  fun show(requireHitEnter: Boolean = false)
 
   /**
    * Disposes or hides the output panel, depending on its implementation.
@@ -45,11 +46,5 @@ interface VimOutputPanel {
    */
   fun close()
 
-  fun handleKey(key: KeyStroke)
-  fun scrollPage()
-  fun scrollHalfPage()
-  fun scrollLine()
-
-  fun setContent(text: String)
   fun clearText()
 }

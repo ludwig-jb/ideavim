@@ -16,6 +16,7 @@ import com.maddyhome.idea.vim.diagnostic.debug
 import com.maddyhome.idea.vim.diagnostic.trace
 import com.maddyhome.idea.vim.diagnostic.vimLogger
 import com.maddyhome.idea.vim.key.KeyConsumer
+import com.maddyhome.idea.vim.key.KeySource
 import java.awt.event.KeyEvent
 import javax.swing.KeyStroke
 
@@ -38,11 +39,10 @@ internal class CharArgumentConsumer : KeyConsumer {
   override fun isApplicable(
     key: KeyStroke,
     editor: VimEditor,
-    allowKeyMappings: Boolean,
+    keySource: KeySource,
     keyProcessResultBuilder: KeyProcessResult.KeyProcessResultBuilder,
   ): Boolean {
-    val expectingCharArgument =
-      keyProcessResultBuilder.state.commandBuilder.expectedArgumentType === Argument.Type.CHARACTER
+    val expectingCharArgument = keyProcessResultBuilder.state.commandBuilder.isAwaitingCharacterBasedArgument()
     logger.debug { "Expecting char argument: $expectingCharArgument" }
     return expectingCharArgument
   }
@@ -50,7 +50,7 @@ internal class CharArgumentConsumer : KeyConsumer {
   override fun consumeKey(
     key: KeyStroke,
     editor: VimEditor,
-    allowKeyMappings: Boolean,
+    keySource: KeySource,
     keyProcessResultBuilder: KeyProcessResult.KeyProcessResultBuilder,
   ): Boolean {
     logger.trace { "Entered CharArgumentConsumer" }

@@ -15,6 +15,7 @@ import com.maddyhome.idea.vim.api.ImmutableVimCaret
 import com.maddyhome.idea.vim.api.VimCaret
 import com.maddyhome.idea.vim.api.VimEditor
 import com.maddyhome.idea.vim.api.VimFoldRegion
+import com.maddyhome.idea.vim.api.getVisualStartLine
 import com.maddyhome.idea.vim.api.injector
 import com.maddyhome.idea.vim.command.Argument
 import com.maddyhome.idea.vim.command.Command
@@ -27,7 +28,7 @@ import com.maddyhome.idea.vim.handler.MotionActionHandler
 import com.maddyhome.idea.vim.handler.VimActionHandler
 import com.maddyhome.idea.vim.handler.VisualOperatorActionHandler
 
-@CommandOrMotion(keys = ["zM"], modes = [Mode.NORMAL, Mode.VISUAL])
+@CommandOrMotion(keys = ["zM"], modes = [Mode.NORMAL, Mode.VISUAL], description = "Close all folds in the file.")
 class VimCollapseAllRegions : VimActionHandler.SingleExecution() {
 
   override val type: Command.Type = Command.Type.OTHER_READONLY
@@ -43,7 +44,11 @@ class VimCollapseAllRegions : VimActionHandler.SingleExecution() {
   }
 }
 
-@CommandOrMotion(keys = ["za"], modes = [Mode.NORMAL, Mode.VISUAL])
+@CommandOrMotion(
+  keys = ["za"],
+  modes = [Mode.NORMAL, Mode.VISUAL],
+  description = "Toggle the fold under the cursor using the IDE's Expand/Collapse toggle action."
+)
 class VimExpandCollapseToggleRegion : VimActionHandler.SingleExecution() {
 
   override val type: Command.Type = Command.Type.OTHER_READONLY
@@ -63,7 +68,11 @@ class VimExpandCollapseToggleRegion : VimActionHandler.SingleExecution() {
   }
 }
 
-@CommandOrMotion(keys = ["zc"], modes = [Mode.NORMAL, Mode.VISUAL])
+@CommandOrMotion(
+  keys = ["zc"],
+  modes = [Mode.NORMAL, Mode.VISUAL],
+  description = "Close the fold under the cursor using the IDE's Collapse action."
+)
 class VimCollapseRegion : VimActionHandler.SingleExecution() {
 
   override val type: Command.Type = Command.Type.OTHER_READONLY
@@ -83,7 +92,11 @@ class VimCollapseRegion : VimActionHandler.SingleExecution() {
   }
 }
 
-@CommandOrMotion(keys = ["zC"], modes = [Mode.NORMAL, Mode.VISUAL])
+@CommandOrMotion(
+  keys = ["zC"],
+  modes = [Mode.NORMAL, Mode.VISUAL],
+  description = "Close the fold under the cursor recursively using the IDE's Collapse Recursively action."
+)
 class VimCollapseRegionRecursively : VimActionHandler.SingleExecution() {
   override val type: Command.Type = Command.Type.OTHER_READONLY
 
@@ -102,7 +115,7 @@ class VimCollapseRegionRecursively : VimActionHandler.SingleExecution() {
   }
 }
 
-@CommandOrMotion(keys = ["zR"], modes = [Mode.NORMAL, Mode.VISUAL])
+@CommandOrMotion(keys = ["zR"], modes = [Mode.NORMAL, Mode.VISUAL], description = "Open all folds in the file.")
 class VimExpandAllRegions : VimActionHandler.SingleExecution() {
 
   override val type: Command.Type = Command.Type.OTHER_READONLY
@@ -118,7 +131,11 @@ class VimExpandAllRegions : VimActionHandler.SingleExecution() {
   }
 }
 
-@CommandOrMotion(keys = ["zo"], modes = [Mode.NORMAL, Mode.VISUAL])
+@CommandOrMotion(
+  keys = ["zo"],
+  modes = [Mode.NORMAL, Mode.VISUAL],
+  description = "Open the fold under the cursor using the IDE's Expand action."
+)
 class VimExpandRegion : VimActionHandler.SingleExecution() {
 
   override val type: Command.Type = Command.Type.OTHER_READONLY
@@ -138,7 +155,11 @@ class VimExpandRegion : VimActionHandler.SingleExecution() {
   }
 }
 
-@CommandOrMotion(keys = ["zO"], modes = [Mode.NORMAL, Mode.VISUAL])
+@CommandOrMotion(
+  keys = ["zO"],
+  modes = [Mode.NORMAL, Mode.VISUAL],
+  description = "Open the fold under the cursor recursively using the IDE's Expand Recursively action."
+)
 class VimExpandRegionRecursively : VimActionHandler.SingleExecution() {
 
   override val type: Command.Type = Command.Type.OTHER_READONLY
@@ -158,7 +179,11 @@ class VimExpandRegionRecursively : VimActionHandler.SingleExecution() {
   }
 }
 
-@CommandOrMotion(keys = ["zA"], modes = [Mode.NORMAL, Mode.VISUAL])
+@CommandOrMotion(
+  keys = ["zA"],
+  modes = [Mode.NORMAL, Mode.VISUAL],
+  description = "Toggle the fold under the cursor recursively: close it and its nested folds when open, open them all when closed."
+)
 class VimToggleRegionRecursively : VimActionHandler.SingleExecution() {
 
   override val type: Command.Type = Command.Type.OTHER_READONLY
@@ -182,7 +207,11 @@ class VimToggleRegionRecursively : VimActionHandler.SingleExecution() {
   }
 }
 
-@CommandOrMotion(keys = ["zr"], modes = [Mode.NORMAL, Mode.VISUAL])
+@CommandOrMotion(
+  keys = ["zr"],
+  modes = [Mode.NORMAL, Mode.VISUAL],
+  description = "Reduce folding: increase the fold level by [count], opening more folds."
+)
 class VimIncrementFoldLevel : VimActionHandler.SingleExecution() {
 
   override val type: Command.Type = Command.Type.OTHER_READONLY
@@ -200,7 +229,11 @@ class VimIncrementFoldLevel : VimActionHandler.SingleExecution() {
   }
 }
 
-@CommandOrMotion(keys = ["zm"], modes = [Mode.NORMAL, Mode.VISUAL])
+@CommandOrMotion(
+  keys = ["zm"],
+  modes = [Mode.NORMAL, Mode.VISUAL],
+  description = "Fold more: decrease the fold level by [count], closing more folds."
+)
 class VimDecrementFoldLevel : VimActionHandler.SingleExecution() {
 
   override val type: Command.Type = Command.Type.OTHER_READONLY
@@ -218,7 +251,11 @@ class VimDecrementFoldLevel : VimActionHandler.SingleExecution() {
   }
 }
 
-@CommandOrMotion(keys = ["zf"], modes = [Mode.NORMAL])
+@CommandOrMotion(
+  keys = ["zf"],
+  modes = [Mode.NORMAL],
+  description = "Create a closed fold over the text covered by {motion}."
+)
 class VimCreateFoldMotionAction : VimActionHandler.SingleExecution() {
 
   override val type: Command.Type = Command.Type.OTHER_WRITABLE
@@ -231,7 +268,9 @@ class VimCreateFoldMotionAction : VimActionHandler.SingleExecution() {
     operatorArguments: OperatorArguments,
   ): Boolean {
     val argument = cmd.argument ?: return false
-    val range = injector.motion.getMotionRange(editor, editor.primaryCaret(), context, argument, operatorArguments)
+    val range = injector.motion.getMotionRange(
+      editor, editor.primaryCaret(), context, argument, operatorArguments, expandCollapsedFolds = false,
+    )
       ?: return false
     val endOffset = getEndOffset(range, argument, editor)
 
@@ -252,7 +291,7 @@ class VimCreateFoldMotionAction : VimActionHandler.SingleExecution() {
   }
 }
 
-@CommandOrMotion(keys = ["zf"], modes = [Mode.VISUAL])
+@CommandOrMotion(keys = ["zf"], modes = [Mode.VISUAL], description = "Create a closed fold over the Visual selection.")
 class VimCreateFoldVisualAction : VisualOperatorActionHandler.ForEachCaret() {
 
   override val type: Command.Type = Command.Type.OTHER_WRITABLE
@@ -266,12 +305,29 @@ class VimCreateFoldVisualAction : VisualOperatorActionHandler.ForEachCaret() {
     operatorArguments: OperatorArguments,
   ): Boolean {
     val textRange = range.toVimTextRange(true)
-    editor.createFoldRegion(textRange.startOffset, textRange.endOffset, collapse = true)
+    val endOffset = getEndOffset(textRange, editor)
+
+    editor.createFoldRegion(textRange.startOffset, endOffset, collapse = true)
     return true
+  }
+
+  private fun getEndOffset(
+    range: TextRange,
+    editor: VimEditor,
+  ): Int {
+    // if last char is \n we want to exclude it so next line won't be collapsed
+    if (range.endOffset > range.startOffset && editor.charAt(range.endOffset - 1) == '\n') {
+      return range.endOffset - 1
+    }
+    return range.endOffset
   }
 }
 
-@CommandOrMotion(keys = ["zd"], modes = [Mode.NORMAL, Mode.VISUAL])
+@CommandOrMotion(
+  keys = ["zd"],
+  modes = [Mode.NORMAL, Mode.VISUAL],
+  description = "Delete the fold at the cursor. The text itself is not changed."
+)
 class VimDeleteFoldAtCursor : VimActionHandler.SingleExecution() {
 
   override val type: Command.Type = Command.Type.OTHER_WRITABLE
@@ -286,7 +342,11 @@ class VimDeleteFoldAtCursor : VimActionHandler.SingleExecution() {
   }
 }
 
-@CommandOrMotion(keys = ["zD"], modes = [Mode.NORMAL, Mode.VISUAL])
+@CommandOrMotion(
+  keys = ["zD"],
+  modes = [Mode.NORMAL, Mode.VISUAL],
+  description = "Delete the fold at the cursor and all folds nested inside it. The text itself is not changed."
+)
 class VimDeleteFoldsRecursivelyAtCursor : VimActionHandler.SingleExecution() {
 
   override val type: Command.Type = Command.Type.OTHER_WRITABLE
@@ -314,8 +374,14 @@ private fun getToggleAction(foldRegion: VimFoldRegion): String = if (foldRegion.
   injector.actionExecutor.ACTION_EXPAND_REGION_RECURSIVELY
 }
 
-@CommandOrMotion(keys = ["zj"], modes = [Mode.NORMAL, Mode.VISUAL, Mode.OP_PENDING])
+@CommandOrMotion(
+  keys = ["zj"],
+  modes = [Mode.NORMAL, Mode.VISUAL, Mode.OP_PENDING],
+  description = "Move down to the start of the [count]th next fold."
+)
 class VimNextFold : MotionActionHandler.ForEachCaret() {
+
+  override val expandCollapsedFolds: Boolean = false
 
   override val motionType: MotionType = MotionType.LINE_WISE
 
@@ -339,8 +405,14 @@ class VimNextFold : MotionActionHandler.ForEachCaret() {
   }
 }
 
-@CommandOrMotion(keys = ["zk"], modes = [Mode.NORMAL, Mode.VISUAL, Mode.OP_PENDING])
+@CommandOrMotion(
+  keys = ["zk"],
+  modes = [Mode.NORMAL, Mode.VISUAL, Mode.OP_PENDING],
+  description = "Move up to the end of the [count]th previous fold."
+)
 class VimPreviousFold : MotionActionHandler.ForEachCaret() {
+
+  override val expandCollapsedFolds: Boolean = false
 
   override val motionType: MotionType = MotionType.LINE_WISE
 
@@ -366,7 +438,7 @@ class VimPreviousFold : MotionActionHandler.ForEachCaret() {
 
 private fun findFoldStartLines(editor: VimEditor, currentLine: Int): List<Int> =
   editor.getAllFoldRegions()
-    .map { fold -> getFoldStartLine(fold, editor) }
+    .map { fold -> fold.getVisualStartLine(editor) }
     .filter { it > currentLine }
     .distinct()
     .sorted()
@@ -378,18 +450,3 @@ private fun findFoldEndLines(editor: VimEditor, currentLine: Int): List<Int> =
     .filter { it < currentLine }
     .distinct()
     .sortedDescending()
-
-/**
- * Gets the line number where a fold visually starts.
- *
- * IDE fold regions typically have their startOffset at the first character of the folded content
- * (e.g., the newline after `{`), not at the fold marker itself. Subtracting 1 from the offset
- * ensures we get the line containing the fold marker (e.g., the line with `{`), which matches
- * Vim's behavior where `zj` navigates to the line where the fold starts visually.
- */
-private fun getFoldStartLine(fold: VimFoldRegion, editor: VimEditor): Int =
-  if (fold.startOffset > 0) {
-    editor.offsetToBufferPosition(fold.startOffset - 1).line
-  } else {
-    editor.offsetToBufferPosition(fold.startOffset).line
-  }

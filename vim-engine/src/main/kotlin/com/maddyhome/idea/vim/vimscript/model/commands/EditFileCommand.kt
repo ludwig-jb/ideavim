@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2023 The IdeaVim authors
+ * Copyright 2003-2026 The IdeaVim authors
  *
  * Use of this source code is governed by an MIT-style
  * license that can be found in the LICENSE.txt file or at
@@ -19,7 +19,10 @@ import com.maddyhome.idea.vim.vimscript.model.ExecutionResult
 /**
  * see "h :edit"
  */
-@ExCommand(command = "e[dit],bro[wse]")
+@ExCommand(
+  command = "e[dit],bro[wse]",
+  description = "Open {file} in the editor. With # as the argument, go back to the previous file. Without an argument, open the IDE's Open File dialog."
+)
 data class EditFileCommand(val range: Range, val modifier: CommandModifier, val argument: String) :
   Command.SingleExecution(range, modifier, argument) {
 
@@ -31,17 +34,21 @@ data class EditFileCommand(val range: Range, val modifier: CommandModifier, val 
     context: ExecutionContext,
     operatorArguments: OperatorArguments,
   ): ExecutionResult {
-    val arg = argument
+    val arg = argument.trim()
     if (arg == "#") {
       injector.jumpService.saveJumpLocation(editor)
-      injector.file.selectPreviousTab(context)
+      if (!injector.file.selectPreviousTab(context)) {
+        injector.messages.indicateError()
+      }
       return ExecutionResult.Success
     } else if (arg.isNotEmpty()) {
-      val res = injector.file.openFile(arg, context)
-      if (res) {
-        injector.jumpService.saveJumpLocation(editor)
+      val errorMessage = injector.file.openFile(arg, context)
+      if (errorMessage != null) {
+        injector.messages.showMessage(editor, errorMessage)
+        return ExecutionResult.Error
       }
-      return if (res) ExecutionResult.Success else ExecutionResult.Error
+      injector.jumpService.saveJumpLocation(editor)
+      return ExecutionResult.Success
     }
 
     // Don't open a choose file dialog under a write action

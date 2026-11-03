@@ -225,6 +225,32 @@ interface VimSearchHelper {
     startLine: Int,
     endLine: Int,
     ignoreCase: Boolean,
+    maxCount: Int = Int.MAX_VALUE,
+  ): List<TextRange>
+
+  fun findAll(
+    editor: VimEditor,
+    pattern: String,
+    startLine: Int,
+    endLine: Int,
+    ignoreCase: Boolean,
+  ): List<TextRange>
+
+  /**
+   * Find all occurrences of the pattern, unless [isCancelled] returns true first
+   *
+   * Use this overload when searching in the background, so a search that is no longer needed can be stopped.
+   *
+   * @throws kotlin.coroutines.cancellation.CancellationException if [isCancelled] returns true
+   */
+  fun findAll(
+    editor: VimEditor,
+    pattern: String,
+    startLine: Int,
+    endLine: Int,
+    ignoreCase: Boolean,
+    maxCount: Int,
+    isCancelled: () -> Boolean,
   ): List<TextRange>
 
   fun findNextCharacterOnLine(
@@ -287,7 +313,8 @@ interface VimSearchHelper {
    * Find the filename at or following the given offset
    *
    * This function uses the `'isfname'` option to check for valid file name characters. It will find the filename under
-   * the caret, or the first filename after the caret on the current line. It will return null if no filename is found.
+   * the caret, or the first filename after the caret on the current line. It will return null if no filename is found,
+   * including when the offset is not a valid offset into the text, such as the end of the document.
    */
   fun findFilenameAtOrFollowingCursor(editor: VimEditor, offset: Int): TextRange?
 
@@ -338,11 +365,17 @@ interface VimSearchHelper {
     isOuter: Boolean,
   ): TextRange?
 
+  /**
+   * @param includeQuotes Include the quote characters themselves in an inner quote range. This is the special case of
+   *                      a count of 2 or more for i", i' and i` (:help v_iquote), which does not include the white
+   *                      space that a", a' and a` would
+   */
   fun findBlockQuoteInLineRange(
     editor: VimEditor,
     caret: ImmutableVimCaret,
     quote: Char,
     isOuter: Boolean,
+    includeQuotes: Boolean = false,
   ): TextRange?
 
   fun findBlockQuoteInLineRange(
@@ -350,6 +383,7 @@ interface VimSearchHelper {
     offset: Int,
     quote: Char,
     isOuter: Boolean,
+    includeQuotes: Boolean = false,
   ): TextRange?
 
   fun findMisspelledWord(

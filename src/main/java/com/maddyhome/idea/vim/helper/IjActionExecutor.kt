@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2023 The IdeaVim authors
+ * Copyright 2003-2026 The IdeaVim authors
  *
  * Use of this source code is governed by an MIT-style
  * license that can be found in the LICENSE.txt file or at
@@ -20,7 +20,6 @@ import com.intellij.openapi.actionSystem.impl.ProxyShortcutSet
 import com.intellij.openapi.application.ex.ApplicationManagerEx
 import com.intellij.openapi.command.CommandProcessor
 import com.intellij.openapi.command.UndoConfirmationPolicy
-import com.intellij.openapi.components.Service
 import com.intellij.openapi.diagnostic.thisLogger
 import com.intellij.openapi.editor.actionSystem.DocCommandGroupId
 import com.intellij.openapi.progress.util.ProgressIndicatorUtils
@@ -30,16 +29,18 @@ import com.maddyhome.idea.vim.api.ExecutionContext
 import com.maddyhome.idea.vim.api.NativeAction
 import com.maddyhome.idea.vim.api.VimActionExecutor
 import com.maddyhome.idea.vim.api.VimEditor
+import com.maddyhome.idea.vim.api.injector
 import com.maddyhome.idea.vim.command.OperatorArguments
 import com.maddyhome.idea.vim.handler.EditorActionHandlerBase
+import com.maddyhome.idea.vim.ide.isRider
 import com.maddyhome.idea.vim.newapi.IjNativeAction
+import com.maddyhome.idea.vim.newapi.IjVimDocument
 import com.maddyhome.idea.vim.newapi.ij
 import org.jetbrains.annotations.NonNls
 import java.awt.Component
 import javax.swing.JComponent
 
-@Service
-internal class IjActionExecutor : VimActionExecutor {
+class IjActionExecutor : VimActionExecutor {
   override val ACTION_EDITOR_NEXT_TEMPLATE_VARIABLE: String
     get() = IdeActions.ACTION_EDITOR_NEXT_TEMPLATE_VARIABLE
   override val ACTION_COLLAPSE_ALL_REGIONS: String
@@ -63,26 +64,41 @@ internal class IjActionExecutor : VimActionExecutor {
 
   var isRunningActionFromVim: Boolean = false
 
-  override fun executeAction(editor: VimEditor?, action: NativeAction, context: ExecutionContext): Boolean {
+  override fun executeAction(editor: VimEditor?, action: NativeAction): Boolean {
     val applicationEx = ApplicationManagerEx.getApplicationEx()
     if (ProgressIndicatorUtils.isWriteActionRunningOrPending(applicationEx)) {
       // This is needed for VIM-3376
       thisLogger().error("Actions cannot be updated when write-action is running or pending")
     }
 
-    val ijAction = (action as IjNativeAction).action
+    return executeAction((action as IjNativeAction).action, editor?.ij?.contentComponent)
+  }
+
+  private fun executeAction(ijAction: AnAction, contextComponent: Component?): Boolean {
     try {
       isRunningActionFromVim = true
-      // The context component should be editor. This is especially important when running the `:action` commands
-      //  because at the moment of execution, the focused component is Ex Field, not editor.
-      val contextComponent = editor?.ij?.contentComponent
       val place = ijAction.choosePlace()
+      if (isRider() && ijAction.isBackendAction()) {
+        // The synchronous update can't get the action's state from the backend: Rider asks the backend only for a real
+        //   hotkey, so the action stays disabled (VIM-3968). The asynchronous update asks the backend without blocking
+        //   the EDT. The action is performed later, as are the backend's changes anyway.
+        ActionManager.getInstance().tryToExecute(ijAction, null, contextComponent, place, false)
+        return true
+      }
       val res = ActionManager.getInstance().tryToExecute(ijAction, null, contextComponent, place, true)
       res.waitFor(5_000)
       return res.isDone
     } finally {
       isRunningActionFromVim = false
     }
+  }
+
+  override fun executeAction(editor: VimEditor?, action: NativeAction, context: ExecutionContext): Boolean {
+    if (editor != null && editor === injector.fallbackWindow) {
+      val contextComponent = context.ij.getData(PlatformDataKeys.CONTEXT_COMPONENT)
+      return executeAction((action as IjNativeAction).action, contextComponent)
+    }
+    return executeAction(editor, action)
   }
 
   // Note: We should find a proper place for the IdeaVim actions
@@ -92,6 +108,9 @@ internal class IjActionExecutor : VimActionExecutor {
     // Or if there is a specific data stored in the context. This data, however, is stored
     //   only if the run window is in focus.
     if (this is StopAction) return ActionPlaces.ACTION_SEARCH
+    // NewScratchFile (ScratchFileActions.NewFileAction) only enables itself when invoked from a
+    //   main-menu / action-search place, so it stays disabled under our default "IdeaVim" place.
+    if (ActionManager.getInstance().getId(this) == "NewScratchFile") return ActionPlaces.ACTION_SEARCH
     return "IdeaVim"
   }
 
@@ -126,8 +145,7 @@ internal class IjActionExecutor : VimActionExecutor {
       }
 
       fun AnAction.getId(): String? {
-        return actionManager.getId(this)
-          ?: (shortcutSet as? ProxyShortcutSet)?.actionId
+        return actionManager.getId(this) ?: (shortcutSet as? ProxyShortcutSet)?.actionId
       }
 
       for (action in listOfActions) {
@@ -146,7 +164,8 @@ internal class IjActionExecutor : VimActionExecutor {
     name: @NlsContexts.Command String?,
     groupId: Any?,
   ) {
-    CommandProcessor.getInstance().executeCommand(editor?.ij?.project, runnable, name, groupId)
+    CommandProcessor.getInstance()
+      .executeCommand(editor?.ij?.project, runnable, name, groupId, (editor?.document as IjVimDocument).document)
   }
 
   override fun executeEsc(editor: VimEditor, context: ExecutionContext): Boolean {
@@ -159,8 +178,13 @@ internal class IjActionExecutor : VimActionExecutor {
     context: ExecutionContext,
     operatorArguments: OperatorArguments,
   ) {
-    CommandProcessor.getInstance()
-      .executeCommand(
+    if (cmd.executesNestedCommands) {
+      // Macro-like actions replay keystrokes that must each form their own undoable command, so they must not run
+      // inside an outer command. See [EditorActionHandlerBase.executesNestedCommands].
+      cmd.execute(editor, context, operatorArguments)
+      return
+    }
+    CommandProcessor.getInstance().executeCommand(
         editor.ij.project,
         { cmd.execute(editor, context, operatorArguments) },
         cmd.id,

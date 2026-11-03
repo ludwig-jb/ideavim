@@ -28,6 +28,7 @@ import org.mockito.kotlin.argumentCaptor
 import org.mockito.kotlin.eq
 import org.mockito.kotlin.spy
 import org.mockito.kotlin.verify
+import kotlinx.coroutines.runBlocking
 import kotlin.test.assertTrue
 
 class DigraphScopeTest : MockTestCase() {
@@ -44,7 +45,7 @@ class DigraphScopeTest : MockTestCase() {
 
     val listenerOwner = ListenerOwner.Plugin.get("test")
     val mappingOwner = MappingOwner.Plugin.get("test")
-    myVimApi = VimApiImpl(listenerOwner, mappingOwner)
+    myVimApi = VimApiImpl(listenerOwner, mappingOwner, null)
 
     mockInjector = spy(injector)
 
@@ -52,6 +53,7 @@ class DigraphScopeTest : MockTestCase() {
     Mockito.`when`(mockInjector.digraphGroup).thenReturn(digraphGroup)
 
     vimEditor = fixture.editor.vim
+    Mockito.`when`(mockInjector.fallbackWindow).thenReturn(vimEditor)
 
     realInjector = injector
     injector = mockInjector
@@ -59,12 +61,12 @@ class DigraphScopeTest : MockTestCase() {
 
   @AfterEach
   override fun tearDown(testInfo: TestInfo) {
+    injector = realInjector
+
     super.tearDown(testInfo)
     // reset mocks
     Mockito.reset(digraphGroup)
     Mockito.reset(mockInjector)
-
-    injector = realInjector
   }
 
   fun assertEqualsEditor(expected: VimEditor, actual: VimEditor) {
@@ -79,7 +81,7 @@ class DigraphScopeTest : MockTestCase() {
     val ch1 = 'a'
     val ch2 = 'b'
 
-    myVimApi.digraph().getCharacter(ch1, ch2)
+    runBlocking { myVimApi.digraph().getCharacter(ch1, ch2) }
 
     verify(injector.digraphGroup).getCharacterForDigraph(eq(ch1), eq(ch2))
   }
@@ -90,7 +92,7 @@ class DigraphScopeTest : MockTestCase() {
     val ch2 = 'b'
     val codepoint = 228
 
-    myVimApi.digraph().add(ch1, ch2, codepoint)
+    runBlocking { myVimApi.digraph().add(ch1, ch2, codepoint) }
 
     val editorCaptor = argumentCaptor<VimEditor>()
     verify(injector.digraphGroup).parseCommandLine(editorCaptor.capture(), eq("$ch1$ch2 $codepoint"))

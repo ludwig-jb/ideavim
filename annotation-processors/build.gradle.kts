@@ -8,20 +8,21 @@
 
 plugins {
   kotlin("jvm")
-  kotlin("plugin.serialization") version "2.2.21"
+  kotlin("plugin.serialization") version "2.3.20"
 }
 
 val kotlinxSerializationVersion: String by project
+val kspVersion: String by project
 
 group = "com.intellij"
 version = "SNAPSHOT"
 
 repositories {
-  mavenCentral()
+  maven { url = uri("https://cache-redirector.jetbrains.com/repo.maven.apache.org/maven2") }
 }
 
 dependencies {
-  compileOnly("com.google.devtools.ksp:symbol-processing-api:2.3.5")
+  compileOnly("com.google.devtools.ksp:symbol-processing-api:$kspVersion")
   implementation("org.jetbrains.kotlinx:kotlinx-serialization-json-jvm:$kotlinxSerializationVersion") {
     // kotlin stdlib is provided by IJ, so there is no need to include it into the distribution
     exclude("org.jetbrains.kotlin", "kotlin-stdlib")

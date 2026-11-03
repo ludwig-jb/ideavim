@@ -319,6 +319,32 @@ class CommandParserTest : VimTestCase() {
 
   @TestWithoutNeovim(reason = SkipNeovimReason.NOT_VIM_TESTING)
   @Test
+  fun `test error on the last line is skipped without discarding the whole script`() {
+    configureByText("\n")
+    // A syntax error on the LAST line must only drop that line, not the entire file (VIM parser recovery).
+    val script = VimscriptParser.parse(
+      """
+        let g:x = 1
+        let g:y = 2
+        #broken
+      """.trimIndent(),
+    )
+    assertEquals(2, script.units.size)
+    assertTrue(script.units[0] is LetCommand)
+    assertTrue(script.units[1] is LetCommand)
+  }
+
+  @TestWithoutNeovim(reason = SkipNeovimReason.NOT_VIM_TESTING)
+  @Test
+  fun `test parse error is shown to the user`() {
+    configureByText("\n")
+    enterCommand("echo (*")
+    assertPluginError(true)
+    assertStatusLineMessageContains("line 1:")
+  }
+
+  @TestWithoutNeovim(reason = SkipNeovimReason.NOT_VIM_TESTING)
+  @Test
   fun `test bug with caret return symbol`() {
     configureByText("----------\n1234${c}567890\n----------\n")
     injector.vimscriptExecutor.execute(
@@ -361,7 +387,7 @@ class CommandParserTest : VimTestCase() {
         \ endif
       """.trimIndent(),
     )
-    assertEquals(0, script.units.size)
+    assertEquals(1, script.units.size)
     assertTrue(IdeavimErrorListener.testLogger.isEmpty())
 
     script = VimscriptParser.parse(
@@ -369,7 +395,7 @@ class CommandParserTest : VimTestCase() {
         autocmd BufReadPost * echo "oh, hi Mark"
       """.trimIndent(),
     )
-    assertEquals(0, script.units.size)
+    assertEquals(1, script.units.size)
     assertTrue(IdeavimErrorListener.testLogger.isEmpty())
   }
 
@@ -469,5 +495,50 @@ class CommandParserTest : VimTestCase() {
     val command = script.units[0]
     assertTrue(command is NormalCommand)
     assertEquals("/search\r", (command as NormalCommand).argument)
+  }
+
+  @Test
+  fun `test invalid command reports concise E492 error`() {
+    configureByText("\n")
+    enterCommand("^")
+    assertPluginError(true)
+    assertPluginErrorMessage("E492: Not an editor command: ^")
+  }
+
+  @Test
+  fun `test invalid command with arguments reports the whole command in E492`() {
+    configureByText("\n")
+    enterCommand("^abc def")
+    assertPluginErrorMessage("E492: Not an editor command: ^abc def")
+  }
+
+  @Test
+  fun `test invalid command with a range reports the command without the range in E492`() {
+    configureByText("\n")
+    enterCommand("1,2^abc")
+    assertPluginErrorMessage("E492: Not an editor command: ^abc")
+  }
+
+  @Test
+  fun `test invalid command error does not expose parser diagnostic`() {
+    configureByText("\n")
+    enterCommand("^")
+    assertNoRawParserDiagnostic()
+  }
+
+  @Test
+  fun `test error inside a known command does not expose the expected token list`() {
+    configureByText("\n")
+    enterCommand("echo ^523")
+    assertPluginError(true)
+    assertNoRawParserDiagnostic()
+  }
+
+  private fun assertNoRawParserDiagnostic() {
+    val message = VimPlugin.getMessage()
+    assertFalse(
+      message.contains("expecting {"),
+      "Raw parser diagnostic leaked to the user: $message",
+    )
   }
 }

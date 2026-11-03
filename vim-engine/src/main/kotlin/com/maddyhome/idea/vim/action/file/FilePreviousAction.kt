@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2023 The IdeaVim authors
+ * Copyright 2003-2026 The IdeaVim authors
  *
  * Use of this source code is governed by an MIT-style
  * license that can be found in the LICENSE.txt file or at
@@ -15,7 +15,11 @@ import com.maddyhome.idea.vim.command.Command
 import com.maddyhome.idea.vim.command.OperatorArguments
 import com.maddyhome.idea.vim.handler.VimActionHandler
 
-@CommandOrMotion(keys = ["<C-^>", "<C-S-6>", "<C-6>"], modes = [com.intellij.vim.annotations.Mode.NORMAL])
+@CommandOrMotion(
+  keys = ["<C-^>", "<C-S-6>", "<C-6>"],
+  modes = [com.intellij.vim.annotations.Mode.NORMAL],
+  description = "Switch to the previously active editor tab (the alternate file)."
+)
 class FilePreviousAction : VimActionHandler.SingleExecution() {
   override val type: Command.Type = Command.Type.OTHER_READONLY
 
@@ -25,7 +29,9 @@ class FilePreviousAction : VimActionHandler.SingleExecution() {
     cmd: Command,
     operatorArguments: OperatorArguments,
   ): Boolean {
-    injector.file.selectPreviousTab(context)
+    if (!injector.file.selectPreviousTab(context)) {
+      injector.messages.indicateError()
+    }
     return true
   }
 }

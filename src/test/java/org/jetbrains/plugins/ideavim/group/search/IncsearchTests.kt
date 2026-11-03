@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2024 The IdeaVim authors
+ * Copyright 2003-2026 The IdeaVim authors
  *
  * Use of this source code is governed by an MIT-style
  * license that can be found in the LICENSE.txt file or at
@@ -8,12 +8,14 @@
 
 package org.jetbrains.plugins.ideavim.group.search
 
+import com.maddyhome.idea.vim.api.injector
 import com.maddyhome.idea.vim.state.mode.Mode
 import com.maddyhome.idea.vim.state.mode.SelectionType
 import org.jetbrains.plugins.ideavim.SkipNeovimReason
 import org.jetbrains.plugins.ideavim.TestWithoutNeovim
 import org.jetbrains.plugins.ideavim.VimTestCase
 import org.junit.jupiter.api.Test
+import kotlin.test.assertFalse
 
 @Suppress("SpellCheckingInspection")
 class IncsearchTests : VimTestCase() {
@@ -30,6 +32,21 @@ class IncsearchTests : VimTestCase() {
     enterCommand("set incsearch")
     typeText("/", "la")
     assertPosition(1, 14)
+  }
+
+  @TestWithoutNeovim(SkipNeovimReason.OPTION)
+  @Test
+  fun `test incsearch does not search the text of an expression prompt`() {
+    configureByText(
+      """I found it in a legendary land
+         |${c}all rocks and lavender and tufted grass,
+         |where it was settled on some sodden sand
+         |hard by the torrent of a mountain pass.
+      """.trimMargin(),
+    )
+    enterCommand("set incsearch")
+    typeText("i<C-R>=", "la")
+    assertPosition(1, 0)
   }
 
   @TestWithoutNeovim(SkipNeovimReason.OPTION)
@@ -127,7 +144,8 @@ class IncsearchTests : VimTestCase() {
     )
     enterCommand("set hlsearch incsearch")
     typeText("3", "/", "one") // No enter
-    assertSearchHighlights("one",
+    assertSearchHighlights(
+      "one",
       """
         «one»
         two
@@ -162,7 +180,8 @@ class IncsearchTests : VimTestCase() {
     )
     enterCommand("set hlsearch incsearch")
     typeText("12", "/", "one") // No enter
-    assertSearchHighlights("one",
+    assertSearchHighlights(
+      "one",
       """
         «one»
         two
@@ -199,7 +218,8 @@ class IncsearchTests : VimTestCase() {
     typeText("12", "/", "one") // No enter
 
     // No current match highlight
-    assertSearchHighlights("one",
+    assertSearchHighlights(
+      "one",
       """
         «one»
         two
@@ -223,8 +243,10 @@ class IncsearchTests : VimTestCase() {
     configureByText("lorem 1 ipsum lorem 2 ipsum lorem 3 ipsum lorem 4 ipsum lorem 5 ipsum lorem 6 ipsum lorem 7 ipsum")
     enterCommand("set hlsearch incsearch")
     typeText("2d", "3/ipsum") // No enter
-    assertSearchHighlights("ipsum",
-      "lorem 1 «ipsum» lorem 2 «ipsum» lorem 3 «ipsum» lorem 4 «ipsum» lorem 5 «ipsum» lorem 6 ‷ipsum‴ lorem 7 «ipsum»")
+    assertSearchHighlights(
+      "ipsum",
+      "lorem 1 «ipsum» lorem 2 «ipsum» lorem 3 «ipsum» lorem 4 «ipsum» lorem 5 «ipsum» lorem 6 ‷ipsum‴ lorem 7 «ipsum»"
+    )
   }
 
   @Test
@@ -245,7 +267,8 @@ class IncsearchTests : VimTestCase() {
     )
     enterCommand("set hlsearch incsearch")
     typeText("3", "?", "one") // No enter
-    assertSearchHighlights("one",
+    assertSearchHighlights(
+      "one",
       """
         «one»
         two
@@ -280,7 +303,8 @@ class IncsearchTests : VimTestCase() {
     )
     enterCommand("set hlsearch incsearch")
     typeText("12", "?", "one") // No enter
-    assertSearchHighlights("one",
+    assertSearchHighlights(
+      "one",
       """
         «one»
         two
@@ -317,7 +341,8 @@ class IncsearchTests : VimTestCase() {
     typeText("12", "?", "one") // No enter
 
     // No current match highlight
-    assertSearchHighlights("one",
+    assertSearchHighlights(
+      "one",
       """
         «one»
         two
@@ -341,8 +366,10 @@ class IncsearchTests : VimTestCase() {
     configureByText("lorem 1 ipsum lorem 2 ipsum lorem 3 ipsum lorem 4 ipsum lorem 5 ipsum lorem 6 ipsum lorem 7 ipsu${c}m")
     enterCommand("set hlsearch incsearch")
     typeText("2d", "3?ipsum") // No enter
-    assertSearchHighlights("ipsum",
-      "lorem 1 «ipsum» lorem 2 ‷ipsum‴ lorem 3 «ipsum» lorem 4 «ipsum» lorem 5 «ipsum» lorem 6 «ipsum» lorem 7 «ipsum»")
+    assertSearchHighlights(
+      "ipsum",
+      "lorem 1 «ipsum» lorem 2 ‷ipsum‴ lorem 3 «ipsum» lorem 4 «ipsum» lorem 5 «ipsum» lorem 6 «ipsum» lorem 7 «ipsum»"
+    )
   }
 
   @Test
@@ -390,6 +417,8 @@ class IncsearchTests : VimTestCase() {
 
     enterSearch("and")
     typeText("/")
+    // After accepting a search, no current-match highlight (‷…‴) is shown — Vim only shows it during active incsearch.
+    // The previous search matches (‷…‴ → «…») are still visible while the new command line is open and empty.
     assertSearchHighlights(
       "and",
       """I found it in a legendary l«and»
@@ -446,6 +475,33 @@ class IncsearchTests : VimTestCase() {
     enterCommand("set hlsearch incsearch")
 
     enterSearch("and")
+    typeText("/", "grass", "<Esc>")
+
+    assertSearchHighlights(
+      "and",
+      """I found it in a legendary l«and»
+           |all rocks «and» lavender «and» tufted grass,
+           |where it was settled on some sodden s«and»
+           |hard by the torrent of a mountain pass.
+      """.trimMargin(),
+    )
+  }
+
+  // VIM-4308: the caret is put on the first match by a motion rather than by a search, so cancelling must not turn
+  // that match into a current match either - there is no search in progress once the command line is closed
+  @Test
+  fun `test cancelling incsearch does not show current match highlight for match at caret`() {
+    configureByText(
+      """I found it in a legendary land
+           |${c}all rocks and lavender and tufted grass,
+           |where it was settled on some sodden sand
+           |hard by the torrent of a mountain pass.
+      """.trimMargin(),
+    )
+    enterCommand("set hlsearch incsearch")
+
+    enterSearch("and")
+    typeText("0", "fa") // Off the match, then back onto it without searching
     typeText("/", "grass", "<Esc>")
 
     assertSearchHighlights(
@@ -582,7 +638,8 @@ class IncsearchTests : VimTestCase() {
     ) {
       enterCommand("set hlsearch incsearch")
     }
-    assertSearchHighlights("dolor",
+    assertSearchHighlights(
+      "dolor",
       """
         |Lorem ipsum ‷dolor‴ sit amet,
         |consectetur adipiscing elit
@@ -612,7 +669,8 @@ class IncsearchTests : VimTestCase() {
     ) {
       enterCommand("set hlsearch incsearch")
     }
-    assertSearchHighlights("ipsum",
+    assertSearchHighlights(
+      "ipsum",
       """
         |Lorem ‷ipsum‴ dolor sit amet,
         |consectetur adipiscing elit
@@ -692,7 +750,8 @@ class IncsearchTests : VimTestCase() {
       enterCommand("set selection=exclusive")
       enterCommand("set hlsearch incsearch")
     }
-    assertSearchHighlights("dolor",
+    assertSearchHighlights(
+      "dolor",
       """
         |Lorem ipsum ‷dolor‴ sit amet,
         |consectetur adipiscing elit
@@ -723,7 +782,8 @@ class IncsearchTests : VimTestCase() {
       enterCommand("set selection=exclusive")
       enterCommand("set hlsearch incsearch")
     }
-    assertSearchHighlights("ipsum",
+    assertSearchHighlights(
+      "ipsum",
       """
         |Lorem ‷ipsum‴ dolor sit amet,
         |consectetur adipiscing elit
@@ -805,7 +865,8 @@ class IncsearchTests : VimTestCase() {
     ) {
       enterCommand("set hlsearch incsearch")
     }
-    assertSearchHighlights("ip",
+    assertSearchHighlights(
+      "ip",
       """
         |Lorem ‷ip‴sum dolor sit amet,
         |consectetur ad«ip»iscing elit
@@ -837,7 +898,8 @@ class IncsearchTests : VimTestCase() {
     ) {
       enterCommand("set hlsearch incsearch")
     }
-    assertSearchHighlights("ip",
+    assertSearchHighlights(
+      "ip",
       """
         |Lorem ‷ip‴sum dolor sit amet,
         |consectetur ad«ip»iscing elit
@@ -896,7 +958,8 @@ class IncsearchTests : VimTestCase() {
       enterCommand("set selection=exclusive")
       enterCommand("set hlsearch incsearch")
     }
-    assertSearchHighlights("ip",
+    assertSearchHighlights(
+      "ip",
       """
         |Lorem ‷ip‴sum dolor sit amet,
         |consectetur ad«ip»iscing elit
@@ -929,7 +992,8 @@ class IncsearchTests : VimTestCase() {
       enterCommand("set selection=exclusive")
       enterCommand("set hlsearch incsearch")
     }
-    assertSearchHighlights("ip",
+    assertSearchHighlights(
+      "ip",
       """
         |Lorem ‷ip‴sum dolor sit amet,
         |consectetur ad«ip»iscing elit
@@ -1008,12 +1072,365 @@ class IncsearchTests : VimTestCase() {
     ) {
       enterCommand("set hlsearch incsearch")
     }
-    assertSearchHighlights("dolor",
+    assertSearchHighlights(
+      "dolor",
       """
         |Lorem ipsum ‷dolor‴ sit amet,
         |consectetur adipiscing elit
         |Sed in orci mauris.
         |Cras id tellus in ex imperdiet egestas. 
+      """.trimMargin()
+    )
+  }
+
+  @TestWithoutNeovim(SkipNeovimReason.OPTION)
+  @Test
+  fun `test incsearch with incomplete regex does not indicate error`() {
+    configureByText(
+      """I found it in a legendary land
+         |${c}all rocks and lavender and tufted grass,
+         |where it was settled on some sodden sand
+         |hard by the torrent of a mountain pass.
+      """.trimMargin(),
+    )
+    enterCommand("set incsearch")
+    injector.messages.clearError()
+    typeText("/", "\\(")
+    assertFalse(injector.messages.isError(), "Incomplete regex during incsearch should not trigger an error/beep")
+  }
+
+  @TestWithoutNeovim(SkipNeovimReason.OPTION)
+  @Test
+  fun `test incsearch in substitute command with incomplete regex does not indicate error`() {
+    configureByText(
+      """I found it in a legendary land
+         |${c}all rocks and lavender and tufted grass,
+         |where it was settled on some sodden sand
+         |hard by the torrent of a mountain pass.
+      """.trimMargin(),
+    )
+    enterCommand("set incsearch")
+    injector.messages.clearError()
+    typeText(":", "%s/\\(")
+    assertFalse(injector.messages.isError(), "Incomplete regex during incsearch :s should not trigger an error/beep")
+  }
+
+  @TestWithoutNeovim(SkipNeovimReason.OPTION)
+  @Test
+  fun `test ctrl+g moves to the next match during incsearch`() {
+    configureByText(
+      """
+        |${c}one
+        |two
+        |one
+        |two
+        |one
+      """.trimMargin(),
+    )
+    enterCommand("set incsearch")
+    typeText("/", "two")
+    typeText("<C-G>")
+    assertState(
+      """
+        |one
+        |two
+        |one
+        |${c}two
+        |one
+      """.trimMargin()
+    )
+  }
+
+  @TestWithoutNeovim(SkipNeovimReason.OPTION)
+  @Test
+  fun `test ctrl+t moves to the previous match during incsearch`() {
+    configureByText(
+      """
+        |${c}one
+        |two
+        |one
+        |two
+        |one
+      """.trimMargin(),
+    )
+    enterCommand("set incsearch")
+    // First match is the "two" on line 1; stepping backwards wraps around to the last "two" on line 3.
+    typeText("/", "two")
+    typeText("<C-T>")
+    assertState(
+      """
+        |one
+        |two
+        |one
+        |${c}two
+        |one
+      """.trimMargin()
+    )
+  }
+
+  @TestWithoutNeovim(SkipNeovimReason.OPTION)
+  @Test
+  fun `test ctrl+t returns to the previous match after ctrl+g during incsearch`() {
+    configureByText(
+      """
+        |${c}one
+        |two
+        |one
+        |two
+        |one
+      """.trimMargin(),
+    )
+    enterCommand("set incsearch")
+    // /two -> line 1, <C-G> -> line 3, <C-T> -> back to line 1.
+    typeText("/", "two")
+    typeText("<C-G>")
+    typeText("<C-T>")
+    assertState(
+      """
+        |one
+        |${c}two
+        |one
+        |two
+        |one
+      """.trimMargin()
+    )
+  }
+
+  @TestWithoutNeovim(SkipNeovimReason.OPTION)
+  @Test
+  fun `test ctrl+g moves current match highlight with hlsearch`() {
+    configureByText("${c}one two one two one two")
+    enterCommand("set hlsearch incsearch")
+
+    // The pattern doesn't change while stepping through the matches, so the all-match highlights stay as they are. Only
+    // the current match highlight moves
+    typeText("/", "two")
+    assertSearchHighlights("two", "one ‷two‴ one «two» one «two»")
+
+    typeText("<C-G>")
+    assertSearchHighlights("two", "one «two» one ‷two‴ one «two»")
+
+    typeText("<C-G>")
+    assertSearchHighlights("two", "one «two» one «two» one ‷two‴")
+
+    typeText("<C-G>") // Wraps around to the first match
+    assertSearchHighlights("two", "one ‷two‴ one «two» one «two»")
+  }
+
+  @TestWithoutNeovim(SkipNeovimReason.OPTION)
+  @Test
+  fun `test ctrl+t moves current match highlight with hlsearch`() {
+    configureByText("${c}one two one two one two")
+    enterCommand("set hlsearch incsearch")
+
+    typeText("/", "two", "<C-G>")
+    assertSearchHighlights("two", "one «two» one ‷two‴ one «two»")
+
+    typeText("<C-T>")
+    assertSearchHighlights("two", "one ‷two‴ one «two» one «two»")
+
+    typeText("<C-T>") // Wraps around to the last match
+    assertSearchHighlights("two", "one «two» one «two» one ‷two‴")
+  }
+
+  @TestWithoutNeovim(SkipNeovimReason.OPTION)
+  @Test
+  fun `test ctrl+g moves caret with hlsearch`() {
+    configureByText(
+      """
+        |${c}one
+        |two
+        |one
+        |two
+        |one
+      """.trimMargin(),
+    )
+    enterCommand("set hlsearch incsearch")
+    typeText("/", "two")
+    typeText("<C-G>")
+    assertState(
+      """
+        |one
+        |two
+        |one
+        |${c}two
+        |one
+      """.trimMargin()
+    )
+  }
+
+  @TestWithoutNeovim(SkipNeovimReason.OPTION)
+  @Test
+  fun `test enter after ctrl+g lands on the advanced match`() {
+    configureByText(
+      """
+        |${c}one
+        |two
+        |one
+        |two
+        |one
+      """.trimMargin(),
+    )
+    enterCommand("set incsearch")
+    // /two -> line 1, <C-G> -> line 3. Pressing <CR> must accept the advanced match, not jump back to line 1.
+    typeText("/", "two")
+    typeText("<C-G>")
+    typeText("<CR>")
+    assertState(
+      """
+        |one
+        |two
+        |one
+        |${c}two
+        |one
+      """.trimMargin()
+    )
+  }
+
+  @TestWithoutNeovim(SkipNeovimReason.OPTION)
+  @Test
+  fun `test enter after ctrl+t lands on the previous match`() {
+    configureByText(
+      """
+        |${c}one
+        |two
+        |one
+        |two
+        |one
+      """.trimMargin(),
+    )
+    enterCommand("set incsearch")
+    // /two -> line 1, <C-T> wraps backwards to line 3. Pressing <CR> must accept that match.
+    typeText("/", "two")
+    typeText("<C-T>")
+    typeText("<CR>")
+    assertState(
+      """
+        |one
+        |two
+        |one
+        |${c}two
+        |one
+      """.trimMargin()
+    )
+  }
+
+  @TestWithoutNeovim(SkipNeovimReason.OPTION)
+  @Test
+  fun `test enter after multiple ctrl+g lands on the correct match`() {
+    configureByText(
+      """
+        |${c}one
+        |two
+        |one
+        |two
+        |one
+        |two
+        |one
+      """.trimMargin(),
+    )
+    enterCommand("set incsearch")
+    // /two -> line 1, <C-G> -> line 3, <C-G> -> line 5. Pressing <CR> must accept the twice-advanced match.
+    typeText("/", "two")
+    typeText("<C-G>")
+    typeText("<C-G>")
+    typeText("<CR>")
+    assertState(
+      """
+        |one
+        |two
+        |one
+        |two
+        |one
+        |${c}two
+        |one
+      """.trimMargin()
+    )
+  }
+
+  @TestWithoutNeovim(SkipNeovimReason.OPTION)
+  @Test
+  fun `test enter after ctrl+g then ctrl+t lands on the first match`() {
+    configureByText(
+      """
+        |${c}one
+        |two
+        |one
+        |two
+        |one
+      """.trimMargin(),
+    )
+    enterCommand("set incsearch")
+    // /two -> line 1, <C-G> -> line 3, <C-T> -> back to line 1. Pressing <CR> must accept line 1.
+    typeText("/", "two")
+    typeText("<C-G>")
+    typeText("<C-T>")
+    typeText("<CR>")
+    assertState(
+      """
+        |one
+        |${c}two
+        |one
+        |two
+        |one
+      """.trimMargin()
+    )
+  }
+
+  @TestWithoutNeovim(SkipNeovimReason.OPTION)
+  @Test
+  fun `test enter after ctrl+g during backwards incsearch lands on the advanced match`() {
+    configureByText(
+      """
+        |one
+        |two
+        |one
+        |two
+        |${c}one
+      """.trimMargin(),
+    )
+    enterCommand("set incsearch")
+    // ?two -> line 3 (first match backwards), <C-G> -> next match, i.e. line 1. Pressing <CR> must accept line 1.
+    typeText("?", "two")
+    typeText("<C-G>")
+    typeText("<CR>")
+    assertState(
+      """
+        |one
+        |${c}two
+        |one
+        |two
+        |one
+      """.trimMargin()
+    )
+  }
+
+  @TestWithoutNeovim(SkipNeovimReason.OPTION)
+  @Test
+  fun `test enter after wrapping ctrl+t with nowrapscan leaves caret unmoved`() {
+    configureByText(
+      """
+        |${c}one
+        |two
+        |one
+        |two
+        |one
+      """.trimMargin(),
+    )
+    enterCommand("set incsearch nowrapscan")
+    // Known limitation: /two -> line 1, <C-T> would wrap backwards past the first match to line 3, which the preview
+    // shows (its match count wraps unconditionally). But on <CR> the search runs in the reverse direction, and with
+    // 'nowrapscan' it cannot wrap around, so it finds nothing and the caret is left where it started (line 0).
+    typeText("/", "two")
+    typeText("<C-T>")
+    typeText("<CR>")
+    assertState(
+      """
+        |${c}one
+        |two
+        |one
+        |two
+        |one
       """.trimMargin()
     )
   }

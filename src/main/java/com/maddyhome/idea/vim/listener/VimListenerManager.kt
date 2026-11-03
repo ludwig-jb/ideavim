@@ -9,13 +9,17 @@
 package com.maddyhome.idea.vim.listener
 
 import com.intellij.codeWithMe.ClientId
+import com.intellij.codeWithMe.ClientId.Companion.isLocal
 import com.intellij.ide.ui.UISettings
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.diagnostic.trace
 import com.intellij.openapi.editor.Caret
+import com.intellij.openapi.editor.ClientEditorManager
+import com.intellij.openapi.editor.Document
 import com.intellij.openapi.editor.Editor
+import com.intellij.openapi.editor.EditorFactory
 import com.intellij.openapi.editor.EditorKind
 import com.intellij.openapi.editor.actionSystem.TypedAction
 import com.intellij.openapi.editor.event.CaretEvent
@@ -30,10 +34,15 @@ import com.intellij.openapi.editor.event.EditorMouseListener
 import com.intellij.openapi.editor.event.EditorMouseMotionListener
 import com.intellij.openapi.editor.event.SelectionEvent
 import com.intellij.openapi.editor.event.SelectionListener
+import com.intellij.openapi.editor.event.VisibleAreaEvent
+import com.intellij.openapi.editor.event.VisibleAreaListener
 import com.intellij.openapi.editor.ex.DocumentEx
 import com.intellij.openapi.editor.ex.EditorEx
 import com.intellij.openapi.editor.ex.FocusChangeListener
+import com.intellij.openapi.editor.ex.FoldingListener
 import com.intellij.openapi.editor.impl.EditorComponentImpl
+import com.intellij.openapi.fileEditor.FileDocumentManager
+import com.intellij.openapi.fileEditor.FileDocumentManagerListener
 import com.intellij.openapi.fileEditor.FileEditor
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.fileEditor.FileEditorManagerEvent
@@ -51,6 +60,12 @@ import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.util.Key
 import com.intellij.openapi.util.removeUserData
 import com.intellij.openapi.vfs.VirtualFile
+import com.intellij.openapi.vfs.VirtualFileManager
+import com.intellij.openapi.vfs.newvfs.BulkFileListener
+import com.intellij.openapi.vfs.newvfs.events.VFileCreateEvent
+import com.intellij.openapi.vfs.newvfs.events.VFileEvent
+import com.intellij.testFramework.LightVirtualFile
+import com.intellij.util.Alarm
 import com.intellij.util.ExceptionUtil
 import com.intellij.util.SlowOperations
 import com.maddyhome.idea.vim.EventFacade
@@ -58,29 +73,44 @@ import com.maddyhome.idea.vim.KeyHandler
 import com.maddyhome.idea.vim.VimKeyListener
 import com.maddyhome.idea.vim.VimPlugin
 import com.maddyhome.idea.vim.VimTypedActionHandler
+import com.maddyhome.idea.vim.action.OutsideEditorKeyDispatcher
 import com.maddyhome.idea.vim.api.LocalOptionInitialisationScenario
 import com.maddyhome.idea.vim.api.Options
 import com.maddyhome.idea.vim.api.VimEditor
+import com.maddyhome.idea.vim.api.VimEditorGroup
+import com.maddyhome.idea.vim.api.VirtualBufferKind
 import com.maddyhome.idea.vim.api.coerceOffset
 import com.maddyhome.idea.vim.api.getLineEndForOffset
 import com.maddyhome.idea.vim.api.getLineStartForOffset
+import com.maddyhome.idea.vim.api.globalOptions
 import com.maddyhome.idea.vim.api.injector
-import com.maddyhome.idea.vim.group.EditorGroup
-import com.maddyhome.idea.vim.group.FileGroup
+import com.maddyhome.idea.vim.autocmd.AutoCmdEvent
+import com.maddyhome.idea.vim.autocmd.IjFileTypeMapping
+import com.maddyhome.idea.vim.common.ModeChangeListener
+import com.maddyhome.idea.vim.common.ModeWillChangeListener
+import com.maddyhome.idea.vim.group.ClipboardAutoselectChangeListener
+import com.maddyhome.idea.vim.group.CommentsOptionInitializer
+import com.maddyhome.idea.vim.group.ConsoleOptionChangeListener
+import com.maddyhome.idea.vim.group.ControlCharsEditorHighlighter
+import com.maddyhome.idea.vim.group.FileGroupHelper
 import com.maddyhome.idea.vim.group.IjOptions
 import com.maddyhome.idea.vim.group.IjVimRedrawService
+import com.maddyhome.idea.vim.group.KeymapChangeListener
+import com.maddyhome.idea.vim.group.MarkUpdater
 import com.maddyhome.idea.vim.group.MotionGroup
+import com.maddyhome.idea.vim.group.NumberChangeListener
 import com.maddyhome.idea.vim.group.OptionGroup
-import com.maddyhome.idea.vim.group.ScrollGroup
-import com.maddyhome.idea.vim.group.VimMarkServiceImpl
+import com.maddyhome.idea.vim.group.ScrollOptionsChangeListener
+import com.maddyhome.idea.vim.group.WindowJumpsChangeListener
 import com.maddyhome.idea.vim.group.visual.IdeaSelectionControl
 import com.maddyhome.idea.vim.group.visual.VimVisualTimer
 import com.maddyhome.idea.vim.group.visual.moveCaretOneCharLeftFromSelectionEnd
-import com.maddyhome.idea.vim.handler.correctorRequester
-import com.maddyhome.idea.vim.handler.keyCheckRequests
 import com.maddyhome.idea.vim.helper.CaretVisualAttributesListener
+import com.maddyhome.idea.vim.helper.CmdwinKeys
+import com.maddyhome.idea.vim.helper.EditorHelper
 import com.maddyhome.idea.vim.helper.GuicursorChangeListener
 import com.maddyhome.idea.vim.helper.StrictMode
+import com.maddyhome.idea.vim.helper.clearCurrentSearchMatchHighlight
 import com.maddyhome.idea.vim.helper.exitSelectMode
 import com.maddyhome.idea.vim.helper.exitVisualMode
 import com.maddyhome.idea.vim.helper.forceBarCursor
@@ -92,11 +122,20 @@ import com.maddyhome.idea.vim.helper.resetVimLastColumn
 import com.maddyhome.idea.vim.helper.updateCaretsVisualAttributes
 import com.maddyhome.idea.vim.helper.vimDisabled
 import com.maddyhome.idea.vim.helper.vimInitialised
+import com.maddyhome.idea.vim.helper.vimSearchHighlights
+import com.maddyhome.idea.vim.key.noteCaretMoveInInsertSession
+import com.maddyhome.idea.vim.key.resetAbbreviationSession
+import com.maddyhome.idea.vim.listener.VimListenerManager.VimEditorFactoryListener.scheduleDeferredInitialisation
 import com.maddyhome.idea.vim.newapi.IjVimEditor
 import com.maddyhome.idea.vim.newapi.IjVimSearchGroup
 import com.maddyhome.idea.vim.newapi.InsertTimeRecorder
+import com.maddyhome.idea.vim.newapi.globalIjOptions
 import com.maddyhome.idea.vim.newapi.ij
 import com.maddyhome.idea.vim.newapi.vim
+import com.maddyhome.idea.vim.options.helpers.LangNoRemapChangeListener
+import com.maddyhome.idea.vim.options.helpers.LangRemapChangeListener
+import com.maddyhome.idea.vim.state.mode.CtrlXCompletionMode
+import com.maddyhome.idea.vim.state.mode.Mode
 import com.maddyhome.idea.vim.state.mode.inSelectMode
 import com.maddyhome.idea.vim.state.mode.selectionType
 import com.maddyhome.idea.vim.ui.ShowCmdOptionChangeListener
@@ -108,8 +147,11 @@ import com.maddyhome.idea.vim.ui.widgets.mode.modeWidgetOptionListener
 import org.jetbrains.annotations.TestOnly
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
+import java.awt.event.MouseWheelEvent
+import java.awt.event.MouseWheelListener
 import java.lang.ref.WeakReference
 import java.util.*
+import java.util.concurrent.ConcurrentHashMap
 import javax.swing.SwingUtilities
 
 /**
@@ -141,7 +183,7 @@ private fun getOpeningEditor(newEditor: Editor) = newEditor.project?.let { proje
   VimListenerManager.VimLastSelectedEditorTracker.getLastSelectedEditor(project)?.takeUnless { it == newEditor }
 }
 
-internal object VimListenerManager {
+object VimListenerManager {
 
   private val logger = Logger.getInstance(VimListenerManager::class.java)
   private val editorListenersDisposableKey = Key.create<Disposable>("IdeaVim listeners disposable")
@@ -152,8 +194,6 @@ internal object VimListenerManager {
     SlowOperations.knownIssue("VIM-3648, VIM-3649").use {
       EditorListeners.addAll()
     }
-    check(correctorRequester.tryEmit(Unit))
-    check(keyCheckRequests.tryEmit(Unit))
 
     val caretVisualAttributesListener = CaretVisualAttributesListener()
     injector.listenersNotifier.myEditorListeners.add(caretVisualAttributesListener)
@@ -166,6 +206,11 @@ internal object VimListenerManager {
     val insertTimeRecorder = InsertTimeRecorder()
     injector.listenersNotifier.modeChangeListeners.add(insertTimeRecorder)
 
+    injector.listenersNotifier.modeChangeListeners.add(AbbreviationSessionResetListener())
+
+    injector.listenersNotifier.modeWillChangeListeners.add(AutoCmdInsertEnterListener())
+    injector.listenersNotifier.modeChangeListeners.add(AutoCmdInsertLeaveListener())
+
     val modeWidgetListener = ModeWidgetListener()
     injector.listenersNotifier.modeChangeListeners.add(modeWidgetListener)
     injector.listenersNotifier.myEditorListeners.add(modeWidgetListener)
@@ -177,14 +222,14 @@ internal object VimListenerManager {
 
     injector.listenersNotifier.myEditorListeners.add(IJEditorFocusListener())
     injector.listenersNotifier.myEditorListeners.add(ShowCmdWidgetUpdater())
+
+    injector.listenersNotifier.modeChangeListeners.add(IjVimRedrawService.RedrawListener)
   }
 
   fun turnOff() {
     GlobalListeners.disable()
     EditorListeners.removeAll()
     injector.listenersNotifier.reset()
-
-    check(correctorRequester.tryEmit(Unit))
   }
 
   object GlobalListeners {
@@ -198,20 +243,29 @@ internal object VimListenerManager {
       }
 
       val optionGroup = VimPlugin.getOptionGroup()
-      optionGroup.addEffectiveOptionValueChangeListener(Options.number, EditorGroup.NumberChangeListener.INSTANCE)
+      optionGroup.addEffectiveOptionValueChangeListener(Options.guicursor, GuicursorChangeListener)
+      optionGroup.addGlobalOptionChangeListener(Options.langremap, LangRemapChangeListener)
+      optionGroup.addGlobalOptionChangeListener(Options.langnoremap, LangNoRemapChangeListener)
+      optionGroup.addEffectiveOptionValueChangeListener(Options.number, NumberChangeListener)
       optionGroup.addEffectiveOptionValueChangeListener(
         IjOptions.relativenumber,
-        EditorGroup.NumberChangeListener.INSTANCE
+        NumberChangeListener
       )
-      optionGroup.addEffectiveOptionValueChangeListener(Options.scrolloff, ScrollGroup.ScrollOptionsChangeListener)
-      optionGroup.addEffectiveOptionValueChangeListener(Options.guicursor, GuicursorChangeListener)
+      optionGroup.addEffectiveOptionValueChangeListener(Options.scrolloff, ScrollOptionsChangeListener)
       optionGroup.addGlobalOptionChangeListener(Options.showcmd, ShowCmdOptionChangeListener)
-
-      // This code is executed after ideavimrc execution, so we trigger onGlobalOptionChanged just in case
       optionGroup.addGlobalOptionChangeListener(Options.showmode, modeWidgetOptionListener)
       optionGroup.addGlobalOptionChangeListener(Options.showmode, macroWidgetOptionListener)
+      optionGroup.addEffectiveOptionValueChangeListener(Options.keymap, KeymapChangeListener)
+      optionGroup.addGlobalOptionChangeListener(Options.ideawindowjumps, WindowJumpsChangeListener)
+      optionGroup.addGlobalOptionChangeListener(IjOptions.ideaeditor, ConsoleOptionChangeListener)
+      optionGroup.addGlobalOptionChangeListener(Options.clipboard, ClipboardAutoselectChangeListener)
+
+      // The listeners are registered _after_ ideavimrc has been evaluated, so trigger these listeners to ensure we're
+      // up to date
+      // TODO: Why do we register listeners after evaluating ideavimrc?
       modeWidgetOptionListener.onGlobalOptionChanged()
       macroWidgetOptionListener.onGlobalOptionChanged()
+      ClipboardAutoselectChangeListener.onGlobalOptionChanged()
 
       // Listen for and initialise new editors
       EventFacade.getInstance()
@@ -219,22 +273,50 @@ internal object VimListenerManager {
       val busConnection =
         ApplicationManager.getApplication().messageBus.connect(VimPlugin.getInstance().onOffDisposable)
       busConnection.subscribe(FileOpenedSyncListener.TOPIC, VimEditorFactoryListener)
+      busConnection.subscribe(VirtualFileManager.VFS_CHANGES, BufNewFileTracker)
+      busConnection.subscribe(FileDocumentManagerListener.TOPIC, BufWriteListener)
+
+      OutsideEditorKeyDispatcher.getInstance().installListeners()
+
+      com.intellij.ide.IdeEventQueue.getInstance()
+        .addDispatcher(ComposedTextDispatcher, VimPlugin.getInstance().onOffDisposable)
+
+      // VIM-4205: feed Esc presses to RiderEscAwtKeyTracker. Must be a preprocessor (not a dispatcher)
+      // so it fires before Rider's popup manager consumes the event.
+      if (com.maddyhome.idea.vim.ide.isRider() || com.maddyhome.idea.vim.ide.isClionNova()) {
+        com.intellij.ide.IdeEventQueue.getInstance().addPreprocessor(
+          { event ->
+            IdeaSpecifics.RiderEscAwtKeyTracker.onAwtEvent(event)
+            false
+          },
+          VimPlugin.getInstance().onOffDisposable,
+        )
+      }
     }
 
     fun disable() {
       EventFacade.getInstance().restoreTypedActionHandler()
+      OutsideEditorKeyDispatcher.getInstance().removeListeners()
 
       val optionGroup = VimPlugin.getOptionGroup()
-      optionGroup.removeEffectiveOptionValueChangeListener(Options.number, EditorGroup.NumberChangeListener.INSTANCE)
+      optionGroup.removeEffectiveOptionValueChangeListener(Options.guicursor, GuicursorChangeListener)
+      optionGroup.removeGlobalOptionChangeListener(Options.langremap, LangRemapChangeListener)
+      optionGroup.removeGlobalOptionChangeListener(Options.langnoremap, LangNoRemapChangeListener)
+      optionGroup.removeEffectiveOptionValueChangeListener(Options.number, NumberChangeListener)
       optionGroup.removeEffectiveOptionValueChangeListener(
         IjOptions.relativenumber,
-        EditorGroup.NumberChangeListener.INSTANCE
+        NumberChangeListener
       )
-      optionGroup.removeEffectiveOptionValueChangeListener(Options.scrolloff, ScrollGroup.ScrollOptionsChangeListener)
+      optionGroup.removeEffectiveOptionValueChangeListener(Options.scrolloff, ScrollOptionsChangeListener)
       optionGroup.removeGlobalOptionChangeListener(Options.showcmd, ShowCmdOptionChangeListener)
       optionGroup.removeGlobalOptionChangeListener(Options.showmode, modeWidgetOptionListener)
       optionGroup.removeGlobalOptionChangeListener(Options.showmode, macroWidgetOptionListener)
-      optionGroup.removeEffectiveOptionValueChangeListener(Options.guicursor, GuicursorChangeListener)
+      optionGroup.removeGlobalOptionChangeListener(Options.ideawindowjumps, WindowJumpsChangeListener)
+      optionGroup.removeGlobalOptionChangeListener(IjOptions.ideaeditor, ConsoleOptionChangeListener)
+      optionGroup.removeGlobalOptionChangeListener(Options.clipboard, ClipboardAutoselectChangeListener)
+      ClipboardAutoselectChangeListener.restore()
+
+      BufNewFileTracker.clear()
     }
   }
 
@@ -321,16 +403,39 @@ internal object VimListenerManager {
       eventFacade.addComponentMouseListener(editor.contentComponent, ComponentMouseListener, perEditorDisposable)
       eventFacade.addCaretListener(editor, EditorCaretHandler, perEditorDisposable)
 
-      VimPlugin.getEditor().editorCreated(editor)
-      VimPlugin.getChange().editorCreated(editor, perEditorDisposable)
+      // Search highlights only cover the part of the document that is on screen, so they have to follow it. Scrolling
+      // and resizing both arrive as a visible area change; collapsing a fold does not, unless it happens to move the
+      // scrollbar, but it does change which offsets are under those pixels
+      val searchHighlightsViewportHandler = SearchHighlightsViewportHandler(editor, perEditorDisposable)
+      eventFacade.addVisibleAreaListener(editor, searchHighlightsViewportHandler, perEditorDisposable)
+      eventFacade.addFoldingListener(editor, searchHighlightsViewportHandler, perEditorDisposable)
+
+      // 'ideascrollcursor': the caret follows the text when the user scrolls with the mouse wheel or the scrollbar
+      val scrollCursorHandler = ScrollCursorHandler(editor)
+      eventFacade.addVisibleAreaListener(editor, scrollCursorHandler, perEditorDisposable)
+      eventFacade.addComponentMouseWheelListener(
+        (editor as EditorEx).scrollPane,
+        scrollCursorHandler,
+        perEditorDisposable,
+      )
+
+      injector.editorGroup.editorCreated(IjVimEditor(editor))
+      VimPlugin.getChange().editorCreated(IjVimEditor(editor), perEditorDisposable)
+      CommentsOptionInitializer.initializeForEditor(editor)
 
       (editor as EditorEx).addFocusListener(VimFocusListener, perEditorDisposable)
 
       injector.listenersNotifier.notifyEditorCreated(vimEditor)
 
+      // Colour control-character tokens (^M, ^[, …) in the control-chars editor, once the editor exists.
+      if (editor.virtualFile?.getUserData(CmdwinKeys.KIND) == VirtualBufferKind.ControlCharsEditor) {
+        ControlCharsEditorHighlighter.install(editor)
+      }
+
       Disposer.register(perEditorDisposable) {
         ApplicationManager.getApplication().invokeLater {
-          VimPlugin.getEditor().editorDeinit(editor)
+          val editorGroup = ApplicationManager.getApplication().getServiceIfCreated(VimEditorGroup::class.java)
+          editorGroup?.editorDeinit(editor.vim)
         }
       }
     }
@@ -339,8 +444,9 @@ internal object VimListenerManager {
       val editorDisposable = editor.removeUserData(editorListenersDisposableKey)
       if (editorDisposable != null) {
         Disposer.dispose(editorDisposable)
-      } else {
-        // We definitely do not expect this to happen
+      } else if (!EditorHelper.isCommandHistoryWindow(editor)) {
+        // Cmdwin editors (q:, q/, q?) may bypass `add` in some test paths; that's expected.
+        // We definitely do not expect this to happen for any other editor.
         StrictMode.fail("Editor doesn't have disposable attached. $editor")
       }
     }
@@ -352,11 +458,13 @@ internal object VimListenerManager {
    */
   private object VimFocusListener : FocusChangeListener {
     override fun focusGained(editor: Editor) {
+      if (editor.isDisposed) return
       if (vimDisabled(editor)) return
       injector.listenersNotifier.notifyEditorFocusGained(editor.vim)
     }
 
     override fun focusLost(editor: Editor) {
+      if (editor.isDisposed) return
       if (vimDisabled(editor)) return
       injector.listenersNotifier.notifyEditorFocusLost(editor.vim)
     }
@@ -369,19 +477,35 @@ internal object VimListenerManager {
    */
   class VimDocumentListener : DocumentListener {
     override fun beforeDocumentChange(event: DocumentEvent) {
-      VimMarkServiceImpl.MarkUpdater.beforeDocumentChange(event)
+      MarkUpdater.beforeDocumentChange(event)
+      snapshotChangedLine(event)
       IjVimSearchGroup.DocumentSearchListener.INSTANCE.beforeDocumentChange(event)
       IjVimRedrawService.RedrawListener.beforeDocumentChange(event)
     }
 
     override fun documentChanged(event: DocumentEvent) {
-      VimMarkServiceImpl.MarkUpdater.documentChanged(event)
+      MarkUpdater.documentChanged(event)
       IjVimSearchGroup.DocumentSearchListener.INSTANCE.documentChanged(event)
       IjVimRedrawService.RedrawListener.documentChanged(event)
     }
+
+    /**
+     * Saves the pristine line for the "U" command before it is changed. We only work out which line
+     * is about to change here; the snapshot itself is owned by [injector.lineChange]. Only single-line
+     * changes are tracked, mirroring Vim's `u_save` (which calls `u_saveline` only for a 1-line range).
+     */
+    private fun snapshotChangedLine(event: DocumentEvent) {
+      if (VimPlugin.isNotEnabled()) return
+      val doc = event.document
+      val startLine = doc.getLineNumber(event.offset)
+      val endLine = doc.getLineNumber(event.offset + event.oldLength)
+      if (startLine != endLine || event.newFragment.contains('\n')) return
+      val editor = EditorFactory.getInstance().getEditors(doc).firstOrNull()?.let { IjVimEditor(it) } ?: return
+      injector.lineChange.snapshotLine(startLine, editor)
+    }
   }
 
-  internal object VimLastSelectedEditorTracker {
+  object VimLastSelectedEditorTracker {
     // This stores a weak reference to an editor against a weak reference to a project, which means there is nothing
     // keeping the project or editor from being garbage collected at any time. Stale keys are automatically expunged
     // whenever the map is used.
@@ -396,7 +520,7 @@ internal object VimListenerManager {
     }
 
     @TestOnly
-    internal fun resetLastSelectedEditor(project: Project) {
+    fun resetLastSelectedEditor(project: Project) {
       selectedEditors.remove(project)
     }
   }
@@ -411,9 +535,22 @@ internal object VimListenerManager {
       // We can't rely on being passed a non-null editor, so check for Code With Me scenarios explicitly
       if (VimPlugin.isNotEnabled() || !ClientId.isCurrentlyUnderLocalId) return
 
-      injector.outputPanel.getCurrentOutputPanel()?.close()
+      if (!isVirtualBuffer(event.oldFile) && !isVirtualBuffer(event.newFile)) {
+        // Vim order: BufLeave → WinLeave → WinEnter → BufEnter
+        // Buf events only fire when the buffer (file) actually changes
+        val bufferChanged = event.oldFile?.path != event.newFile?.path
+        if (bufferChanged) {
+          injector.autoCmd.handleEvent(AutoCmdEvent.BufLeave, event.oldFile?.path)
+        }
+        injector.autoCmd.handleEvent(AutoCmdEvent.WinLeave, event.oldFile?.path)
+        injector.autoCmd.handleEvent(AutoCmdEvent.WinEnter, event.newFile?.path)
+        if (bufferChanged) {
+          injector.autoCmd.handleEvent(AutoCmdEvent.BufEnter, event.newFile?.path)
+        }
+      }
+
       MotionGroup.fileEditorManagerSelectionChangedCallback(event)
-      FileGroup.fileEditorManagerSelectionChangedCallback(event)
+      FileGroupHelper.fileEditorManagerSelectionChangedCallback(event)
       VimPlugin.getSearch().fileEditorManagerSelectionChangedCallback(event)
       IjVimRedrawService.fileEditorManagerSelectionChangedCallback(event)
       VimLastSelectedEditorTracker.setLastSelectedEditor(event.newEditor)
@@ -434,8 +571,13 @@ internal object VimListenerManager {
 
     private val openingEditorKey: Key<OpeningEditor> = Key("IdeaVim::OpeningEditor")
 
+    private const val PYTHON_EXTENSION = "py"
+
     override fun editorCreated(event: EditorFactoryEvent) {
-      if (vimDisabled(event.editor)) return
+      if (vimDisabled(event.editor)) {
+        scheduleDeferredInitialisation(event.editor)
+        return
+      }
 
       // This callback is called when an editor is created, but we cannot completely rely on it to initialise options.
       // We can find the currently selected editor, which we can use as the opening editor, and we're given the new
@@ -447,20 +589,12 @@ internal object VimListenerManager {
       // isn't called, so we need to initialise early.
       val openingEditor = getOpeningEditor(event.editor)
 
-      if (event.editor.virtualFile == null || event.editor.editorKind != EditorKind.MAIN_EDITOR || openingEditor == null) {
-        // If we don't have an opening editor, use the fallback window. If it's the first time, use the FALLBACK
-        // scenario and make a full copy to get everything set in `~/.ideavimrc`. If it's not, then use EDIT, as if we
-        // still had a current window and we are just replacing the buffer. If we do have an opening window, it's NEW.
+      if (event.editor.virtualFile == null || event.editor.editorKind != EditorKind.MAIN_EDITOR || openingEditor == null || EditorHelper.isCommandHistoryWindow(
+          event.editor
+        )
+      ) {
         // Preview and reused tabs are handled below
-        val scenario = when {
-          openingEditor == null && !firstEditorInitialised -> LocalOptionInitialisationScenario.FALLBACK
-          openingEditor == null -> LocalOptionInitialisationScenario.EDIT
-          else -> LocalOptionInitialisationScenario.NEW
-        }
-        SlowOperations.knownIssue("VIM-3648").use {
-          EditorListeners.add(event.editor, openingEditor?.vim ?: injector.fallbackWindow, scenario)
-        }
-        firstEditorInitialised = true
+        initialiseFromOpeningEditor(event.editor, openingEditor)
       } else {
         // We've got a virtual file, so FileOpenedSyncListener will be called. Save data
         val project = openingEditor.project ?: return
@@ -480,21 +614,80 @@ internal object VimListenerManager {
 
         // Keep a track of the owner of the opening editor, so we can compare later, potentially after the opening
         // editor has been closed. This is nullable, but should always have a value
-        val owningEditorWindow = getOwningEditorWindow(openingEditor)
+        val owningEditorWindow = EditorHelper.getOwningEditorWindow(openingEditor)
 
         event.editor.putUserData(
           openingEditorKey,
           OpeningEditor(openingEditor, owningEditorWindow, isPreview, canBeReused)
         )
       }
+
+      injector.listenersNotifier.notifyMarksChanges(null)
+    }
+
+    private fun initialiseFromOpeningEditor(editor: Editor, openingEditor: Editor?) {
+      // If we don't have an opening editor, use the fallback window. If it's the first time, use the FALLBACK scenario
+      // and make a full copy to get everything set in `~/.ideavimrc`. If it's not, then use EDIT, as if we still had a
+      // current window and we are just replacing the buffer. If we do have an opening window, it's NEW.
+      val scenario = when {
+        openingEditor == null && !firstEditorInitialised -> LocalOptionInitialisationScenario.FALLBACK
+        openingEditor == null -> LocalOptionInitialisationScenario.EDIT
+        else -> LocalOptionInitialisationScenario.NEW
+      }
+      SlowOperations.knownIssue("VIM-3648").use {
+        EditorListeners.add(editor, openingEditor?.vim ?: injector.fallbackWindow, scenario)
+      }
+      firstEditorInitialised = true
+    }
+
+    /**
+     * Retries initialisation for editors that can only be recognised as supported after they've been created.
+     *
+     * Consoles mark themselves only after creating their editor: `PythonConsoleView` sets `PYDEV_CONSOLE_KEY` on the
+     * virtual file after `LanguageConsoleImpl`'s constructor has created the input editor, and
+     * `ConsoleViewImpl.createConsoleEditor` sets `CONSOLE_VIEW_IN_EDITOR_VIEW` after `EditorFactory.createViewer` - the
+     * very call that triggers [editorCreated]. Both are fully constructed within a single EDT runnable, so re-checking
+     * in `invokeLater` sees the markers. Anything still unsupported on the second look is dropped, as before.
+     */
+    private fun scheduleDeferredInitialisation(editor: Editor) {
+      if (editor.isDisposed) return
+      if (!mayBecomeSupported(editor)) return
+
+      // Capture the opening editor now rather than in the callback - by then the selected editor might have changed
+      val openingEditor = getOpeningEditor(editor)
+
+      ApplicationManager.getApplication().invokeLater {
+        if (editor.isDisposed || vimDisabled(editor)) return@invokeLater
+        initialiseFromOpeningEditor(editor, openingEditor?.takeUnless { it.isDisposed })
+      }
+    }
+
+    /**
+     * Keeps [scheduleDeferredInitialisation] from queueing work for every unsupported editor. Consoles have no virtual
+     * file to recognise them by at creation time, so [EditorKind.CONSOLE] is all we have to go on here.
+     */
+    private fun mayBecomeSupported(editor: Editor): Boolean {
+      if (editor.editorKind == EditorKind.CONSOLE) return true
+      val file = EditorHelper.getVirtualFile(editor) ?: return false
+      return file is LightVirtualFile && file.extension == PYTHON_EXTENSION
     }
 
     override fun editorReleased(event: EditorFactoryEvent) {
       if (vimDisabled(event.editor)) return
       val vimEditor = event.editor.vim
+      val isCmdwin = EditorHelper.isCommandHistoryWindow(event.editor)
       EditorListeners.remove(event.editor)
       injector.listenersNotifier.notifyEditorReleased(vimEditor)
       injector.markService.editorReleased(vimEditor)
+      if (isCmdwin) {
+        // Cmdwin is a synthetic buffer: no autocmd BufLeave and no fallback-window option capture.
+        return
+      }
+      // As above, for the other virtual buffers - the substitute preview and the control-chars editor. Unlike the
+      // cmdwin, only the event is skipped: the fallback-window option capture below still has to run.
+      if (!isVirtualBuffer(event.editor.virtualFile)) {
+        injector.autoCmd.handleEvent(AutoCmdEvent.BufLeave, event.editor.virtualFile?.path)
+      }
 
       // This ticket will have a different stack trace, but it's the same problem. Originally, we tracked the last
       // editor closing based on file selection (closing an editor would select the next editor - so a null selection
@@ -533,7 +726,7 @@ internal object VimListenerManager {
           if (editor.vimInitialised) return@let
 
           val openingEditor = editor.removeUserData(openingEditorKey)
-          val owningEditorWindow = getOwningEditorWindow(editor)
+          val owningEditorWindow = EditorHelper.getOwningEditorWindow(editor)
           val isInSameSplit = owningEditorWindow == openingEditor?.owningEditorWindow
 
           // Sometimes the platform will not reuse a tab when you expect it to, e.g. when reuse tabs is enabled and
@@ -552,18 +745,19 @@ internal object VimListenerManager {
             (openingEditor.canBeReused || openingEditor.isPreview) && isInSameSplit && openingEditorIsClosed -> LocalOptionInitialisationScenario.EDIT
             else -> LocalOptionInitialisationScenario.NEW
           }
+          // Vim copies the jump list into any window created by a split, whichever buffer ends up in the new window -
+          // `:vsplit {file}`, `:vnew` and "Open in Right Split" included. The SPLIT scenario above is narrower than
+          // that: it only covers a new window showing the *same* document, so it cannot be the condition here
+          if (!isInSameSplit && openingEditor != null && injector.globalOptions().ideawindowjumps) {
+            injector.jumpService.inheritJumps(openingEditor.editor.vim.jumpListId, editor.vim.jumpListId)
+          }
           EditorListeners.add(editor, openingEditor?.editor?.vim ?: injector.fallbackWindow, scenario)
           firstEditorInitialised = true
-        }
-      }
-    }
 
-    private fun getOwningEditorWindow(editor: Editor) = editor.project?.let { p ->
-      FileEditorManagerEx.getInstanceEx(p).windows.find { editorWindow ->
-        editorWindow.allComposites.any { composite ->
-          composite.allEditors.filterIsInstance<TextEditor>().any { it.editor == editor }
+          fireBufferLoadedEvents(editor)
         }
       }
+      injector.listenersNotifier.notifyMarksChanges(null)
     }
   }
 
@@ -618,7 +812,7 @@ internal object VimListenerManager {
       }
       //endregion
 
-      if (SelectionVimListenerSuppressor.isNotLocked) {
+      if (SelectionVimListenerSuppressor.isNotLocked && !MouseEventsDataHolder.mouseDragging) {
         logger.debug("Adjust non vim selection change")
         IdeaSelectionControl.controlNonVimSelectionChange(editor)
       }
@@ -643,17 +837,26 @@ internal object VimListenerManager {
    */
   // TODO: Can we merge this with ComponentMouseListener to fully handle all mouse actions in one place?
   private object EditorMouseHandler : EditorMouseListener, EditorMouseMotionListener {
-    private var mouseDragging = false
     private var cutOffFixed = false
 
     override fun mouseDragged(e: EditorMouseEvent) {
       val editor = e.editor
       if (editor.isIdeaVimDisabledHere) return
+
+      if (ModelessSelection.isGestureInProgress(editor)) {
+        // We consumed the press, so the platform ignores the drag - make the modeless selection ourselves. Note that we
+        // deliberately don't touch the drag bookkeeping: leaving dragEventCount alone keeps the end-of-line correction
+        // in EditorSelectionHandler away from a selection that isn't Vim's
+        ModelessSelection.extendSelection(editor, e.offset)
+        e.consume()
+        return
+      }
+
       val caret = editor.caretModel.primaryCaret
 
       clearFirstSelectionEvents(e)
 
-      if (mouseDragging && caret.hasSelection()) {
+      if (MouseEventsDataHolder.mouseDragging && caret.hasSelection()) {
         /**
          * We force the bar caret while dragging because it matches IntelliJ's selection model better.
          * * Vim's drag selection is based on character bounding boxes. When 'selection' is set to "inclusive" (the
@@ -682,7 +885,7 @@ internal object VimListenerManager {
 
         if (!cutOffFixed && ComponentMouseListener.cutOffEnd) {
           cutOffFixed = true
-          SelectionVimListenerSuppressor.lock().use {
+          SelectionVimListenerSuppressor.lock {
             if (caret.selectionEnd == e.editor.document.getLineEndOffset(caret.logicalPosition.line) - 1 &&
               caret.leadSelectionOffset == caret.selectionEnd
             ) {
@@ -718,14 +921,11 @@ internal object VimListenerManager {
       if (MouseEventsDataHolder.dragEventCount > 0) {
         logger.debug("Mouse dragging")
         VimVisualTimer.swingTimer?.stop()
-        if (!mouseDragging) {
-          SelectionVimListenerSuppressor.lock()
-        }
-        mouseDragging = true
+        MouseEventsDataHolder.mouseDragging = true
 
         val caret = e.editor.caretModel.primaryCaret
         if (onLineEnd(caret)) {
-          SelectionVimListenerSuppressor.lock().use {
+          SelectionVimListenerSuppressor.lock {
             caret.removeSelection()
             caret.forceBarCursor()
           }
@@ -742,8 +942,24 @@ internal object VimListenerManager {
 
     override fun mousePressed(event: EditorMouseEvent) {
       if (event.editor.isIdeaVimDisabledHere) return
+
+      // Unconditional bookkeeping first - it is not 'mouse'-dependent, and leaving it out of any early return is what
+      // keeps a stale mouseDragging from disabling IdeaSelectionControl for the rest of the session
       MouseEventsDataHolder.dragEventCount = MouseEventsDataHolder.allowedSkippedDragEvents
-      SelectionVimListenerSuppressor.reset()
+      MouseEventsDataHolder.mouseDragging = false
+
+      if (!ModelessSelection.isMouseEnabled(event.editor) && ModelessSelection.appliesTo(event)) {
+        // Vim doesn't use the mouse in this mode, so the caret must not move. Consuming the press is the only way to
+        // stop the platform from placing it, which also means we make any selection ourselves. See [ModelessSelection]
+        ModelessSelection.beginGesture(event.editor, event.offset)
+        event.consume()
+      } else {
+        ModelessSelection.endGesture(event.editor)
+      }
+
+      if (VimPasteFromX11Handler.shouldKeepCaretOnPress(event)) {
+        event.consume()
+      }
     }
 
     /**
@@ -754,14 +970,31 @@ internal object VimListenerManager {
      */
     override fun mouseReleased(event: EditorMouseEvent) {
       if (event.editor.isIdeaVimDisabledHere) return
-      SelectionVimListenerSuppressor.unlock()
+
+      if (ModelessSelection.isGestureInProgress(event.editor)) {
+        // Everything below is for turning a mouse selection into a Vim one, which is exactly what must not happen here.
+        // The modeless selection stays until a command is typed or the next gesture starts.
+        //
+        // Consume the release as well, or the platform's processMouseReleased can drop our selection: it ends with a
+        // `removeSelection()` guarded by `myKeepSelectionOnMousePress` and `myDragStarted`, and because we consumed the
+        // press, neither of those was recomputed for this gesture. Not for a popup trigger though - on Windows that is
+        // the release, and consuming it would swallow the context menu
+        if (!event.mouseEvent.isPopupTrigger) {
+          event.consume()
+        }
+        MouseEventsDataHolder.dragEventCount = MouseEventsDataHolder.allowedSkippedDragEvents
+        MouseEventsDataHolder.mouseDragging = false
+        cutOffFixed = false
+        ModelessSelection.endGesture(event.editor)
+        return
+      }
 
       clearFirstSelectionEvents(event)
       MouseEventsDataHolder.dragEventCount = MouseEventsDataHolder.allowedSkippedDragEvents
-      if (mouseDragging) {
+      if (MouseEventsDataHolder.mouseDragging) {
         logger.debug("Release mouse after dragging")
         val editor = event.editor
-        SelectionVimListenerSuppressor.lock().use {
+        SelectionVimListenerSuppressor.lock {
           val predictedMode = injector.application
             .runReadAction { IdeaSelectionControl.predictMode(editor, SelectionSource.MOUSE) }
           IdeaSelectionControl.controlNonVimSelectionChange(editor, SelectionSource.MOUSE)
@@ -772,7 +1005,7 @@ internal object VimListenerManager {
           editor.updateCaretsVisualAttributes()
         }
 
-        mouseDragging = false
+        MouseEventsDataHolder.mouseDragging = false
         cutOffFixed = false
       }
     }
@@ -841,6 +1074,9 @@ internal object VimListenerManager {
     override fun mousePressed(e: MouseEvent?) {
       val editor = (e?.component as? EditorComponentImpl)?.editor ?: return
       if (editor.isIdeaVimDisabledHere) return
+      // AWT delivers consumed events to component listeners too, but everything below fixes up what the platform's own
+      // press handling did - and that was skipped for a consumed press
+      if (e.isConsumed) return
       val predictedMode = injector.application.runReadAction {
         IdeaSelectionControl.predictMode(editor, SelectionSource.MOUSE)
       }
@@ -880,20 +1116,142 @@ internal object VimListenerManager {
   }
 
   /**
+   * Keeps the viewport-scoped search highlights in step with what the editor is actually showing.
+   *
+   * Both events are per editor and both arrive on the EDT, which is what reading the visible area and writing to the
+   * markup model need.
+   */
+  private class SearchHighlightsViewportHandler(
+    private val editor: Editor,
+    parentDisposable: Disposable,
+  ) : VisibleAreaListener, FoldingListener {
+
+    private val alarm = Alarm(Alarm.ThreadToUse.SWING_THREAD, parentDisposable)
+
+    override fun visibleAreaChanged(event: VisibleAreaEvent) {
+      // The viewport fires this for horizontal scrolling too, which doesn't change which lines are on screen.
+      // Width is part of the test because with soft wrap it does: a narrower editor wraps more, so fewer buffer
+      // lines fit on screen
+      val old = event.oldRectangle
+      val new = event.newRectangle
+      if (old != null && old.y == new.y && old.height == new.height && old.width == new.width) return
+      scheduleRefresh()
+    }
+
+    override fun onFoldProcessingEnd() {
+      scheduleRefresh()
+    }
+
+    /**
+     * VisibleAreaEvent comes straight from the viewport's own Swing ChangeListener, synchronously on the EDT - once
+     * per frame of an animated scroll, once per trackpad tick. Rebuilding the highlights inside that dispatch is
+     * what makes the scrollbar stick, so the work is coalesced instead. This is what the platform does for its own
+     * viewport-driven work in EditorMarkupModelImpl.
+     *
+     * The delay costs nothing visible: the highlights already extend a screen beyond the viewport, so you would have
+     * to scroll further than that within the delay to see unhighlighted text.
+     */
+    private fun scheduleRefresh() {
+      if (injector.application.isUnitTest()) {
+        // Tests assert the markup model directly after typing, and an alarm firing afterwards would be a race
+        editor.vimSearchHighlights.refreshForViewport()
+        return
+      }
+      alarm.cancelAllRequests()
+      alarm.addRequest({
+        if (!editor.isDisposed) editor.vimSearchHighlights.refreshForViewport()
+      }, COALESCE_DELAY_MS)
+    }
+
+    private companion object {
+      private const val COALESCE_DELAY_MS = 50
+    }
+  }
+
+  /**
+   * Moves the caret along with the text when the user scrolls with the mouse wheel or drags a scrollbar, so it never
+   * leaves the screen, like Vim does. Only active when 'ideascrollcursor' is set.
+   *
+   * The caret only follows scrolling started by the user. IntelliJ and IdeaVim also scroll programmatically to show
+   * the caret after a jump, a search, etc. and those scrolls must leave the caret where it was put, even if that is
+   * inside the 'scrolloff' margin.
+   *
+   * A wheel notch can be animated (smooth scrolling) or arrive as a burst of precise trackpad events, so the visible
+   * area keeps changing for a short while after the wheel event. The scroll pane's own wheel listener might also run
+   * before ours and scroll synchronously, so the caret is moved both on the wheel event itself and on every visible
+   * area change shortly after it.
+   */
+  private class ScrollCursorHandler(private val editor: Editor) : VisibleAreaListener, MouseWheelListener {
+    private var lastWheelTime = 0L
+
+    override fun mouseWheelMoved(e: MouseWheelEvent) {
+      // Ctrl/Cmd+wheel changes the font size instead of scrolling
+      if (e.isControlDown || e.isMetaDown) return
+      lastWheelTime = System.currentTimeMillis()
+      followScroll()
+    }
+
+    override fun visibleAreaChanged(event: VisibleAreaEvent) {
+      if (isScrollBarDragged() || System.currentTimeMillis() - lastWheelTime <= WHEEL_SCROLL_TIMEOUT_MS) {
+        followScroll()
+      }
+    }
+
+    private fun isScrollBarDragged(): Boolean {
+      val scrollPane = (editor as EditorEx).scrollPane
+      return scrollPane.verticalScrollBar.valueIsAdjusting || scrollPane.horizontalScrollBar.valueIsAdjusting
+    }
+
+    private fun followScroll() {
+      if (editor.isDisposed || editor.isIdeaVimDisabledHere) return
+      if (!injector.globalIjOptions().ideascrollcursor) return
+
+      // Vim has a single cursor, and moving only the primary caret would be surprising
+      if (editor.caretModel.caretCount > 1) return
+
+      // Don't interfere with the command line or a mouse drag selection, which already moves the caret
+      if (editor.vim.mode is Mode.CMD_LINE || MouseEventsDataHolder.mouseDragging) return
+
+      MotionGroup.moveCaretToView(editor)
+    }
+
+    private companion object {
+      private const val WHEEL_SCROLL_TIMEOUT_MS = 500
+    }
+  }
+
+  /**
    * Caret listener registered only for editors that we're interested in. Used to update caret shapes when carets are
    * added/removed. Also tracks the expected last column location of the caret.
    */
   private object EditorCaretHandler : CaretListener {
     override fun caretPositionChanged(event: CaretEvent) {
-      event.caret?.resetVimLastColumn()
+      event.caret.resetVimLastColumn()
+      val editor = event.editor
+      // The current search match highlight only belongs to an in-progress 'incsearch' - moving the caret does not make
+      // a match current, it just takes the highlight away (VIM-4308)
+      clearCurrentSearchMatchHighlight(editor)
+
+      val vimEditor = editor.vim
+      if (vimEditor.mode is Mode.INSERT) {
+        // Moving the caret ends any CTRL-X completion sub-mode (:help i_CTRL-X)
+        injector.vimState.ctrlXCompletionMode = CtrlXCompletionMode.NONE
+        noteCaretMoveInInsertSession(vimEditor, editor.document.modificationStamp)
+      }
     }
 
-    override fun caretAdded(event: CaretEvent) {
-      event.editor.updateCaretsVisualAttributes()
-    }
+    override fun caretAdded(event: CaretEvent) = updateAttributesUnlessSuppressed(event)
+    override fun caretRemoved(event: CaretEvent) = updateAttributesUnlessSuppressed(event)
 
-    override fun caretRemoved(event: CaretEvent) {
-      event.editor.updateCaretsVisualAttributes()
+    // updateCaretsVisualAttributes() walks every caret in the editor. A single block-visual
+    // motion can fire caretAdded/caretRemoved N times (one per caret added/removed by
+    // setBlockSelection), giving O(N²) per motion. When wrapped in
+    // [CaretVisualAttributesListenerSuppressor], skip the walk; the bulk op runs one final
+    // update at the end.
+    private fun updateAttributesUnlessSuppressed(event: CaretEvent) {
+      if (CaretVisualAttributesListenerSuppressor.isNotLocked) {
+        event.editor.updateCaretsVisualAttributes()
+      }
     }
   }
 
@@ -911,4 +1269,146 @@ internal object VimListenerTestObject {
 private object MouseEventsDataHolder {
   const val allowedSkippedDragEvents = 3
   var dragEventCount = allowedSkippedDragEvents
+
+  /**
+   * Ground-truth for "is a mouse drag currently in progress".
+   */
+  var mouseDragging = false
 }
+
+/**
+ * Whether [file] hosts one of IdeaVim's virtual buffers - the cmdwin, the substitute preview, the control-chars editor.
+ *
+ * These are an implementation detail rather than a buffer the user opened, so they must not raise autocmd events. Vim
+ * takes the same care with its own scratch buffers, blocking autocommands while entering them (`block_autocmds` in
+ * `aucmd_prepbuf`).
+ */
+private fun isVirtualBuffer(file: VirtualFile?): Boolean = file?.getUserData(CmdwinKeys.KIND) != null
+
+/**
+ * Fires autocmd events that correspond to Vim's "load a buffer" sequence.
+ */
+private fun fireBufferLoadedEvents(editor: Editor) {
+  val virtualFile = editor.virtualFile ?: return
+  if (isVirtualBuffer(virtualFile)) return
+  val vimEditor = editor.vim
+  val path = virtualFile.path
+
+  if (BufNewFileTracker.consumeIfNew(path)) {
+    injector.autoCmd.handleEvent(AutoCmdEvent.BufNewFile, path, vimEditor)
+  } else {
+    injector.autoCmd.handleEvent(AutoCmdEvent.BufReadPost, path, vimEditor)
+  }
+
+  val vimFileType = IjFileTypeMapping.toVimFileType(virtualFile)
+  if (vimFileType != null) {
+    injector.autoCmd.handleEvent(AutoCmdEvent.FileType, vimFileType, vimEditor)
+  }
+}
+
+/**
+ * Fires Vim's buffer write events when IntelliJ saves a document to disk.
+ *
+ * `BufWritePre` (== `BufWrite` in Vim) fires before the write; `BufWritePost` after.
+ * Note: IntelliJ auto-saves aggressively (focus loss, tab switch, build, etc.), so these
+ * fire more often than Vim's `:w`. Handlers should be idempotent.
+ */
+private object BufWriteListener : FileDocumentManagerListener {
+  override fun beforeDocumentSaving(document: Document) {
+    fireWriteEvent(document, pre = true)
+  }
+
+  override fun afterDocumentSaved(document: Document) {
+    fireWriteEvent(document, pre = false)
+  }
+
+  private fun fireWriteEvent(document: Document, pre: Boolean) {
+    val virtualFile = FileDocumentManager.getInstance().getFile(document) ?: return
+    val editor = getMainEditor(document) ?: return
+    val vimEditor = IjVimEditor(editor)
+    val path = virtualFile.path
+    if (pre) {
+      injector.autoCmd.handleEvent(AutoCmdEvent.BufWritePre, path, vimEditor)
+    } else {
+      injector.autoCmd.handleEvent(AutoCmdEvent.BufWritePost, path, vimEditor)
+    }
+  }
+
+  private fun getMainEditor(document: Document): Editor? = EditorFactory.getInstance().getEditors(document)
+    .firstOrNull { ed ->
+      ed.editorKind != EditorKind.CONSOLE &&
+        ed.editorKind != EditorKind.DIFF &&
+        ClientEditorManager.getClientId(ed).isLocal
+    }
+}
+
+/**
+ * Tracks paths of newly-created VirtualFiles so that when a file is subsequently opened we can fire Vim's `BufNewFile`
+ * event instead of `BufRead`. Entries are removed on first matching open; files created but never opened stay in the
+ * set (bounded by a TTL and max size).
+ */
+internal object BufNewFileTracker : BulkFileListener {
+
+  private const val ENTRY_TTL_MILLIS = 60_000L
+
+  private const val MAX_ENTRIES = 256
+
+  private val createdFiles = ConcurrentHashMap<String, Long>()
+
+  @TestOnly
+  internal var clock: () -> Long = System::currentTimeMillis
+
+  override fun after(events: List<VFileEvent>) {
+    val now = clock()
+    for (event in events) {
+      if (event !is VFileCreateEvent || event.isDirectory) continue
+      if (event.isFromRefresh || event.requestor == null) continue
+      createdFiles[event.path] = now
+    }
+    if (createdFiles.size > MAX_ENTRIES) sweepStale(now)
+  }
+
+  fun consumeIfNew(path: String): Boolean {
+    val timestamp = createdFiles.remove(path) ?: return false
+    return clock() - timestamp < ENTRY_TTL_MILLIS
+  }
+
+  fun clear() {
+    createdFiles.clear()
+  }
+
+  @TestOnly
+  internal fun size(): Int = createdFiles.size
+
+  private fun sweepStale(now: Long) {
+    createdFiles.entries.removeIf { now - it.value > ENTRY_TTL_MILLIS }
+  }
+}
+
+private class AutoCmdInsertEnterListener : ModeWillChangeListener {
+  override fun modeWillChange(editor: VimEditor, oldMode: Mode, newMode: Mode) {
+    if (!oldMode.isInsertish && newMode.isInsertish) {
+      injector.autoCmd.handleEvent(AutoCmdEvent.InsertEnter, editor.getPath(), editor)
+    }
+  }
+}
+
+private class AutoCmdInsertLeaveListener : ModeChangeListener {
+  override fun modeChanged(editor: VimEditor, oldMode: Mode) {
+    if (oldMode.isInsertish && !editor.mode.isInsertish) {
+      injector.autoCmd.handleEvent(AutoCmdEvent.InsertLeave, editor.getPath(), editor)
+    }
+  }
+}
+
+private class AbbreviationSessionResetListener : ModeChangeListener {
+  override fun modeChanged(editor: VimEditor, oldMode: Mode) {
+    if (oldMode !is Mode.INSERT && editor.mode is Mode.INSERT) {
+      resetAbbreviationSession(editor, editor.ij.document.modificationStamp)
+    }
+  }
+}
+
+// Vim fires InsertEnter/Leave for both Insert and Replace modes (`:help InsertEnter`).
+private val Mode.isInsertish: Boolean
+  get() = this is Mode.INSERT || this == Mode.REPLACE

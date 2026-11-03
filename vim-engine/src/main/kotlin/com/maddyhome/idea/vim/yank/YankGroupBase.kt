@@ -69,11 +69,18 @@ open class YankGroupBase : VimYankGroup {
         HashMap<VimCaret, Int>(nativeCaretCount)
       }
 
-
     for (caret in editor.nativeCarets()) {
       var motionType = motion.getMotionType()
       val motionRange = injector.motion.getMotionRange(editor, caret, context, argument, operatorArguments)
         ?: continue
+
+      // A blockwise force (o_CTRL-V) turns the motion into a rectangular block, which is one range per line of the
+      // block. Yank it as-is; the linewise promotion below only applies to characterwise motions.
+      if (motionType == SelectionType.BLOCK_WISE) {
+        startOffsets?.put(caret, motionRange.normalize().startOffset)
+        caretToRange[caret] = motionRange to motionType
+        continue
+      }
 
       assert(motionRange.size() == 1)
       startOffsets?.put(caret, motionRange.normalize().startOffset)
@@ -120,8 +127,6 @@ open class YankGroupBase : VimYankGroup {
       val start = injector.motion.moveCaretToCurrentLineStart(editor, caret)
       val end =
         min(injector.motion.moveCaretToRelativeLineEnd(editor, caret, count - 1, true) + 1, editor.fileSize().toInt())
-
-      if (end == -1) continue
 
       caretToRange[caret] = TextRange(start, end) to SelectionType.LINE_WISE
     }

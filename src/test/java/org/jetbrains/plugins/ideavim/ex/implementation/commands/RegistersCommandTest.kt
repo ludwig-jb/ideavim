@@ -13,6 +13,8 @@ import com.maddyhome.idea.vim.api.injector
 import com.maddyhome.idea.vim.newapi.vim
 import com.maddyhome.idea.vim.register.Register
 import com.maddyhome.idea.vim.state.mode.SelectionType
+import org.jetbrains.plugins.ideavim.SkipNeovimReason
+import org.jetbrains.plugins.ideavim.TestWithoutNeovim
 import org.jetbrains.plugins.ideavim.VimTestCase
 import org.jetbrains.plugins.ideavim.annotations.TestWithPrimaryClipboard
 import org.jetbrains.plugins.ideavim.annotations.TestWithoutPrimaryClipboard
@@ -23,7 +25,12 @@ class RegistersCommandTest : VimTestCase() {
   fun `test list empty registers`() {
     configureByText("")
     enterCommand("registers")
-    assertExOutput("Type Name Content")
+    assertExOutput(
+      """
+        |Type Name Content
+        |  c  "%   aaa.txt
+      """.trimMargin(),
+    )
   }
 
   @Test
@@ -106,11 +113,29 @@ class RegistersCommandTest : VimTestCase() {
 
     VimPlugin.getRegister().setKeys('a', injector.parser.parseKeys("<Tab>Hello<Space>World<CR><Esc>"))
 
+    // <CR> is shown as ^M (carriage return, 0x0D), matching Vim/Neovim, not ^J (line feed, 0x0A)
     enterCommand("registers")
     assertExOutput(
       """
         |Type Name Content
-        |  c  "a   ^IHello World^J^[
+        |  c  "a   ^IHello World^M^[
+        |  c  "%   aaa.txt
+      """.trimMargin(),
+    )
+  }
+
+  @TestWithoutNeovim(SkipNeovimReason.DIFFERENT)
+  @Test
+  fun `test recorded Enter key is shown as caret M`() {
+    configureByText("${c}lorem")
+
+    typeText("qa", "iX<CR>Y<Esc>", "q")
+
+    enterCommand("registers a")
+    assertExOutput(
+      """
+        |Type Name Content
+        |  c  "a   iX^MY^[
       """.trimMargin(),
     )
   }
@@ -183,7 +208,6 @@ class RegistersCommandTest : VimTestCase() {
 
     // IdeaVim does not support:
     // ". last inserted text
-    // "% current file name
     // "# alternate file name
     // "= expression register
     enterCommand("registers")
@@ -230,6 +254,7 @@ class RegistersCommandTest : VimTestCase() {
         |  c  "-   s
         |  c  "*   clipboard content
         |  c  ":   ascii
+        |  c  "%   aaa.txt
         |  c  "/   search pattern
       """.trimMargin(),
     )
@@ -256,6 +281,7 @@ class RegistersCommandTest : VimTestCase() {
       """
         |Type Name Content
         |  c  "*   clipboard content
+        |  c  "%   aaa.txt
       """.trimMargin(),
     )
   }
@@ -275,6 +301,7 @@ class RegistersCommandTest : VimTestCase() {
         |  c  "0   line
         |  c  "*   line
         |  c  ":   set clipboard=unnamed,unnamedplus
+        |  c  "%   aaa.txt
       """.trimMargin(),
     )
     enterCommand("set clipboard&")
@@ -295,6 +322,7 @@ class RegistersCommandTest : VimTestCase() {
         |  c  "-   line
         |  c  "*   line
         |  c  ":   set clipboard=unnamed,unnamedplus
+        |  c  "%   aaa.txt
       """.trimMargin(),
     )
     enterCommand("set clipboard&")
@@ -315,6 +343,7 @@ class RegistersCommandTest : VimTestCase() {
         |  c  "-   line
         |  c  "*   line
         |  c  ":   set clipboard=unnamedplus
+        |  c  "%   aaa.txt
       """.trimMargin(),
     )
     enterCommand("set clipboard&")
@@ -325,7 +354,7 @@ class RegistersCommandTest : VimTestCase() {
   fun `test list empty registers linux`() {
     configureByText("")
     enterCommand("registers")
-    assertExOutput("Type Name Content\n  c  \"*   ")
+    assertExOutput("Type Name Content\n  c  \"*   \n  c  \"%   aaa.txt")
   }
 
   @TestWithPrimaryClipboard
@@ -340,6 +369,7 @@ class RegistersCommandTest : VimTestCase() {
         |Type Name Content
         |  c  "a   ^IHello World^J^[
         |  c  "*   
+        |  c  "%   aaa.txt
       """.trimMargin(),
     )
   }
@@ -393,7 +423,6 @@ class RegistersCommandTest : VimTestCase() {
 
     // IdeaVim does not support:
     // ". last inserted text
-    // "% current file name
     // "# alternate file name
     // "= expression register
     enterCommand("registers")
@@ -438,9 +467,10 @@ class RegistersCommandTest : VimTestCase() {
         |  c  "y   Hello world y
         |  c  "z   Hello world z
         |  c  "-   s
-        |  c  "*   mall delete register
+        |  l  "*   mall delete register^J
         |  c  "+   clipboard content
         |  c  ":   ascii
+        |  c  "%   aaa.txt
         |  c  "/   search pattern
       """.trimMargin(),
     )
@@ -466,8 +496,9 @@ class RegistersCommandTest : VimTestCase() {
     assertExOutput(
       """
         |Type Name Content
-        |  c  "*   line 0 
+        |  l  "*   line 0 ^J
         |  c  "+   clipboard content
+        |  c  "%   aaa.txt
       """.trimMargin(),
     )
   }
@@ -488,6 +519,7 @@ class RegistersCommandTest : VimTestCase() {
         |  c  "*   line
         |  c  "+   line
         |  c  ":   set clipboard=unnamed,unnamedplus
+        |  c  "%   aaa.txt
       """.trimMargin(),
     )
     enterCommand("set clipboard&")
@@ -509,6 +541,7 @@ class RegistersCommandTest : VimTestCase() {
         |  c  "*   
         |  c  "+   line
         |  c  ":   set clipboard=unnamed,unnamedplus
+        |  c  "%   aaa.txt
       """.trimMargin(),
     )
     enterCommand("set clipboard&")

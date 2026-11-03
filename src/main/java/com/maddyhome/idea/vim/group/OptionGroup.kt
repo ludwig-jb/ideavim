@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2023 The IdeaVim authors
+ * Copyright 2003-2026 The IdeaVim authors
  *
  * Use of this source code is governed by an MIT-style
  * license that can be found in the LICENSE.txt file or at
@@ -36,7 +36,6 @@ import com.intellij.openapi.vfs.encoding.EncodingUtil.Magic8
 import com.intellij.util.ArrayUtil
 import com.intellij.util.LineSeparator
 import com.intellij.util.PatternUtil
-import com.maddyhome.idea.vim.VimPlugin
 import com.maddyhome.idea.vim.api.GlobalLocalOptionToGlobalLocalExternalSettingMapper
 import com.maddyhome.idea.vim.api.GlobalOptionToGlobalLocalExternalSettingMapper
 import com.maddyhome.idea.vim.api.GlobalOptionValueOverride
@@ -46,12 +45,11 @@ import com.maddyhome.idea.vim.api.OptionValue
 import com.maddyhome.idea.vim.api.OptionValueOverride
 import com.maddyhome.idea.vim.api.Options
 import com.maddyhome.idea.vim.api.VimEditor
-import com.maddyhome.idea.vim.api.VimOptionGroup
 import com.maddyhome.idea.vim.api.VimOptionGroupBase
 import com.maddyhome.idea.vim.api.injector
 import com.maddyhome.idea.vim.ex.ExException
 import com.maddyhome.idea.vim.ex.exExceptionMessage
-import com.maddyhome.idea.vim.helper.vimDisabled
+import com.maddyhome.idea.vim.helper.EditorHelper
 import com.maddyhome.idea.vim.newapi.ij
 import com.maddyhome.idea.vim.newapi.vim
 import com.maddyhome.idea.vim.options.NumberOption
@@ -68,24 +66,12 @@ import java.nio.charset.Charset
 import java.nio.charset.StandardCharsets
 import java.util.*
 
-internal interface IjVimOptionGroup : VimOptionGroup {
-  /**
-   * Return an accessor for options that only have a global value
-   */
-  fun getGlobalIjOptions(): GlobalIjOptions
-
-  /**
-   * Return an accessor for the effective value of local options
-   */
-  fun getEffectiveIjOptions(editor: VimEditor): EffectiveIjOptions
-}
-
 private interface InternalOptionValueAccessor {
   fun <T : VimDataType> getOptionValueInternal(option: Option<T>, scope: OptionAccessScope): OptionValue<T>
   fun <T : VimDataType> setOptionValueInternal(option: Option<T>, scope: OptionAccessScope, value: OptionValue<T>)
 }
 
-internal class OptionGroup : VimOptionGroupBase(), IjVimOptionGroup, InternalOptionValueAccessor, Disposable.Default {
+class OptionGroup : VimOptionGroupBase(), IjVimOptionGroup, InternalOptionValueAccessor, Disposable.Default {
   private val namedOverrides = mutableMapOf<String, IdeaBackedOptionValueOverride>()
   private val simpleOverrides = mutableSetOf<IdeaBackedOptionValueOverride>()
 
@@ -161,6 +147,22 @@ internal class OptionGroup : VimOptionGroupBase(), IjVimOptionGroup, InternalOpt
     super.setOptionValueInternal(option, scope, value)
   }
 
+  /**
+   * Sets the buffer-local value of [option] as a Vim default — but only if the
+   * current value is still a [OptionValue.Default]. Preserves any value the user
+   * explicitly set via `.ideavimrc` or interactive `:set`/`:setlocal`.
+   */
+  fun <T : VimDataType> setBufferLocalDefaultIfUntouched(
+    option: Option<T>,
+    editor: VimEditor,
+    value: T,
+  ) {
+    val scope = OptionAccessScope.LOCAL(editor)
+    val current = getOptionValueInternal(option, scope)
+    if (current !is OptionValue.Default) return
+    setOptionValueInternal(option, scope, OptionValue.Default(value))
+  }
+
   companion object {
     fun editorReleased(editor: Editor) {
       // Vim always has at least one window; it's not possible to close it. Editing a new file will open a new buffer in
@@ -179,7 +181,7 @@ internal class OptionGroup : VimOptionGroupBase(), IjVimOptionGroup, InternalOpt
       if (!injector.editorGroup.getEditorsRaw()
           .any { it.ij != editor && it.ij.project === project && it.ij.editorKind == EditorKind.MAIN_EDITOR }
       ) {
-        (VimPlugin.getOptionGroup() as OptionGroup).updateFallbackWindow(injector.fallbackWindow, editor.vim)
+        (injector.optionGroup as OptionGroup).updateFallbackWindow(injector.fallbackWindow, editor.vim)
       }
     }
   }
@@ -286,7 +288,7 @@ private abstract class LocalOptionToGlobalLocalIdeaSettingMapper<T : VimDataType
           is OptionValue.InitVimRc -> OptionValue.InitVimRc(globalValue)
           is OptionValue.External -> null
           is OptionValue.User -> null
-        } ?: if (vimDisabled(null)) OptionValue.Default(globalValue) else null
+        } ?: if (!injector.enabler.isEnabled()) OptionValue.Default(globalValue) else null
         if (newValue != null) {
           resetLocalExternalValueToGlobal(editor)
           internalOptionValueAccessor.setOptionValueInternal(
@@ -819,6 +821,7 @@ private class NumberOptionMapper(numberOption: ToggleOption, internalOptionValue
   }
 
   override fun setLocalExternalValue(editor: VimEditor, value: VimInt) {
+    if (!supportsLineNumbers(editor)) return
     if (value.booleanValue) {
       if (editor.ij.settings.isLineNumbersShown) {
         if (isShowingRelativeLineNumbers(editor.ij.settings.lineNumerationType)) {
@@ -873,6 +876,7 @@ private class RelativeNumberOptionMapper(
   }
 
   override fun setLocalExternalValue(editor: VimEditor, value: VimInt) {
+    if (!supportsLineNumbers(editor)) return
     if (value.booleanValue) {
       if (editor.ij.settings.isLineNumbersShown) {
         if (isShowingAbsoluteLineNumbers(editor.ij.settings.lineNumerationType)) {
@@ -902,6 +906,11 @@ private class RelativeNumberOptionMapper(
     }
   }
 }
+
+/**
+ * AI chat prompt inputs never show line numbers, even when the user sets `'number'` or `'relativenumber'`
+ */
+private fun supportsLineNumbers(editor: VimEditor) = !EditorHelper.isChatInput(editor.ij)
 
 private fun isShowingAbsoluteLineNumbers(lineNumerationType: LineNumerationType) = when (lineNumerationType) {
   LineNumerationType.ABSOLUTE -> true
@@ -1373,33 +1382,4 @@ private class FoldLevelOptionMapper : LocalOptionValueOverride<VimInt> {
     newValue: OptionValue<VimInt>,
   ): Boolean = storedValue == null ||
     (storedValue is OptionValue.Default && newValue is OptionValue.Default)
-}
-
-
-class IjOptionConstants {
-  @Suppress("SpellCheckingInspection", "MemberVisibilityCanBePrivate", "ConstPropertyName")
-  companion object {
-
-    const val idearefactormode_keep: String = "keep"
-    const val idearefactormode_select: String = "select"
-    const val idearefactormode_visual: String = "visual"
-
-    const val ideastatusicon_enabled: String = "enabled"
-    const val ideastatusicon_gray: String = "gray"
-    const val ideastatusicon_disabled: String = "disabled"
-
-    const val ideavimsupport_dialog: String = "dialog"
-    const val ideavimsupport_singleline: String = "singleline"
-    const val ideavimsupport_dialoglegacy: String = "dialoglegacy"
-
-    const val ideawrite_all: String = "all"
-    const val ideawrite_file: String = "file"
-
-    val ideaStatusIconValues: Set<String> = setOf(ideastatusicon_enabled, ideastatusicon_gray, ideastatusicon_disabled)
-    val ideaRefactorModeValues: Set<String> =
-      setOf(idearefactormode_keep, idearefactormode_select, idearefactormode_visual)
-    val ideaWriteValues: Set<String> = setOf(ideawrite_all, ideawrite_file)
-    val ideavimsupportValues: Set<String> =
-      setOf(ideavimsupport_dialog, ideavimsupport_singleline, ideavimsupport_dialoglegacy)
-  }
 }

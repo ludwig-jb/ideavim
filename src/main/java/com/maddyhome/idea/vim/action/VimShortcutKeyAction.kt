@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2023 The IdeaVim authors
+ * Copyright 2003-2026 The IdeaVim authors
  *
  * Use of this source code is governed by an MIT-style
  * license that can be found in the LICENSE.txt file or at
@@ -9,39 +9,49 @@ package com.maddyhome.idea.vim.action
 
 import com.google.common.collect.ImmutableSet
 import com.intellij.codeInsight.lookup.LookupManager
+import com.intellij.execution.console.ConsoleHistoryController
+import com.intellij.execution.console.LanguageConsoleView
 import com.intellij.openapi.actionSystem.ActionManager
 import com.intellij.openapi.actionSystem.ActionUpdateThread
 import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.actionSystem.AnActionWrapper
 import com.intellij.openapi.actionSystem.DataContext
+import com.intellij.openapi.actionSystem.LangDataKeys
 import com.intellij.openapi.actionSystem.PlatformDataKeys
+import com.intellij.openapi.actionSystem.ex.ActionUtil
+import com.intellij.openapi.actionSystem.impl.ProxyShortcutSet
 import com.intellij.openapi.application.invokeLater
 import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.editor.Editor
+import com.intellij.openapi.editor.ex.EditorEx
 import com.intellij.openapi.editor.impl.EditorComponentImpl
 import com.intellij.openapi.progress.ProcessCanceledException
 import com.intellij.openapi.project.DumbAware
 import com.intellij.openapi.util.Key
 import com.intellij.openapi.util.registry.Registry
-import com.intellij.ui.KeyStrokeAdapter
 import com.maddyhome.idea.vim.KeyHandler
 import com.maddyhome.idea.vim.VimPlugin
+import com.maddyhome.idea.vim.api.getFirstMappingInfoMatch
 import com.maddyhome.idea.vim.api.globalOptions
 import com.maddyhome.idea.vim.api.injector
 import com.maddyhome.idea.vim.group.IjOptionConstants
 import com.maddyhome.idea.vim.group.IjOptions
-import com.maddyhome.idea.vim.handler.enableOctopus
-import com.maddyhome.idea.vim.handler.isOctopusEnabled
+import com.maddyhome.idea.vim.helper.ActionEventKeyStrokeExtractor
 import com.maddyhome.idea.vim.helper.EditorHelper
 import com.maddyhome.idea.vim.helper.HandlerInjector
+import com.maddyhome.idea.vim.helper.enumSetOf
+import com.maddyhome.idea.vim.helper.inInsertMode
 import com.maddyhome.idea.vim.helper.inNormalMode
 import com.maddyhome.idea.vim.helper.isIdeaVimDisabledHere
 import com.maddyhome.idea.vim.helper.isPrimaryEditor
 import com.maddyhome.idea.vim.helper.updateCaretsVisualAttributes
+import com.maddyhome.idea.vim.ide.ChatInputProvider
+import com.maddyhome.idea.vim.impl.state.toMappingMode
 import com.maddyhome.idea.vim.key.ShortcutOwner
 import com.maddyhome.idea.vim.key.ShortcutOwnerInfo
 import com.maddyhome.idea.vim.listener.AceJumpService
+import com.maddyhome.idea.vim.listener.ModelessSelection
 import com.maddyhome.idea.vim.newapi.globalIjOptions
 import com.maddyhome.idea.vim.newapi.initInjector
 import com.maddyhome.idea.vim.newapi.vim
@@ -58,7 +68,7 @@ import javax.swing.KeyStroke
  *
  * These keys are not passed to [com.maddyhome.idea.vim.VimTypedActionHandler] and should be handled by actions.
  */
-internal class VimShortcutKeyAction : AnAction(), DumbAware/*, LightEditCompatible*/ {
+class VimShortcutKeyAction : AnAction(), DumbAware/*, LightEditCompatible*/ {
 
   init {
     initInjector()
@@ -74,15 +84,24 @@ internal class VimShortcutKeyAction : AnAction(), DumbAware/*, LightEditCompatib
     val editor = getEditor(e)
     val keyStroke = getKeyStroke(e)
     if (editor != null && keyStroke != null) {
+      // In the Python console, Enter/Up/Down should drive the console's own actions (execute / history) in every Vim
+      // mode, with the console's native context-aware behaviour.
+      if (handlePythonConsoleKey(editor, keyStroke, e)) {
+        injector.listenersNotifier.notifyKeyTyped(editor.vim, keyStroke)
+        return
+      }
+
       val owner = VimPlugin.getKey().savedShortcutConflicts[keyStroke]
-      if ((owner as? ShortcutOwnerInfo.AllModes)?.owner == ShortcutOwner.UNDEFINED) {
+      if ((owner as? ShortcutOwnerInfo.AllModes)?.owner == ShortcutOwner.UNDEFINED && keyStroke !in VIM_DEFAULT_EDITOR_KEYS) {
         VimPlugin.getNotifications(editor.project).notifyAboutShortcutConflict(keyStroke)
       }
       // Should we use HelperKt.getTopLevelEditor(editor) here, as we did in former EditorKeyHandler?
       try {
         val start = if (traceTime) System.currentTimeMillis() else null
+        // Vim removes a modeless selection as soon as a command is typed
+        ModelessSelection.clearIfOwned(editor)
         val keyHandler = KeyHandler.getInstance()
-        keyHandler.handleKey(editor.vim, keyStroke, e.dataContext.vim, keyHandler.keyHandlerState)
+        keyHandler.handleUserKey(editor.vim, keyStroke, e.dataContext.vim)
         if (start != null) {
           val duration = System.currentTimeMillis() - start
           LOG.info("VimShortcut execution '$keyStroke': $duration ms")
@@ -91,14 +110,63 @@ internal class VimShortcutKeyAction : AnAction(), DumbAware/*, LightEditCompatib
         // Control-flow exceptions (like ProcessCanceledException) should never be logged and should be rethrown
         // See {@link com.intellij.openapi.diagnostic.Logger.checkException}
         throw e
-      } catch (throwable: Throwable) {
-        LOG.error(throwable)
+      } catch (e: Exception) {
+        LOG.error(e)
       }
     }
   }
 
+  /**
+   * In the Python console, Enter and Up/Down should drive the console's own behaviour in every Vim mode, rather than
+   * being handled as Vim commands. These are implemented by per-console actions (the corresponding global action ids
+   * `Console.History.*` / `Console.Execute` are only [com.intellij.openapi.actionSystem.impl.EmptyAction] keymap stubs):
+   *  - Up/Down: history navigation, created by [ConsoleHistoryController] (Up -> `historyNext`, Down -> `historyPrev`).
+   *  - Enter: [com.intellij.execution.console.ConsoleExecuteAction], registered on the console editor component.
+   *
+   * We invoke the real action instance via [ActionManager.tryToExecute], passing the original key event so the
+   * action's own `update` decides enablement. This preserves the console's context-aware behaviour: Up/Down only
+   * navigate history at the first/last line (moving the caret otherwise), and in Insert mode Enter executes or inserts
+   * a newline for an incomplete block. If the console action is disabled for the current caret position,
+   * `tryToExecute` rejects and we return false so Vim performs the normal caret movement.
+   *
+   * @return true if the console handled the keystroke (and Vim should not process it further).
+   */
+  private fun handlePythonConsoleKey(editor: Editor, keyStroke: KeyStroke, e: AnActionEvent): Boolean {
+    if (keyStroke.modifiers != 0) return false
+    if (!EditorHelper.isPythonConsole(editor)) return false
+    val consoleView = LangDataKeys.CONSOLE_VIEW.getData(e.dataContext) as? LanguageConsoleView ?: return false
+    val action = when (keyStroke.keyCode) {
+      KeyEvent.VK_UP -> ConsoleHistoryController.getController(consoleView)?.historyNext
+      KeyEvent.VK_DOWN -> ConsoleHistoryController.getController(consoleView)?.historyPrev
+      KeyEvent.VK_ENTER -> {
+        // in normal mode we move caret to end of command so it will always execute command
+        if (editor.vim.mode.inNormalMode) {
+          val consoleEditor = consoleView.consoleEditor
+          consoleEditor.caretModel.moveToOffset(consoleEditor.document.textLength)
+        }
+        consoleExecuteAction(consoleView)
+      }
+
+      else -> null
+    } ?: return false
+    val result = ActionManager.getInstance()
+      .tryToExecute(action, e.inputEvent, consoleView.consoleEditor.contentComponent, e.place, true)
+    result.waitFor(1000)
+    return result.isDone
+  }
+
+  /**
+   * Finds the console's own execute action (bound to Enter). [com.intellij.execution.console.ConsoleExecuteAction] is
+   * registered directly on the console editor component and carries a [ProxyShortcutSet] pointing at the
+   * `Console.Execute` keymap stub, so we match on that id.
+   */
+  private fun consoleExecuteAction(consoleView: LanguageConsoleView): AnAction? {
+    return ActionUtil.getActions(consoleView.consoleEditor.component)
+      .firstOrNull { (it.shortcutSet as? ProxyShortcutSet)?.actionId == CONSOLE_EXECUTE_ACTION_ID }
+  }
+
   // There is a chance that we can use BGT, but we call for isCell inside the update.
-  // Not sure if can can use BGT with this call. Let's use EDT for now.
+  // Not sure if we can use BGT with this call. Let's use EDT for now.
   override fun getActionUpdateThread(): ActionUpdateThread = ActionUpdateThread.EDT
 
   override fun update(e: AnActionEvent) {
@@ -117,15 +185,6 @@ internal class VimShortcutKeyAction : AnAction(), DumbAware/*, LightEditCompatib
     if (keyStroke == null) return ActionEnableStatus.no("Keystroke is null", LogLevel.DEBUG)
     if (VimPlugin.isNotEnabled()) return ActionEnableStatus.no("IdeaVim is disabled", LogLevel.DEBUG)
     val editor = getEditor(e) ?: return ActionEnableStatus.no("Can't get Editor", LogLevel.DEBUG)
-
-    if (enableOctopus) {
-      if (isOctopusEnabled(keyStroke, editor)) {
-        return ActionEnableStatus.no(
-          "Processing VimShortcutKeyAction for the key that is used in the octopus handler",
-          LogLevel.ERROR
-        )
-      }
-    }
 
     if (e.dataContext.isNotSupportedContextComponent && Registry.`is`("ideavim.only.in.editor.component")) {
       // Note: Currently, IdeaVim works ONLY in the editor & ExTextField component. However, the presence of the
@@ -149,6 +208,12 @@ internal class VimShortcutKeyAction : AnAction(), DumbAware/*, LightEditCompatib
 
     val keyCode = keyStroke.keyCode
 
+    // A chat can own keys in its prompt input, e.g. AIR sends the message with Enter. Hand them to the chat in every
+    // mode, unless the user maps them.
+    if (isChatKey(keyStroke, editor) && !hasMapping(listOf(keyStroke), editor)) {
+      return ActionEnableStatus.no("Key is owned by the chat", LogLevel.INFO)
+    }
+
     if (HandlerInjector.notebookCommandMode(editor)) {
       LOG.debug("Python Notebook command mode")
       if (keyCode == KeyEvent.VK_RIGHT || keyCode == KeyEvent.VK_KP_RIGHT || keyCode == KeyEvent.VK_ENTER) {
@@ -166,10 +231,34 @@ internal class VimShortcutKeyAction : AnAction(), DumbAware/*, LightEditCompatib
     }
 
     if (keyCode == KeyEvent.VK_ESCAPE) {
+      // Escape is Vim's by default, but the user can explicitly hand it over to the IDE, e.g. `sethandler <Esc> n:ide`
+      if (keyStroke in VIM_DEFAULT_EDITOR_KEYS &&
+        VimPlugin.getKey().savedShortcutConflicts[keyStroke]?.forEditor(editor.vim) == ShortcutOwner.IDE
+      ) {
+        return ActionEnableStatus.no("Owner of Esc is IDE", LogLevel.DEBUG)
+      }
       return if (isEnabledForEscape(editor)) {
         ActionEnableStatus.yes("Is enabled for Esc", LogLevel.INFO)
       } else {
         ActionEnableStatus.no("Is disabled for Esc", LogLevel.INFO)
+      }
+    }
+
+    if (keyCode == KeyEvent.VK_TAB && editor.inInsertMode) {
+      // IdeaVim will handle Tab, and in Insert mode, will invoke the platform's TabAction to insert the tab character.
+      // (Other Tab features are handled by IDE actions called before VimShortcutKeyAction).
+      // Single line editors or editors hosted in a dialog/tool window do not accept/insert Tab, and TabAction is
+      // disabled. In fact, all actions are disabled and normal Swing handling will move the focus to the next
+      // component. Disable this action in the same circumstances, unless the user explicitly maps Tab.
+      // TODO: Should this also ignore Tab in Normal mode?
+      // This is a valid Vim action (navigating jump list), but unlikely in a single line or embedded editor.
+      if (!hasMapping(listOf(keyStroke), editor)
+        && (editor.isOneLineMode || (editor as? EditorEx)?.isEmbeddedIntoDialogWrapper == true || editor.isViewer)
+      ) {
+        return ActionEnableStatus.no(
+          "Tab should be ignored when editor is in one line mode, embedded into a dialog wrapper or is a readonly viewer",
+          LogLevel.INFO
+        )
       }
     }
 
@@ -186,7 +275,7 @@ internal class VimShortcutKeyAction : AnAction(), DumbAware/*, LightEditCompatib
 
       ShortcutOwner.IDE -> {
         if (!isShortcutConflict(keyStroke)) {
-          ActionEnableStatus.yes("Owner is IDE, but no actionve shortcut conflict", LogLevel.DEBUG)
+          ActionEnableStatus.yes("Owner is IDE, but no actions have shortcut conflict", LogLevel.DEBUG)
         } else {
           ActionEnableStatus.no("Owner is IDE", LogLevel.DEBUG)
         }
@@ -201,41 +290,38 @@ internal class VimShortcutKeyAction : AnAction(), DumbAware/*, LightEditCompatib
     }
   }
 
+  /**
+   * Returns true if there is a mapping for the given keys in the current editor mode
+   */
+  private fun hasMapping(keys: List<KeyStroke>, editor: Editor): Boolean {
+    val mode = enumSetOf(editor.vim.mode.toMappingMode())
+    return injector.keyGroup.getFirstMappingInfoMatch(keys, mode) != null
+  }
+
+  private fun isChatKey(keyStroke: KeyStroke, editor: Editor): Boolean =
+    ChatInputProvider.forEditor(editor)?.isChatKey(editor, keyStroke) == true
+
   private fun isEnabledForEscape(editor: Editor): Boolean {
-    val ideaVimSupportDialog =
-      injector.globalIjOptions().ideavimsupport.contains(IjOptionConstants.ideavimsupport_dialog)
-    return editor.isPrimaryEditor() ||
-      EditorHelper.isFileEditor(editor) && !editor.vim.mode.inNormalMode ||
-      ideaVimSupportDialog && !editor.vim.mode.inNormalMode
+    if (editor.isPrimaryEditor()) return true
+    // Outside the main editing area, Escape is Vim's only while there is a mode to leave. In Normal mode we hand it
+    // back to the platform, which closes the popup or defocuses the tool window hosting the editor.
+    return !editor.vim.mode.inNormalMode && escapeIsHandledByVim(editor)
+  }
+
+  private fun escapeIsHandledByVim(editor: Editor): Boolean {
+    return EditorHelper.isFileEditor(editor)
+      || EditorHelper.isPythonConsole(editor)
+      || EditorHelper.isRunConsole(editor)
+      || injector.globalIjOptions().ideavimsupport.contains(IjOptionConstants.ideavimsupport_dialog)
   }
 
   private fun isShortcutConflict(keyStroke: KeyStroke): Boolean {
     return VimPlugin.getKey().getKeymapConflicts(keyStroke).isNotEmpty()
   }
 
-  /**
-   * getDefaultKeyStroke is needed for NEO layout keyboard VIM-987
-   * but we should cache the value because on the second call (isEnabled -> actionPerformed)
-   * the event is already consumed and getDefaultKeyStroke returns null
-   */
-  private var keyStrokeCache: Pair<Long?, KeyStroke?> = null to null
+  private val keyStrokeExtractor = ActionEventKeyStrokeExtractor()
 
-  private fun getKeyStroke(e: AnActionEvent): KeyStroke? {
-    val inputEvent = e.inputEvent
-    if (inputEvent is KeyEvent) {
-      val defaultKeyStroke = KeyStrokeAdapter.getDefaultKeyStroke(inputEvent)
-      val strokeCache = keyStrokeCache
-      if (defaultKeyStroke != null) {
-        keyStrokeCache = inputEvent.`when` to defaultKeyStroke
-        return defaultKeyStroke
-      } else if (strokeCache.first == inputEvent.`when`) {
-        keyStrokeCache = null to null
-        return strokeCache.second
-      }
-      return KeyStroke.getKeyStrokeForEvent(inputEvent)
-    }
-    return null
-  }
+  private fun getKeyStroke(e: AnActionEvent): KeyStroke? = keyStrokeExtractor.getKeyStroke(e)
 
   private fun getEditor(e: AnActionEvent): Editor? {
     return e.getData(PlatformDataKeys.EDITOR)
@@ -252,47 +338,36 @@ internal class VimShortcutKeyAction : AnAction(), DumbAware/*, LightEditCompatib
    *   <C-W> by IdeaVim.
    *
    * The list of keys that should be processed by IDE is stored in the "lookupKeys" option. So, we should search
-   *   if the pressed key is presented in this list. The caches are used to speedup the process.
+   *   if the pressed key is presented in this list. The caches are used to speed up the process.
    */
   private object LookupKeys {
     fun isEnabledForLookup(keyStroke: KeyStroke): Boolean {
       val parsedLookupKeys =
-        injector.optionGroup.getParsedEffectiveOptionValue(IjOptions.lookupkeys, null, ::parseLookupKeys)
+        injector.optionGroup.getParsedEffectiveOptionValue(IjOptions.idealookupkeys, null, ::parseLookupKeys)
       return keyStroke !in parsedLookupKeys
     }
 
-    private fun parseLookupKeys(keys: VimString) = IjOptions.lookupkeys.split(keys.value)
+    private fun parseLookupKeys(keys: VimString) = IjOptions.idealookupkeys.split(keys.value)
       .map { injector.parser.parseKeys(it) }
       .filter { it.isNotEmpty() }
       .map { it.first() }
       .toSet()
   }
 
-  internal companion object {
+  companion object {
+    // Keymap id of the console execute action (com.intellij.execution.console.ConsoleExecuteAction). The id constant
+    // itself is not public in the platform, so we mirror it here.
+    private const val CONSOLE_EXECUTE_ACTION_ID = "Console.Execute"
+
     @JvmField
     val VIM_ONLY_EDITOR_KEYS: Set<KeyStroke> =
-      ImmutableSet.builder<KeyStroke>().addAll(getKeyStrokes(KeyEvent.VK_ENTER, 0))
-        .addAll(getKeyStrokes(KeyEvent.VK_ESCAPE, 0))
-        .addAll(getKeyStrokes(KeyEvent.VK_TAB, 0))
+      ImmutableSet.builder<KeyStroke>()
         .addAll(getKeyStrokes(KeyEvent.VK_BACK_SPACE, 0, InputEvent.CTRL_DOWN_MASK))
         .addAll(getKeyStrokes(KeyEvent.VK_INSERT, 0))
         .addAll(getKeyStrokes(KeyEvent.VK_DELETE, 0, InputEvent.CTRL_DOWN_MASK))
-        .addAll(getKeyStrokes(KeyEvent.VK_UP, 0))
-        .addAll(getKeyStrokes(KeyEvent.VK_DOWN, 0))
-        .addAll(getKeyStrokes(KeyEvent.VK_LEFT, 0))
-        .addAll(getKeyStrokes(KeyEvent.VK_RIGHT, 0))
         .addAll(
           getKeyStrokes(
             KeyEvent.VK_HOME,
-            0,
-            InputEvent.CTRL_DOWN_MASK,
-            InputEvent.SHIFT_DOWN_MASK,
-            InputEvent.CTRL_DOWN_MASK or InputEvent.SHIFT_DOWN_MASK,
-          ),
-        )
-        .addAll(
-          getKeyStrokes(
-            KeyEvent.VK_END,
             0,
             InputEvent.CTRL_DOWN_MASK,
             InputEvent.SHIFT_DOWN_MASK,
@@ -315,6 +390,22 @@ internal class VimShortcutKeyAction : AnAction(), DumbAware/*, LightEditCompatib
             InputEvent.CTRL_DOWN_MASK or InputEvent.SHIFT_DOWN_MASK,
           ),
         ).build()
+
+    /**
+     * Keys that are handled by Vim unless the user explicitly assigns a handler to that particular key, either with
+     * `sethandler <key> ...` or in the shortcut conflicts settings. They are pressed constantly and every keymap binds
+     * them to editor actions, so we don't notify about their conflict and handlers set for all shortcuts at once
+     * (`sethandler a:ide`, "Toggle all unset Handlers") skip them.
+     */
+    @JvmField
+    val VIM_DEFAULT_EDITOR_KEYS: Set<KeyStroke> =
+      ImmutableSet.builder<KeyStroke>().addAll(getKeyStrokes(KeyEvent.VK_ENTER, 0))
+        .addAll(getKeyStrokes(KeyEvent.VK_ESCAPE, 0))
+        .addAll(getKeyStrokes(KeyEvent.VK_UP, 0))
+        .addAll(getKeyStrokes(KeyEvent.VK_DOWN, 0))
+        .addAll(getKeyStrokes(KeyEvent.VK_LEFT, 0))
+        .addAll(getKeyStrokes(KeyEvent.VK_RIGHT, 0))
+        .build()
 
     private const val ACTION_ID = "VimShortcutKeyAction"
 

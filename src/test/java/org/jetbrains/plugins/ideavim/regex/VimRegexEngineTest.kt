@@ -161,4 +161,51 @@ class VimRegexEngineTest : VimTestCase() {
     }
   }
 
+  @Test
+  fun `test ignore case does not apply to character class`() {
+    configureByText("abc")
+    val result = findAll("\\c[[:upper:]]")
+    assertEquals(emptyList(), result)
+  }
+
+  @Test
+  fun `test ignore case still applies to characters and ranges in a collection`() {
+    configureByText("abc")
+    assertEquals(listOf(TextRange(0, 1)), findAll("\\c[A]"))
+    assertEquals(listOf(TextRange(0, 1)), findAll("\\c[A-A]"))
+  }
+
+  @Test
+  fun `test start of match in failed alternative does not affect the match`() {
+    configureByText("ab")
+    assertEquals(listOf(TextRange(0, 2)), findAll("a\\zsc\\|ab"))
+  }
+
+  @Test
+  fun `test end of match in failed alternative does not affect the match`() {
+    configureByText("ab")
+    assertEquals(listOf(TextRange(0, 2)), findAll("a\\zec\\|ab"))
+  }
+
+  @Test
+  fun `test capture group in failed alternative is not captured`() {
+    configureByText("b")
+    var group: String? = "not set"
+    ApplicationManager.getApplication().runReadAction {
+      group = VimRegex("\\(a\\)x\\|b").findAll(fixture.editor.vim).first().groups.get(1)?.value
+    }
+    assertEquals(null, group)
+  }
+
+  @Test
+  fun `test positive look behind with alternation matches the longer alternative`() {
+    configureByText("abc")
+    assertEquals(listOf(TextRange(2, 3)), findAll("\\%(a\\|ab\\)\\@<=c"))
+  }
+
+  @Test
+  fun `test negative look behind with alternation does not match`() {
+    configureByText("abc")
+    assertEquals(emptyList(), findAll("\\%(a\\|ab\\)\\@<!c"))
+  }
 }

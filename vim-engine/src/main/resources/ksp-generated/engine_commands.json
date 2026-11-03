@@ -211,6 +211,12 @@
   },
   {
     "keys": "<C-E>",
+    "class": "com.maddyhome.idea.vim.action.lookup.CloseLookupAction",
+    "modes": "I",
+    "lookup": true
+  },
+  {
+    "keys": "<C-E>",
     "class": "com.maddyhome.idea.vim.action.motion.scroll.MotionScrollLineDownAction",
     "modes": "NXO"
   },
@@ -226,8 +232,29 @@
   },
   {
     "keys": "<C-F>",
+    "class": "com.maddyhome.idea.vim.action.change.insert.InsertFilePathCompletionAction",
+    "modes": "I"
+  },
+  {
+    "keys": "<C-F>",
+    "class": "com.maddyhome.idea.vim.action.ex.OpenCommandLineWindowAction",
+    "modes": "C"
+  },
+  {
+    "keys": "<C-F>",
+    "class": "com.maddyhome.idea.vim.action.lookup.CycleFilePathCompletionLookupAction",
+    "modes": "I",
+    "lookup": true
+  },
+  {
+    "keys": "<C-F>",
     "class": "com.maddyhome.idea.vim.action.motion.scroll.MotionScrollPageDownAction",
     "modes": "NXO"
+  },
+  {
+    "keys": "<C-G>",
+    "class": "com.maddyhome.idea.vim.action.ex.SearchAgainNextActionCommandLine",
+    "modes": "C"
   },
   {
     "keys": "<C-G>",
@@ -301,8 +328,24 @@
   },
   {
     "keys": "<C-K>",
+    "class": "com.maddyhome.idea.vim.action.change.insert.CmdLineCompletedDigraphAction",
+    "modes": "C"
+  },
+  {
+    "keys": "<C-K>",
     "class": "com.maddyhome.idea.vim.action.change.insert.InsertCompletedDigraphAction",
-    "modes": "IC"
+    "modes": "I"
+  },
+  {
+    "keys": "<C-L>",
+    "class": "com.maddyhome.idea.vim.action.change.insert.InsertLineCompletionAction",
+    "modes": "I"
+  },
+  {
+    "keys": "<C-L>",
+    "class": "com.maddyhome.idea.vim.action.lookup.CycleLineCompletionLookupAction",
+    "modes": "I",
+    "lookup": true
   },
   {
     "keys": "<C-Left>",
@@ -351,6 +394,12 @@
   },
   {
     "keys": "<C-N>",
+    "class": "com.maddyhome.idea.vim.action.lookup.CycleLookupDownAction",
+    "modes": "I",
+    "lookup": true
+  },
+  {
+    "keys": "<C-N>",
     "class": "com.maddyhome.idea.vim.action.motion.updown.MotionDownCtrlNAction",
     "modes": "NXO"
   },
@@ -378,6 +427,12 @@
     "keys": "<C-P>",
     "class": "com.maddyhome.idea.vim.action.ex.SelectOlderHistoryAction",
     "modes": "C"
+  },
+  {
+    "keys": "<C-P>",
+    "class": "com.maddyhome.idea.vim.action.lookup.CycleLookupUpAction",
+    "modes": "I",
+    "lookup": true
   },
   {
     "keys": "<C-P>",
@@ -411,8 +466,13 @@
   },
   {
     "keys": "<C-Q>",
+    "class": "com.maddyhome.idea.vim.action.change.insert.CmdLineCompletedLiteralAction",
+    "modes": "C"
+  },
+  {
+    "keys": "<C-Q>",
     "class": "com.maddyhome.idea.vim.action.change.insert.InsertCompletedLiteralAction",
-    "modes": "IC"
+    "modes": "I"
   },
   {
     "keys": "<C-R>",
@@ -536,7 +596,12 @@
   },
   {
     "keys": "<C-T>",
-    "class": "com.maddyhome.idea.vim.action.motion.mark.MotionJumpPreviousAction",
+    "class": "com.maddyhome.idea.vim.action.ex.SearchAgainPreviousActionCommandLine",
+    "modes": "C"
+  },
+  {
+    "keys": "<C-T>",
+    "class": "com.maddyhome.idea.vim.action.motion.mark.MotionTagPreviousAction",
     "modes": "N"
   },
   {
@@ -561,8 +626,13 @@
   },
   {
     "keys": "<C-V>",
+    "class": "com.maddyhome.idea.vim.action.change.insert.CmdLineCompletedLiteralAction",
+    "modes": "C"
+  },
+  {
+    "keys": "<C-V>",
     "class": "com.maddyhome.idea.vim.action.change.insert.InsertCompletedLiteralAction",
-    "modes": "IC"
+    "modes": "I"
   },
   {
     "keys": "<C-W>",
@@ -675,6 +745,11 @@
     "modes": "N"
   },
   {
+    "keys": "<C-W>q",
+    "class": "com.maddyhome.idea.vim.action.window.CloseWindowAction",
+    "modes": "N"
+  },
+  {
     "keys": "<C-W>s",
     "class": "com.maddyhome.idea.vim.action.window.HorizontalSplitAction",
     "modes": "N"
@@ -700,9 +775,25 @@
     "modes": "X"
   },
   {
+    "keys": "<C-X>",
+    "class": "com.maddyhome.idea.vim.action.change.insert.InsertXCompletionAction",
+    "modes": "I"
+  },
+  {
     "keys": "<C-Y>",
     "class": "com.maddyhome.idea.vim.action.change.insert.InsertCharacterAboveCursorAction",
     "modes": "I"
+  },
+  {
+    "keys": "<C-Y>",
+    "class": "com.maddyhome.idea.vim.action.ex.CopyModelessSelectionAction",
+    "modes": "C"
+  },
+  {
+    "keys": "<C-Y>",
+    "class": "com.maddyhome.idea.vim.action.lookup.AcceptLookupAction",
+    "modes": "I",
+    "lookup": true
   },
   {
     "keys": "<C-Y>",
@@ -731,13 +822,18 @@
   },
   {
     "keys": "<C-]>",
-    "class": "com.maddyhome.idea.vim.action.motion.search.GotoDeclarationAction",
+    "class": "com.maddyhome.idea.vim.action.motion.mark.TagJumpAction",
     "modes": "NX"
   },
   {
     "keys": "<C-^>",
     "class": "com.maddyhome.idea.vim.action.file.FilePreviousAction",
     "modes": "N"
+  },
+  {
+    "keys": "<C-^>",
+    "class": "com.maddyhome.idea.vim.vimscript.model.commands.mapping.ToggleLanguageInsertModeAction",
+    "modes": "I"
   },
   {
     "keys": "<C-kLeft>",
@@ -1000,6 +1096,11 @@
     "modes": "INXS"
   },
   {
+    "keys": "<S-Tab>",
+    "class": "com.maddyhome.idea.vim.action.ex.CommandLineCompletionBackwardAction",
+    "modes": "C"
+  },
+  {
     "keys": "<S-Up>",
     "class": "com.maddyhome.idea.vim.action.ex.SelectOlderHistoryAction",
     "modes": "C"
@@ -1018,6 +1119,11 @@
     "keys": "<Space>",
     "class": "com.maddyhome.idea.vim.action.motion.leftright.MotionSpaceOpPendingModeAction",
     "modes": "O"
+  },
+  {
+    "keys": "<Tab>",
+    "class": "com.maddyhome.idea.vim.action.ex.CommandLineCompletionAction",
+    "modes": "C"
   },
   {
     "keys": "<Tab>",
@@ -1243,6 +1349,11 @@
     "keys": "T",
     "class": "com.maddyhome.idea.vim.action.motion.leftright.MotionLeftTillMatchCharAction",
     "modes": "NXO"
+  },
+  {
+    "keys": "U",
+    "class": "com.maddyhome.idea.vim.action.change.LineUndoAction",
+    "modes": "N"
   },
   {
     "keys": "U",
@@ -1620,6 +1731,11 @@
     "modes": "NXO"
   },
   {
+    "keys": "g,",
+    "class": "com.maddyhome.idea.vim.action.motion.changelist.MotionGotoChangeNewerAction",
+    "modes": "N"
+  },
+  {
     "keys": "g0",
     "class": "com.maddyhome.idea.vim.action.motion.leftright.MotionFirstScreenColumnAction",
     "modes": "NXO"
@@ -1627,6 +1743,16 @@
   {
     "keys": "g8",
     "class": "com.maddyhome.idea.vim.action.file.FileGetHexAction",
+    "modes": "N"
+  },
+  {
+    "keys": "g;",
+    "class": "com.maddyhome.idea.vim.action.motion.changelist.MotionGotoChangeOlderAction",
+    "modes": "N"
+  },
+  {
+    "keys": "g<",
+    "class": "com.maddyhome.idea.vim.action.ShowLastOutputAction",
     "modes": "N"
   },
   {
@@ -1860,6 +1986,21 @@
     "modes": "X"
   },
   {
+    "keys": "gw",
+    "class": "com.maddyhome.idea.vim.action.change.change.ReformatCodeMotionPreserveCursorAction",
+    "modes": "N"
+  },
+  {
+    "keys": "gw",
+    "class": "com.maddyhome.idea.vim.action.change.change.ReformatCodeVisualPreserveCursorAction",
+    "modes": "X"
+  },
+  {
+    "keys": "gx",
+    "class": "com.maddyhome.idea.vim.action.motion.search.GotoUrlAction",
+    "modes": "N"
+  },
+  {
     "keys": "g~",
     "class": "com.maddyhome.idea.vim.action.change.change.ChangeCaseToggleMotionAction",
     "modes": "N"
@@ -2025,6 +2166,21 @@
     "modes": "NX"
   },
   {
+    "keys": "q/",
+    "class": "com.maddyhome.idea.vim.action.SearchHistoryForwardAction",
+    "modes": "N"
+  },
+  {
+    "keys": "q:",
+    "class": "com.maddyhome.idea.vim.action.CommandHistoryAction",
+    "modes": "N"
+  },
+  {
+    "keys": "q?",
+    "class": "com.maddyhome.idea.vim.action.SearchHistoryBackwardAction",
+    "modes": "N"
+  },
+  {
     "keys": "r",
     "class": "com.maddyhome.idea.vim.action.change.change.ChangeCharacterAction",
     "modes": "N"
@@ -2120,6 +2276,11 @@
     "modes": "NXO"
   },
   {
+    "keys": "z=",
+    "class": "com.maddyhome.idea.vim.action.motion.text.SelectMisspelledWordSuggestionAction",
+    "modes": "NXO"
+  },
+  {
     "keys": "zA",
     "class": "com.maddyhome.idea.vim.action.fold.VimToggleRegionRecursively",
     "modes": "NX"
@@ -2200,6 +2361,11 @@
     "modes": "X"
   },
   {
+    "keys": "zg",
+    "class": "com.maddyhome.idea.vim.action.motion.text.AddMisspelledWordAction",
+    "modes": "NXO"
+  },
+  {
     "keys": "zh",
     "class": "com.maddyhome.idea.vim.action.motion.scroll.MotionScrollColumnRightAction",
     "modes": "NXO"
@@ -2242,6 +2408,11 @@
   {
     "keys": "zt",
     "class": "com.maddyhome.idea.vim.action.motion.scroll.MotionScrollFirstScreenLineAction",
+    "modes": "NXO"
+  },
+  {
+    "keys": "zw",
+    "class": "com.maddyhome.idea.vim.action.motion.text.RemoveMisspelledWordAction",
     "modes": "NXO"
   },
   {

@@ -34,6 +34,8 @@ abstract class VimscriptParserBase : com.maddyhome.idea.vim.api.VimscriptParser 
 
   private val logger = vimLogger<VimscriptParser>()
   override val linesWithErrors: MutableList<Int> = mutableListOf()
+  override val errorMessages: MutableList<String> = mutableListOf()
+  override val lastParseErrors: MutableList<String> = mutableListOf()
   private var tries = 0
   private var deletionInfo: DeletionInfo = DeletionInfo()
   protected open val commandProviders: List<ExCommandProvider> = listOf(EngineExCommandProvider)
@@ -46,8 +48,15 @@ abstract class VimscriptParserBase : com.maddyhome.idea.vim.api.VimscriptParser 
   override fun parse(script: String): Script {
     val preprocessedText = uncommentIdeaVimIgnore(getTextWithoutErrors(script))
     linesWithErrors.clear()
+    errorMessages.clear()
     val parser = getParser(addNewlineIfMissing(preprocessedText), true)
     val AST: ParseTree = parser.script()
+    // Capture the errors from the first (top-level) pass only. They map to the user's original file; later
+    // error-recovery passes re-parse text with lines already stripped and would report shifted/duplicate errors.
+    if (tries == 0) {
+      lastParseErrors.clear()
+      lastParseErrors.addAll(errorMessages)
+    }
     val script = if (linesWithErrors.isNotEmpty()) {
       if (tries > MAX_NUMBER_OF_TRIES) {
         // I don't think, that it's possible to enter an infinite recursion with any vimrc, but let's have it just in case
@@ -125,8 +134,10 @@ abstract class VimscriptParserBase : com.maddyhome.idea.vim.api.VimscriptParser 
     val lineNumbersToDelete = linesWithErrors.sortedDescending()
     val lines = splitToLines(text).toMutableList()
     for (lineNumber in lineNumbersToDelete) {
-      // this may happen if we have an error somewhere at the end and parser can't find any matching token till EOF (EOF's line number is lines.size)
-      if (lines.size <= lineNumber) {
+      // this may happen if we have an error somewhere at the end and parser can't find any matching token till EOF
+      // (EOF's line number is lines.size + 1). Note lineNumber is 1-based, so an error on the last line has
+      // lineNumber == lines.size and must still be removable - only skip when it points strictly past the last line.
+      if (lines.size < lineNumber) {
         logger.warn("Parsing error affects lines till EOF")
       } else {
         deletionInfo.registerDeletion(lines[lineNumber - 1].first, lines[lineNumber - 1].second.length)
@@ -180,6 +191,9 @@ abstract class VimscriptParserBase : com.maddyhome.idea.vim.api.VimscriptParser 
   private fun resetParser() {
     tries = 0
     linesWithErrors.clear()
+    // Clear the per-pass scratch (also written by parseCommand/parseExpression/parseLetCommand), but keep
+    // lastParseErrors so consumers can read it after parse() returns.
+    errorMessages.clear()
     deletionInfo.reset()
   }
 }

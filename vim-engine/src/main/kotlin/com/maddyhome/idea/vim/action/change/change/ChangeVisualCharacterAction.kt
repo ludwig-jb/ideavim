@@ -26,10 +26,10 @@ import com.maddyhome.idea.vim.state.KeyHandlerState
 /**
  * @author vlan
  */
-@CommandOrMotion(keys = ["r"], modes = [Mode.VISUAL])
+@CommandOrMotion(keys = ["r"], modes = [Mode.VISUAL], description = "Replace every highlighted character with {char}.")
 class ChangeVisualCharacterAction : VisualOperatorActionHandler.ForEachCaret() {
   override val type: Command.Type = Command.Type.CHANGE
-  override val argumentType: Argument.Type = Argument.Type.DIGRAPH
+  override val argumentType: Argument.Type = Argument.Type.CHARACTER
 
   override fun onStartWaitingForArgument(editor: VimEditor, context: ExecutionContext, keyState: KeyHandlerState) {
     editor.isReplaceCharacter = true
@@ -64,12 +64,18 @@ private fun changeCharacterRange(editor: VimEditor, caret: VimCaret, range: Text
   val chars = editor.text()
   val starts = range.startOffsets
   val ends = range.endOffsets
+  val originalStartOffset = starts.firstOrNull()
   for (j in ends.indices.reversed()) {
     for (i in starts[j] until ends[j]) {
       if (i < chars.length && '\n' != chars[i]) {
         injector.changeGroup.replaceText(editor, caret, i, i + 1, ch.toString())
       }
     }
+  }
+
+  //reset the caret position to visual start
+  if (originalStartOffset != null) {
+    caret.moveToOffset(originalStartOffset)
   }
   return true
 }

@@ -15,7 +15,9 @@ import com.maddyhome.idea.vim.api.injector
 import com.maddyhome.idea.vim.diagnostic.trace
 import com.maddyhome.idea.vim.diagnostic.vimLogger
 import com.maddyhome.idea.vim.key.KeyConsumer
+import com.maddyhome.idea.vim.key.KeySource
 import com.maddyhome.idea.vim.state.mode.Mode
+import java.awt.event.KeyEvent
 import javax.swing.KeyStroke
 
 /**
@@ -37,7 +39,7 @@ internal class ModeInputConsumer : KeyConsumer {
   override fun isApplicable(
     key: KeyStroke,
     editor: VimEditor,
-    allowKeyMappings: Boolean,
+    keySource: KeySource,
     keyProcessResultBuilder: KeyProcessResult.KeyProcessResultBuilder,
   ): Boolean {
     return true
@@ -46,12 +48,12 @@ internal class ModeInputConsumer : KeyConsumer {
   override fun consumeKey(
     key: KeyStroke,
     editor: VimEditor,
-    allowKeyMappings: Boolean,
+    keySource: KeySource,
     keyProcessResultBuilder: KeyProcessResult.KeyProcessResultBuilder,
   ): Boolean {
     logger.trace { "Entered ModeInputConsumer" }
     val isProcessed = when (editor.mode) {
-      Mode.INSERT, Mode.REPLACE -> {
+      is Mode.INSERT, Mode.REPLACE -> {
         logger.trace("Process insert or replace")
         val keyProcessed = injector.changeGroup.processKey(editor, key, keyProcessResultBuilder)
         keyProcessed
@@ -68,6 +70,9 @@ internal class ModeInputConsumer : KeyConsumer {
         if (commandLine != null) {
           keyProcessResultBuilder.addExecutionStep { _, _, _ ->
             commandLine.focus()
+            if (key.keyChar != KeyEvent.CHAR_UNDEFINED) {
+              commandLine.tryExpandAbbreviation(key.keyChar)
+            }
             commandLine.handleKey(key)
           }
         } else {

@@ -23,9 +23,10 @@ import javax.swing.KeyStroke
 class ModalInputImpl(
   private val listenerOwner: ListenerOwner,
   private val mappingOwner: MappingOwner,
+  private val projectId: String?,
 ) : ModalInput {
   private val vimEditor: VimEditor
-    get() = injector.editorGroup.getFocusedEditor()!!
+    get() = projectId?.let { injector.editorGroup.getSelectedEditor(it) } ?: injector.fallbackWindow
 
   private val vimContext: ExecutionContext
     get() = injector.executionContextManager.getEditorExecutionContext(vimEditor)
@@ -49,19 +50,19 @@ class ModalInputImpl(
     return this
   }
 
-  override fun inputString(label: String, handler: VimApi.(String) -> Unit) {
-    val vimApi = VimApiImpl(listenerOwner, mappingOwner)
-    val interceptor = TextInputInterceptor(repeatCount, repeatWhileCondition, updateLabel) {
-      vimApi.handler(it)
+  override fun inputString(label: String, handler: suspend VimApi.(String) -> Unit) {
+    val vimApi = VimApiImpl(listenerOwner, mappingOwner, projectId)
+    val interceptor = TextInputInterceptor(projectId, repeatCount, repeatWhileCondition, updateLabel) {
+      kotlinx.coroutines.runBlocking { vimApi.handler(it) }
     }
     val modalInput = injector.modalInput.create(vimEditor, vimContext, label, interceptor)
     interceptor.modalInput = modalInput
   }
 
-  override fun inputChar(label: String, handler: VimApi.(Char) -> Unit) {
-    val vimApi = VimApiImpl(listenerOwner, mappingOwner)
-    val interceptor = CharInputInterceptor(repeatCount, repeatWhileCondition, updateLabel) { char ->
-      vimApi.handler(char)
+  override fun inputChar(label: String, handler: suspend VimApi.(Char) -> Unit) {
+    val vimApi = VimApiImpl(listenerOwner, mappingOwner, projectId)
+    val interceptor = CharInputInterceptor(projectId, repeatCount, repeatWhileCondition, updateLabel) { char ->
+      kotlinx.coroutines.runBlocking { vimApi.handler(char) }
     }
     val modalInput = injector.modalInput.create(vimEditor, vimContext, label, interceptor)
     interceptor.modalInput = modalInput
@@ -74,6 +75,7 @@ class ModalInputImpl(
   }
 
   private abstract class InputInterceptorBase<T>(
+    protected val projectId: String?,
     protected val repeatCount: Int? = null,
     protected val repeatCondition: (() -> Boolean)? = null,
     protected var updateLabelFn: ((String) -> String)? = null,
@@ -83,7 +85,7 @@ class ModalInputImpl(
     var counter = 0
 
     private fun updateLabel(newLabel: String) {
-      val vimEditor = injector.editorGroup.getFocusedEditor()!!
+      val vimEditor = projectId?.let { injector.editorGroup.getSelectedEditor(it) } ?: injector.fallbackWindow
       val vimContext = injector.executionContextManager.getEditorExecutionContext(vimEditor)
 
       val modalInput = this.modalInput
@@ -115,11 +117,12 @@ class ModalInputImpl(
   }
 
   private class TextInputInterceptor(
+    projectId: String?,
     repeatCount: Int? = null,
     repeatCondition: (() -> Boolean)? = null,
     updateLabelFn: ((String) -> String)? = null,
     handler: (String) -> Unit,
-  ) : InputInterceptorBase<String>(repeatCount, repeatCondition, updateLabelFn, handler) {
+  ) : InputInterceptorBase<String>(projectId, repeatCount, repeatCondition, updateLabelFn, handler) {
 
     private val textBuffer = StringBuilder()
 
@@ -149,11 +152,12 @@ class ModalInputImpl(
   }
 
   private class CharInputInterceptor(
+    projectId: String?,
     repeatCount: Int? = null,
     repeatCondition: (() -> Boolean)? = null,
     updateLabelFn: ((String) -> String)? = null,
     handler: (Char) -> Unit,
-  ) : InputInterceptorBase<Char>(repeatCount, repeatCondition, updateLabelFn, handler) {
+  ) : InputInterceptorBase<Char>(projectId, repeatCount, repeatCondition, updateLabelFn, handler) {
     private var currentChar: Char? = null
 
     override fun buildInput(key: KeyStroke): Char? {

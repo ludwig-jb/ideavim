@@ -99,6 +99,14 @@ class PutCommandTest : VimTestCase() {
   }
 
   @Test
+  fun `test put from macro with control charachters`() {
+    configureByText("")
+    typeText(injector.parser.parseKeys("qaiHello<Esc>q"))
+    typeText(injector.parser.parseKeys("\"ap"))
+    assertState("HelloiHello" + 27.toChar())
+  }
+
+  @Test
   fun `test put with line number and undo`() {
     configureByText(
       """
@@ -132,7 +140,7 @@ class PutCommandTest : VimTestCase() {
   }
 
   @Test
-  fun `test put and undo with oldundo`() {
+  fun `test put and undo with ideaoldundo`() {
     configureByText(
       """
       Line 1
@@ -142,7 +150,7 @@ class PutCommandTest : VimTestCase() {
     )
     typeText(injector.parser.parseKeys("yy"))
     try {
-      enterCommand("set oldundo")
+      enterCommand("set ideaoldundo")
       enterCommand("put")
       assertState(
         """
@@ -162,12 +170,12 @@ class PutCommandTest : VimTestCase() {
       """.trimIndent()
       )
     } finally {
-      enterCommand("set nooldundo")
+      enterCommand("set noideaoldundo")
     }
   }
 
   @Test
-  fun `test put from register and undo with oldundo`() {
+  fun `test put from register and undo with ideaoldundo`() {
     configureByText(
       """
       First line
@@ -177,7 +185,7 @@ class PutCommandTest : VimTestCase() {
     )
     typeText(injector.parser.parseKeys("\"ayy"))
     try {
-      enterCommand("set oldundo")
+      enterCommand("set ideaoldundo")
       enterCommand("put a")
       assertState(
         """
@@ -197,12 +205,12 @@ class PutCommandTest : VimTestCase() {
       """.trimIndent()
       )
     } finally {
-      enterCommand("set nooldundo")
+      enterCommand("set noideaoldundo")
     }
   }
 
   @Test
-  fun `test put with line number and undo with oldundo`() {
+  fun `test put with line number and undo with ideaoldundo`() {
     configureByText(
       """
       Line 1
@@ -213,7 +221,7 @@ class PutCommandTest : VimTestCase() {
     )
     typeText(injector.parser.parseKeys("yy"))
     try {
-      enterCommand("set oldundo")
+      enterCommand("set ideaoldundo")
       enterCommand("1put")
       assertState(
         """
@@ -235,7 +243,7 @@ class PutCommandTest : VimTestCase() {
       """.trimIndent()
       )
     } finally {
-      enterCommand("set nooldundo")
+      enterCommand("set noideaoldundo")
     }
   }
 }

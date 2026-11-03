@@ -8,8 +8,7 @@ plugins {
 }
 
 repositories {
-  mavenCentral()
-
+  maven { url = uri("https://cache-redirector.jetbrains.com/repo.maven.apache.org/maven2") }
   intellijPlatform {
     defaultRepositories()
   }
@@ -25,14 +24,15 @@ dependencies {
   compileOnly("org.jetbrains.kotlin:kotlin-stdlib:$kotlinVersion")
   testImplementation("org.jetbrains.kotlin:kotlin-test:$kotlinVersion")
   testImplementation(testFixtures(project(":"))) // The root project
-  testImplementation("org.junit.vintage:junit-vintage-engine:6.0.1")
+  testImplementation("org.junit.vintage:junit-vintage-engine:6.1.3")
+  testImplementation("org.jetbrains:jetCheck:0.3.0")
 
   intellijPlatform {
     // Snapshots don't use installers
     // https://plugins.jetbrains.com/docs/intellij/tools-intellij-platform-gradle-plugin-dependencies-extension.html#target-versions-installers
     val useInstaller = "EAP-SNAPSHOT" !in ideaVersion
 
-    create(ideaType, ideaVersion, false)
+    create(ideaType, ideaVersion) { this.useInstaller = false }
     bundledPlugins("com.intellij.java")
     testFramework(TestFrameworkType.Platform)
     testFramework(TestFrameworkType.JUnit5)
@@ -43,11 +43,19 @@ intellijPlatform {
   buildSearchableOptions = false
 }
 
+
 tasks {
   // This task is disabled because it should be excluded from `gradle test` run (because it's slow)
   // I didn't find a better way to exclude except disabling and defining a new task with a different name
   test {
     useJUnitPlatform()
+
+    // Without this the test IDE starts every plugin bundled with the product; a startup
+    // error in any of them is rethrown as a failure of whichever IdeaVim test ran first.
+    systemProperty("idea.load.plugins.id", "com.intellij,com.intellij.java,IdeaVIM")
+
+    // Their .properties files shadow, rather than complement, the originals they translate.
+    classpath -= classpath.filter { it.name.startsWith("localization-") && it.name.endsWith(".jar") }
   }
 }
 

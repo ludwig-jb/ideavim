@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2023 The IdeaVim authors
+ * Copyright 2003-2026 The IdeaVim authors
  *
  * Use of this source code is governed by an MIT-style
  * license that can be found in the LICENSE.txt file or at
@@ -10,15 +10,11 @@ package com.maddyhome.idea.vim.newapi
 
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.ModalityState
-import com.intellij.openapi.components.Service
 import com.intellij.openapi.util.Computable
 import com.intellij.util.ExceptionUtil
-import com.intellij.util.PlatformUtils
 import com.maddyhome.idea.vim.api.VimApplicationBase
 import com.maddyhome.idea.vim.api.VimEditor
 import com.maddyhome.idea.vim.diagnostic.vimLogger
-import com.maddyhome.idea.vim.ide.isClionNova
-import com.maddyhome.idea.vim.ide.isRider
 import java.awt.Component
 import java.awt.Toolkit
 import java.awt.Window
@@ -26,7 +22,7 @@ import java.awt.event.KeyEvent
 import javax.swing.KeyStroke
 import javax.swing.SwingUtilities
 
-@Service
+
 internal class IjVimApplication : VimApplicationBase() {
   override fun isMainThread(): Boolean {
     return ApplicationManager.getApplication().isDispatchThread
@@ -34,7 +30,7 @@ internal class IjVimApplication : VimApplicationBase() {
 
   override fun invokeLater(editor: VimEditor, action: () -> Unit) {
     ApplicationManager.getApplication()
-      .invokeLater(action, ModalityState.stateForComponent((editor as IjVimEditor).editor.component))
+      .invokeLater(action, ModalityState.stateForComponent(editor.ij.component))
   }
 
   override fun invokeLater(action: () -> Unit) {
@@ -78,14 +74,6 @@ internal class IjVimApplication : VimApplicationBase() {
 
   override fun runAfterGotFocus(runnable: Runnable) {
     com.maddyhome.idea.vim.helper.runAfterGotFocus(runnable)
-  }
-
-  override fun isOctopusEnabled(): Boolean {
-    // Turn off octopus for some IDEs. They have issues with ENTER and ESC on the octopus like VIM-3815
-    if (isRider() || PlatformUtils.isJetBrainsClient() || isClionNova()) return false
-    val property = System.getProperty("octopus.handler") ?: "true"
-    if (property.isBlank()) return true
-    return property.toBoolean()
   }
 
   private fun createKeyEvent(stroke: KeyStroke, component: Component): KeyEvent {

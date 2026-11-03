@@ -1,5 +1,5 @@
 /*
- * Copyright 2003-2023 The IdeaVim authors
+ * Copyright 2003-2026 The IdeaVim authors
  *
  * Use of this source code is governed by an MIT-style
  * license that can be found in the LICENSE.txt file or at
@@ -9,9 +9,11 @@
 package com.maddyhome.idea.vim.extension;
 
 import com.intellij.openapi.extensions.ExtensionPointName;
-import com.maddyhome.idea.vim.VimPlugin;
+import com.intellij.vim.api.VimInitApi;
+import com.maddyhome.idea.vim.api.VimInjectorKt;
 import com.maddyhome.idea.vim.helper.VimNlsSafe;
 import com.maddyhome.idea.vim.key.MappingOwner;
+import org.jetbrains.annotations.ApiStatus;
 import org.jetbrains.annotations.NotNull;
 
 /**
@@ -51,9 +53,25 @@ public interface VimExtension {
    * `<Plug>(ExchangeLine)` and doesn't register the default cxx mapping. However, such detection requires the mapping
    * to be defined before the plugin initialization.
    */
-  void init();
+  default void init() {}
+
+  /**
+   * Initializes the extension with a pre-constructed VimInitApi instance.
+   * <p>
+   * VimInitApi provides only init-safe methods (mappings, text objects, variables,
+   * operator functions). Editor operations are not available during init since
+   * there is no editor context yet.
+   * <p>
+   * The default implementation calls {@link #init()} for backward compatibility.
+   *
+   * @param initApi The VimInitApi instance for this extension
+   */
+  @ApiStatus.Experimental
+  default void init(VimInitApi initApi) {
+    init();
+  }
 
   default void dispose() {
-    VimPlugin.getKey().removeKeyMapping(getOwner());
+    VimInjectorKt.getInjector().getKeyGroup().removeKeyMapping(getOwner());
   }
 }

@@ -7,16 +7,28 @@
  */
 package com.maddyhome.idea.vim.ui
 
+import com.intellij.ide.KeyboardAwareFocusOwner
+import com.intellij.ide.RemoteDesktopService
 import com.intellij.ide.ui.LafManager
 import com.intellij.ide.ui.LafManagerListener
-import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.application.runInEdt
+import com.intellij.openapi.components.service
 import com.intellij.openapi.editor.Editor
+import com.intellij.openapi.editor.colors.EditorColorsListener
+import com.intellij.openapi.editor.colors.EditorColorsScheme
+import com.intellij.openapi.editor.ex.EditorEx
+import com.intellij.openapi.util.registry.Registry
 import com.intellij.openapi.wm.impl.IdeBackgroundUtil
 import com.intellij.ui.ClientProperty
 import com.intellij.ui.JBColor
 import com.intellij.ui.components.JBPanel
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.util.IJSwingUtilities
+import com.intellij.util.animation.Easing
+import com.intellij.util.animation.JBAnimator
+import com.intellij.util.animation.animation
+import com.intellij.util.application
+import com.intellij.util.ui.launchOnShow
 import com.maddyhome.idea.vim.KeyHandler.Companion.getInstance
 import com.maddyhome.idea.vim.VimPlugin
 import com.maddyhome.idea.vim.api.ExecutionContext
@@ -24,54 +36,112 @@ import com.maddyhome.idea.vim.api.MessageType
 import com.maddyhome.idea.vim.api.VimOutputPanel
 import com.maddyhome.idea.vim.api.globalOptions
 import com.maddyhome.idea.vim.api.injector
+import com.maddyhome.idea.vim.group.CoroutineScopeProvider
+import com.maddyhome.idea.vim.helper.EditorHelper
 import com.maddyhome.idea.vim.helper.requestFocus
 import com.maddyhome.idea.vim.helper.selectEditorFont
 import com.maddyhome.idea.vim.helper.vimMorePanel
+import com.maddyhome.idea.vim.listener.ModelessSelection
 import com.maddyhome.idea.vim.newapi.IjVimEditor
+import com.maddyhome.idea.vim.newapi.vim
+import com.maddyhome.idea.vim.register.RegisterConstants
+import com.maddyhome.idea.vim.ui.ex.GlassPaneManager
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+import org.jetbrains.annotations.TestOnly
+import org.jetbrains.annotations.VisibleForTesting
 import java.awt.BorderLayout
 import java.awt.Color
-import java.awt.LayoutManager
-import java.awt.event.ComponentAdapter
-import java.awt.event.ComponentEvent
+import java.awt.Cursor
+import java.awt.Dimension
+import java.awt.Point
+import java.awt.Rectangle
 import java.awt.event.KeyAdapter
 import java.awt.event.KeyEvent
-import javax.swing.JComponent
 import javax.swing.JLabel
+import javax.swing.JPanel
 import javax.swing.JScrollPane
 import javax.swing.JTextPane
 import javax.swing.KeyStroke
+import javax.swing.SwingConstants
 import javax.swing.SwingUtilities
+import javax.swing.text.AbstractDocument
 import javax.swing.text.DefaultCaret
+import javax.swing.text.LabelView
 import javax.swing.text.SimpleAttributeSet
 import javax.swing.text.StyleConstants
 import javax.swing.text.StyledDocument
+import javax.swing.text.StyledEditorKit
+import javax.swing.text.View
+import javax.swing.text.ViewFactory
+import kotlin.math.abs
 import kotlin.math.ceil
 import kotlin.math.min
+import kotlin.time.Duration.Companion.milliseconds
 
 
 /**
  * Panel that displays text in a `more` like window overlaid on the editor.
  */
-class OutputPanel private constructor(
-  private val editor: Editor,
-) : JBPanel<OutputPanel>(), VimOutputPanel {
+internal class OutputPanel private constructor(private val editor: Editor) : JBPanel<OutputPanel>(), VimOutputPanel {
 
-  private val textPane = JTextPane()
-  private val resizeAdapter: ComponentAdapter
-  private var defaultForeground: Color? = null
+  private val glassPaneManager = object : GlassPaneManager() {
+    override fun onResize() = positionPanel(isInitialPosition = false)
+  }
 
-  private var glassPane: JComponent? = null
-  private var originalLayout: LayoutManager? = null
-  private var wasOpaque = false
+  private val textPane = object : JTextPane(), KeyboardAwareFocusOwner {
+    /**
+     * Skip the IDE's key event dispatcher when the output panel is active
+     *
+     * This allows us to skip the standard IDE event dispatcher, so we handle our own keystrokes instead of the IDE
+     * stealing them as shortcuts.
+     */
+    override fun skipKeyEventDispatcher(event: KeyEvent): Boolean {
+      return active
+    }
+  }
 
-  var active: Boolean = false
-  private val segments = mutableListOf<TextLine>()
+  private val promptComponent: JLabel = JLabel("more")
 
-  private val labelComponent: JLabel = JLabel("more")
+  // Status text shown on the right side of the panel, e.g. a search match count. It sits on the same row as the text,
+  // so it's visible for single-line output (the main use case) as well as multi-line output.
+  private val statusComponent: JLabel = JLabel("").apply {
+    verticalAlignment = SwingConstants.TOP
+    isVisible = false
+  }
+
   private val scrollPane: JScrollPane =
     JBScrollPane(textPane, JScrollPane.VERTICAL_SCROLLBAR_AS_NEEDED, JScrollPane.HORIZONTAL_SCROLLBAR_NEVER)
+
+  // Wraps the scrollable text on the left with the status text pinned to the right, on the same row
+  private val contentPanel: JPanel = JPanel(BorderLayout()).apply {
+    isOpaque = false
+    add(scrollPane, BorderLayout.CENTER)
+    add(statusComponent, BorderLayout.EAST)
+  }
+  private var defaultForeground: Color? = null
+  private var clearOnNextUse = false
+
+  private val segments = mutableListOf<TextLine>()
   private var cachedLineHeight = 0
-  private var isSingleLine = false
+
+  private var allowClose = true
+
+  private val animator = JBAnimator().setPeriod(4).setName("IdeaVim output panel animator")
+
+  private var autoCloseJob: Job? = null
+
+  private val clearTimerRefreshes = MutableStateFlow(0)
+
+  var active: Boolean = false
+
+  @get:VisibleForTesting
+  var isSingleLine = false
+    private set
 
   init {
     textPane.isEditable = false
@@ -79,47 +149,98 @@ class OutputPanel private constructor(
       override fun setVisible(v: Boolean) {
         super.setVisible(false)
       }
-    }
-    textPane.highlighter = null
 
-    resizeAdapter = object : ComponentAdapter() {
-      override fun componentResized(e: ComponentEvent?) {
-        positionPanel()
+      override fun adjustVisibility(nloc: Rectangle?) {
+        // When the caret is moved either explicitly or by changing text, Swing will asynchronously move and repaint the
+        // caret, including calling adjustVisibility. The default implementation scrolls to make sure the caret is
+        // visible. We don't care about caret location and don't want it interfering with scroll position, so do nothing
       }
     }
+    textPane.editorKit = object : StyledEditorKit() {
+      override fun getViewFactory(): ViewFactory {
+        val factory = super.viewFactory
+        return ViewFactory { elem ->
+          if (AbstractDocument.ContentElementName == elem.name) CharacterBreakView(elem)
+          else factory.create(elem)
+        }
+      }
+    }
+    // Force the text cursor. The LAF uses the default cursor when isEditable is false
+    textPane.cursor = Cursor.getPredefinedCursor(Cursor.TEXT_CURSOR)
 
     // Suppress the fancy frame background used in the Islands theme
     ClientProperty.putRecursive(this, IdeBackgroundUtil.NO_BACKGROUND, true)
 
     // Initialize panel
-    setLayout(BorderLayout(0, 0))
-    add(scrollPane, BorderLayout.CENTER)
-    add(labelComponent, BorderLayout.SOUTH)
+    layout = BorderLayout(0, 0)
+    add(contentPanel, BorderLayout.CENTER)
+    add(promptComponent, BorderLayout.SOUTH)
 
     val keyListener = OutputPanelKeyListener()
     addKeyListener(keyListener)
     textPane.addKeyListener(keyListener)
+    textPane.addMouseListener(OutputPanelMouseListener())
+
+    scrollPane.verticalScrollBar.addAdjustmentListener { e ->
+      // Update the prompt when scrolling stops, but only for non-single-line output. We will get a scroll update event
+      // if resizing the IDE frame forces the single-line output to wrap and become multi-line.
+      if (!isSingleLine && !e.valueIsAdjusting) {
+        updatePrompt()
+      }
+    }
 
     updateUI()
+
+    // This is usually called in EDT, except for TabmoveTest
+    runInEdt {
+      launchOnShow("IdeaVim::HideOutputPanel") { runClearTimer() }
+    }
+  }
+
+  /**
+   * Clears single-line output after the 'messagesopt' "wait", counted from the last [refreshClearTimer]
+   *
+   * Vim keeps a single-line message until the next redraw. IdeaVim clears it, because the output panel covers the
+   * editor. Neovim's ui2 does the same with its "timeout", restarting it whenever the message is updated. "wait:0" keeps
+   * it open.
+   */
+  @VisibleForTesting
+  internal suspend fun runClearTimer() {
+    clearTimerRefreshes.collectLatest { clearSingleLineOutputAfterWait() }
+  }
+
+  private suspend fun clearSingleLineOutputAfterWait() {
+    if (isSingleLine) {
+      val wait = injector.globalOptions().messagesopt["wait"]?.toIntOrNull()?.milliseconds
+      if (wait != null && wait > 0.milliseconds) {
+        delay(wait)
+        if (active) close()
+      }
+    }
+  }
+
+  private fun refreshClearTimer() {
+    clearTimerRefreshes.update { it + 1 }
   }
 
   override fun updateUI() {
     super.updateUI()
 
-    setBorder(ExPanelBorder())
+    border = ExPanelBorder()
 
     @Suppress("SENSELESS_COMPARISON")
-    if (textPane != null && labelComponent != null && scrollPane != null) {
+    if (textPane != null && promptComponent != null && statusComponent != null && scrollPane != null) {
       setFontForElements()
-      textPane.setBorder(null)
-      scrollPane.setBorder(null)
-      labelComponent.setForeground(textPane.getForeground())
-      positionPanel()
+      textPane.border = null
+      scrollPane.border = null
+      promptComponent.foreground = textPane.foreground
+      statusComponent.foreground = textPane.foreground
+      positionPanel(isInitialPosition = false)
     }
   }
 
   override var text: String
-    get() = textPane.getText() ?: ""
+    get() = textPane.text ?: ""
     set(value) {
       val newValue = value.removeSuffix("\n")
       segments.clear()
@@ -127,41 +248,56 @@ class OutputPanel private constructor(
       segments.add(TextLine(newValue, null))
     }
 
-  override var label: String
-    get() = labelComponent.text
+  override var statusText: String
+    get() = statusComponent.text ?: ""
     set(value) {
-      labelComponent.text = value
+      statusComponent.text = value
+      statusComponent.isVisible = value.isNotEmpty()
+      statusComponent.font = selectEditorFont(editor, value)
+      if (active) {
+        positionPanel(isInitialPosition = false)
+        refreshClearTimer()
+      }
     }
 
   /**
    * Sets styled text with multiple segments, each potentially having a different color.
    */
-  fun setStyledText(lines: List<TextLine>) {
+  private fun setStyledText(lines: List<TextLine>) {
     val doc = textPane.styledDocument
     doc.remove(0, doc.length)
 
-    if (defaultForeground == null) {
-      defaultForeground = textPane.foreground
+    try {
+      defaultForeground = editor.colorsScheme.defaultForeground
+      textPane.foreground = defaultForeground
+      promptComponent.foreground = defaultForeground
+      statusComponent.foreground = defaultForeground
+    } catch (e: Exception) {
+      // in tests `editor.colorScheme` is unsupported
     }
 
-    if (lines.size > 1) {
-      setMultiLineText(lines, doc)
-    } else {
-      doc.insertString(doc.length, lines[0].text.removeSuffix("\n"), getLineColor(lines[0]))
-    }
+    setMultiLineText(lines, doc)
 
     val fullText = doc.getText(0, doc.length)
-    textPane.setFont(selectEditorFont(editor, fullText))
-    textPane.setCaretPosition(0)
-    if (fullText.isNotEmpty()) {
-      activate()
-    }
+    textPane.font = selectEditorFont(editor, fullText)
   }
 
-  private fun setMultiLineText(
-    lines: List<TextLine>,
-    doc: StyledDocument,
-  ) {
+  /**
+   * Re-apply theme-dependent colours to text that is already on screen.
+   *
+   * The foreground colour is baked into the [StyledDocument] attributes when the text is set (see [getLineColor]). A LAF
+   * refresh via `updateComponentTreeUI` only updates LAF-derived colours such as the background, so the visible text
+   * keeps its old foreground when the theme changes while the panel is open. Rebuild the styled text so it picks up the
+   * current editor colour scheme, preserving the scroll position.
+   */
+  internal fun refreshColors() {
+    if (segments.isEmpty()) return
+    val scrollValue = scrollPane.verticalScrollBar.value
+    setStyledText(segments)
+    scrollPane.verticalScrollBar.value = scrollValue
+  }
+
+  private fun setMultiLineText(lines: List<TextLine>, doc: StyledDocument) {
     for ((index, line) in lines.withIndex()) {
       val text = line.text.removeSuffix("\n")
       val attrs = getLineColor(line)
@@ -180,6 +316,9 @@ class OutputPanel private constructor(
   }
 
   override fun addText(text: String, isNewLine: Boolean, messageType: MessageType) {
+    if (clearOnNextUse) {
+      clearText()
+    }
     val color = when (messageType) {
       MessageType.ERROR -> JBColor.RED
       MessageType.STANDARD -> null
@@ -187,129 +326,101 @@ class OutputPanel private constructor(
     segments.add(TextLine(text, color))
   }
 
-  override fun show() {
+  override fun show(requireHitEnter: Boolean) {
     val currentPanel = injector.outputPanel.getCurrentOutputPanel()
     if (currentPanel != null && currentPanel != this) currentPanel.close()
 
+    statusText = ""
     setStyledText(segments)
-    if (!active) {
-      activate()
-    }
-  }
 
-  override fun setContent(text: String) {
-    this.text = text
+    // Only activate (single-line or multiline) if we have text or enough empty lines to show in the pager (or testing
+    // is telling us to always show the output panel). Otherwise, clear the text
+    if (!active) {
+      if (requireHitEnter
+        || textPane.text.isNotBlank()
+        || (textPane.text.isBlank() && (!allowHideEmptyText || countLines(textPane.text) > injector.globalOptions().cmdheight))
+      ) {
+        activate(requireHitEnter)
+      } else {
+        clearText()
+      }
+    } else {
+      positionPanel(isInitialPosition = false)
+    }
+    refreshClearTimer()
+
+    // Don't immediately clear the message if the action that caused it also (indirectly) causes a redraw
+    allowClose = false
+    injector.application.invokeLater {
+      allowClose = true
+    }
   }
 
   override fun clearText() {
     segments.clear()
-  }
-
-  fun clear() {
-    text = ""
-  }
-
-  override fun handleKey(key: KeyStroke) {
-
-    if (isAtEnd) {
-      close(key)
-      return
-    }
-
-    when (key.keyChar) {
-      ' ' -> scrollPage()
-      'd' -> scrollHalfPage()
-      'q', '\u001b' -> close()
-      '\n' -> scrollLine()
-      KeyEvent.CHAR_UNDEFINED -> {
-        when (key.keyCode) {
-          KeyEvent.VK_ENTER -> scrollLine()
-          KeyEvent.VK_ESCAPE -> close()
-          else -> onBadKey()
-        }
-      }
-
-      else -> onBadKey()
-    }
+    clearOnNextUse = false
+    statusText = ""
   }
 
   override fun getForeground(): Color? {
     @Suppress("SENSELESS_COMPARISON")
     if (textPane == null) {
-      return super.getForeground()
+      return super.foreground
     }
-    return textPane.getForeground()
+    return textPane.foreground
   }
 
   override fun getBackground(): Color? {
     @Suppress("SENSELESS_COMPARISON")
     if (textPane == null) {
-      return super.getBackground()
+      return super.background
     }
-    return textPane.getBackground()
+    return textPane.background
   }
 
-  /**
-   * Turns off the output panel and optionally puts the focus back to the original component.
-   */
-  fun deactivate(refocusOwningEditor: Boolean) {
+  private fun deactivate() {
     if (!active) return
     active = false
-    clearText()
+    clearOnNextUse = true
     textPane.text = ""
-    if (refocusOwningEditor) {
-      requestFocus(editor.contentComponent)
-    }
-    if (glassPane != null) {
-      glassPane!!.removeComponentListener(resizeAdapter)
-      glassPane!!.isVisible = false
-      glassPane!!.remove(this)
-      glassPane!!.setOpaque(wasOpaque)
-      glassPane!!.setLayout(originalLayout)
-    }
+    statusText = ""
+    glassPaneManager.deactivate()
   }
 
   /**
    * Turns on the output panel for the given editor.
    */
-  fun activate() {
-    disableOldGlass()
+  private fun activate(requireHitEnter: Boolean) {
+    glassPaneManager.activate(editor, this)
 
     setFontForElements()
-    positionPanel()
+    positionPanel(isInitialPosition = true, requireHitEnter)
+    resetScroll()
 
-    if (glassPane != null) {
-      glassPane!!.isVisible = true
-    }
-
+    glassPaneManager.show()
     active = true
-    requestFocus(textPane)
-  }
 
-  private fun disableOldGlass() {
-    val root = SwingUtilities.getRootPane(editor.contentComponent) ?: return
-    glassPane = root.getGlassPane() as JComponent?
-    if (glassPane == null) {
-      return
+    if (!isSingleLine) {
+      requestFocus(textPane)
     }
-    originalLayout = glassPane!!.layout
-    wasOpaque = glassPane!!.isOpaque
-    glassPane!!.setLayout(null)
-    glassPane!!.setOpaque(false)
-    glassPane!!.add(this)
-    glassPane!!.addComponentListener(resizeAdapter)
   }
 
   override fun close() {
-    close(null)
+    if (allowClose) {
+      close(null)
+    }
   }
 
-  fun close(key: KeyStroke?) {
+  private fun close(key: KeyStroke?) {
+    animator.stop()
+    autoCloseJob?.cancel()
+    autoCloseJob = null
+
     val passKeyBack = isSingleLine
-    ApplicationManager.getApplication().invokeLater {
-      deactivate(true)
+    val doDeactivate = {
+      deactivate()
       val project = editor.project
-      // For single line messages, pass any key back to the editor (including Enter)
+      // For single-line messages, pass any key back to the editor (including Enter)
       // For multi-line messages, don't pass Enter back (it was used to dismiss)
       if (project != null && key != null && (passKeyBack || key.keyChar != '\n')) {
         val keys: MutableList<KeyStroke> = ArrayList(1)
@@ -320,169 +431,442 @@ class OutputPanel private constructor(
         VimPlugin.getMacro().playbackKeys(IjVimEditor(editor), context, 1)
       }
     }
+    if (application.isUnitTestMode) {
+      doDeactivate()
+    } else {
+      // TODO: Document why this is invoked later
+      // It's always been like this. I think it's because when it's called with a keystroke, it's called from the
+      // component's key handler, and it's probably a bad idea to handle other keystrokes while in the middle of
+      // handling a keystroke
+      application.invokeLater(doDeactivate)
+    }
   }
 
   private fun setFontForElements() {
-    textPane.setFont(selectEditorFont(editor, textPane.getText()))
-    labelComponent.setFont(selectEditorFont(editor, labelComponent.text))
+    textPane.font = selectEditorFont(editor, textPane.text)
+    promptComponent.font = selectEditorFont(editor, promptComponent.text)
+    statusComponent.font = selectEditorFont(editor, statusComponent.text)
   }
 
-  private fun positionPanel() {
-    val scroll = positionPanelStart() ?: return
-    val lineHeight = textPane.getFontMetrics(textPane.getFont()).height
-    val count = countLines(textPane.getText())
-    val visLines = size.height / lineHeight - 1
-    val lines = min(count, visLines)
+  private fun positionPanel(isInitialPosition: Boolean, requireHitEnter: Boolean = false) {
+    val maxPanelSize = getMaxPanelSize() ?: return
+    val lineHeight = textPane.getFontMetrics(textPane.font).height
+    val textAreaWidth = getTextAreaWidth(maxPanelSize.width)
+    val lineCount = countLines(textPane.text, textAreaWidth)
+    val maxVisibleLines = (maxPanelSize.height / lineHeight) - 1  // -1 to save space for prompt
+    val visibleLines = min(lineCount, maxVisibleLines)
 
-    // Simple output: single line that fits entirely - no label needed
-    isSingleLine = count == 1 && count <= visLines
-    labelComponent.isVisible = !isSingleLine
+    if (isInitialPosition) {
+      // Simple output: single line that fits entirely - no label needed
+      // Don't update the flag if we're resizing. We might change text wrapping moving from/to single-line output, but
+      // we want to stay in the original mode
+      isSingleLine = lineCount <= injector.globalOptions().cmdheight && lineCount <= maxVisibleLines && !requireHitEnter
+      promptComponent.isVisible = !isSingleLine
+    }
 
-    val extraHeight = if (isSingleLine) 0 else labelComponent.getPreferredSize().height
-    setSize(
-      size.width,
-      lines * lineHeight + extraHeight + border.getBorderInsets(this).top * 2
-    )
+    val extraHeight = if (isSingleLine) 0 else promptComponent.preferredSize.height
+    val borderInsets = border.getBorderInsets(this)
+    setSize(maxPanelSize.width, visibleLines * lineHeight + extraHeight + borderInsets.top + borderInsets.bottom)
+    location = getPanelLocation(size.height) ?: location
 
-    finishPositioning(scroll)
-
-    // Force layout so that viewport sizes are valid before checking scroll state
-    validate()
-
-    // onPositioned
-    cachedLineHeight = lineHeight
-    scrollPane.getVerticalScrollBar().setValue(0)
-    if (!isSingleLine) {
-      if (!injector.globalOptions().more) {
-        scrollOffset(100000)
-      } else {
-        scrollOffset(0)
+    // Force layout so that viewport sizes are valid before checking the scroll state. In tests, we have to do it
+    // manually because there isn't a real UI hierarchy.
+    if (application.isUnitTestMode) {
+      doLayout()
+      contentPanel.doLayout()
+      scrollPane.doLayout()
+      scrollPane.viewport.doLayout()
+      if (textPane.width > 0) {
+        textPane.ui.getRootView(textPane).setSize(textPane.width.toFloat(), Int.MAX_VALUE.toFloat())
+        scrollPane.validate()
       }
+    } else {
+      validate()
+      // Now that the panel hierarchy has been laid out, set the width of the text pane and revalidate it so that the
+      // wrapped lines are calculated synchronously. This would normally happen during painting, but we want it so we
+      // can accurately calculate the scroll bar maximum.
+      textPane.ui.getRootView(textPane).setSize(textPane.width.toFloat(), Int.MAX_VALUE.toFloat())
+      scrollPane.validate()
+    }
+
+    cachedLineHeight = lineHeight
+  }
+
+  private fun getMaxPanelSize(): Dimension? {
+    val scroll = getEditorScrollPane() ?: return null
+
+    // The UI is not available in unit tests, but we do explicitly set the size of the editor's scroll pane's viewport.
+    // This ignores borders and the gutter component, but it's good enough for tests.
+    return if (application.isUnitTestMode) {
+      scroll.viewport.size
+    } else {
+      scroll.size
     }
   }
 
-  private fun positionPanelStart(): JScrollPane? {
-    val contentComponent = editor.contentComponent
-    val scroll = SwingUtilities.getAncestorOfClass(JScrollPane::class.java, contentComponent) as? JScrollPane
-    val rootPane = SwingUtilities.getRootPane(contentComponent)
-    if (scroll == null || rootPane == null) {
+  private fun getPanelLocation(panelHeight: Int): Point? {
+    if (application.isUnitTestMode) {
+      // We don't care about location in unit tests, it's always going to be bottom of the editor, and we don't need to
+      // assert that.
       return null
     }
 
-    size = scroll.size
-    return scroll
+    val scroll = getEditorScrollPane() ?: return null
+    val point = scroll.location
+    point.translate(0, scroll.height - panelHeight)
+    point.location = SwingUtilities.convertPoint(scroll.parent, point.location, glassPaneManager.glassPane)
+    return point
   }
 
-  private fun finishPositioning(scroll: JScrollPane) {
-    val rootPane = SwingUtilities.getRootPane(editor.contentComponent)
-    val bounds = scroll.bounds
-    bounds.translate(0, scroll.getHeight() - size.height)
-    bounds.height = size.height
-    val pos = SwingUtilities.convertPoint(scroll.getParent(), bounds.location, rootPane.getGlassPane())
-    bounds.location = pos
-    setBounds(bounds)
+  private fun getEditorScrollPane(): JScrollPane? {
+    if (editor is EditorEx) {
+      return editor.scrollPane
+    }
+    return SwingUtilities.getAncestorOfClass(JScrollPane::class.java, editor.contentComponent) as? JScrollPane
   }
 
-  private fun countLines(text: String): Int {
+  private fun getTextAreaWidth(panelWidth: Int = width): Int {
+    val availableWidth = when {
+      scrollPane.viewport.width > 0 -> scrollPane.viewport.width
+      panelWidth > 0 -> panelWidth - getStatusComponentWidth()
+      else -> width - getStatusComponentWidth()
+    }
+    return availableWidth.coerceAtLeast(1)
+  }
+
+  private fun getStatusComponentWidth(): Int {
+    if (statusText.isEmpty()) return 0
+    return statusComponent.preferredSize.width
+  }
+
+  private fun countLines(text: String, textAreaWidth: Int = getTextAreaWidth()): Int {
     if (text.isEmpty()) {
       return 1
     }
 
-    var count = 0
-    var pos = -1
-    while ((text.indexOf('\n', pos + 1).also { pos = it }) != -1) {
-      count++
+    val lineWidth = (textAreaWidth / EditorHelper.getPlainSpaceWidthFloat(editor)).toInt().coerceAtLeast(1)
+    var lineCount = 0
+    var last = 0
+    text.forEachIndexed { index, ch ->
+      if (ch == '\n') {
+        lineCount += ceil((index - last) / lineWidth.toDouble()).toInt().coerceAtLeast(1)
+        last = index
+      }
     }
+    lineCount += ceil((text.length - last) / lineWidth.toDouble()).toInt()
 
-    if (text[text.length - 1] != '\n') {
-      count++
-    }
-
-    return count
+    return lineCount
   }
 
-  override fun scrollLine() {
-    scrollOffset(cachedLineHeight)
+  private fun scrollToStart() {
+    if (isSingleLine) return
+    scrollByOffset(-Int.MAX_VALUE)
   }
 
-  override fun scrollPage() {
-    scrollOffset(scrollPane.getVerticalScrollBar().visibleAmount)
+  private fun scrollToEnd() {
+    if (isSingleLine) return
+    scrollByOffset(Int.MAX_VALUE)
   }
 
-  override fun scrollHalfPage() {
-    val sa = scrollPane.getVerticalScrollBar().visibleAmount / 2.0
+  private fun scrollLine(direction: Int = 1) {
+    scrollByOffset(cachedLineHeight * direction)
+  }
+
+  private fun scrollPage(direction: Int = 1) {
+    scrollByOffset(scrollPane.verticalScrollBar.visibleAmount * direction)
+  }
+
+  private fun scrollHalfPage(direction: Int = 1) {
+    val sa = scrollPane.verticalScrollBar.visibleAmount / 2.0
     val offset = ceil(sa / cachedLineHeight) * cachedLineHeight
-    scrollOffset(offset.toInt())
+    scrollByOffset(offset.toInt() * direction)
   }
 
-  fun onBadKey() {
-    labelComponent.setText(injector.messages.message("message.ex.output.more.prompt.full"))
-    labelComponent.setFont(selectEditorFont(editor, labelComponent.text))
+  private fun onBadKey() {
+    promptComponent.text = injector.messages.message("message.ex.output.more.prompt.full")
+    promptComponent.font = selectEditorFont(editor, promptComponent.text)
   }
 
-  private fun scrollOffset(more: Int) {
+  private fun scrollByOffset(offset: Int) {
     scrollPane.validate()
-    val scrollBar = scrollPane.getVerticalScrollBar()
+
+    // Note that we always scroll from the current location. If we're in the middle of scrolling, this will not be the
+    // target of the last scroll. I don't think that's important
+    val scrollBar = scrollPane.verticalScrollBar
     val value = scrollBar.value
-    scrollBar.setValue(value + more)
-    scrollPane.getHorizontalScrollBar().setValue(0)
+
+    val duration = Registry.intValue("idea.editor.smooth.scrolling.navigation.duration")
+    if (duration > 0 && shouldAnimateScroll() && abs(offset) > cachedLineHeight) {
+      val startValue = scrollBar.value
+      val endValue =
+        (min(startValue + offset, scrollBar.maximum - scrollBar.visibleAmount) / cachedLineHeight) * cachedLineHeight
+      val animation = animation {
+        scrollBar.value = (startValue + (endValue - startValue) * it + 0.5).toInt()
+      }
+      animation.duration = duration
+      animation.easing = Easing.EASE_OUT
+      animation.runWhenExpired {
+        // Avoid any rounding errors and make sure we're at the end
+        scrollBar.value = startValue + offset
+        updatePrompt()
+      }
+      animator.animate(animation)
+    } else {
+      scrollBar.value =
+        (min(value + offset, scrollBar.maximum - scrollBar.visibleAmount) / cachedLineHeight) * cachedLineHeight
+      scrollPane.horizontalScrollBar.value = 0
+      updatePrompt()
+    }
+  }
+
+  private fun shouldAnimateScroll(): Boolean {
+    return !application.isUnitTestMode && editor.settings.isAnimatedScrolling && !RemoteDesktopService.isRemoteSession()
+  }
+
+  private fun resetScroll() {
+    scrollPane.verticalScrollBar.value = 0
+    if (!isSingleLine && !injector.globalOptions().more) {
+      scrollByOffset(Int.MAX_VALUE)
+    } else {
+      updatePrompt()
+    }
+  }
+
+  /**
+   * Shows the "-- More --" or "Press ENTER" prompt for multi-line output, or closes it after the 'messagesopt' "wait"
+   *
+   * Like Vim, "hit-enter" takes precedence over "wait", and "wait:0" closes the output as soon as its end is shown.
+   */
+  private fun updatePrompt() {
+    autoCloseJob?.cancel()
+    autoCloseJob = null
 
     // Check if we're at the end or if content fits entirely (nothing to scroll)
     if (isAtEnd) {
-      labelComponent.setText(injector.messages.message("message.ex.output.end.prompt"))
+      if (injector.globalOptions().messagesopt.containsKey("hit-enter")) {
+        promptComponent.text = injector.messages.message("message.ex.output.end.prompt")
+      } else {
+        promptComponent.text = ""
+        // Single-line auto-close is handled by the launchOnShow coroutine in init
+        if (!isSingleLine) {
+          val wait = injector.globalOptions().messagesopt["wait"]?.toIntOrNull() ?: 0
+          if (wait > 0) {
+            autoCloseJob = service<CoroutineScopeProvider>().coroutineScope.launch {
+              delay(wait.milliseconds)
+              runInEdt { if (active) close() }
+            }
+          } else {
+            close()
+          }
+        }
+      }
     } else {
-      labelComponent.setText(injector.messages.message("message.ex.output.more.prompt"))
+      promptComponent.text = injector.messages.message("message.ex.output.more.prompt")
     }
-    labelComponent.setFont(selectEditorFont(editor, labelComponent.text))
+    promptComponent.font = selectEditorFont(editor, promptComponent.text)
   }
 
+  /**
+   * Handle the given keystroke to control the pager
+   *
+   * This will be called for both `KEY_TYPED` and `KEY_PRESSED` keystrokes, so will get virtual key code keystrokes for
+   * actions like `VK_UP`, control characters like `<C-F>` and Vim special keys like `<Enter>`. This matches IdeaVim's
+   * handling for commands and mappings, and means we can forward the keystroke to the editor when closing the panel.
+   *
+   * However, remember that `KEY_PRESSED` events can be followed by `KEY_TYPED`, so do not handle (at all!) typed
+   * versions of control characters and Enter, etc.
+   */
+  internal fun handleKey(key: KeyStroke) {
+    // Like the command line, this bypasses VimTypedActionHandler and VimShortcutKeyAction, so a modeless selection in
+    // the owning editor has to be dropped here too
+    ModelessSelection.clearIfOwned(editor)
+    // Note that it is normally invalid to compare a virtual key code and a Unicode codepoint; however, these virtual
+    // key codes are explicitly defined to match ASCII values
+    if (key.keyChar.code == KeyEvent.VK_ENTER
+      || key.keyChar.code == KeyEvent.VK_ESCAPE
+      || key.keyChar.code == KeyEvent.VK_BACK_SPACE
+      || (key.keyChar != KeyEvent.CHAR_UNDEFINED && key.keyChar < '\u0020')
+    ) {
+      return
+    }
+
+    // The key handler never sees this key, and closing the panel passes it on as macro playback, so report it here
+    injector.listenersNotifier.notifyKeyTyped(editor.vim, key)
+    if (isAtEnd) {
+      handleHitEnterPrompt(key)
+    } else {
+      handleMorePrompt(key)
+    }
+  }
+
+  private fun handleHitEnterPrompt(key: KeyStroke) {
+    // When the output is smaller than a page, scrolling up/back does nothing. Scrolling down/forward will close.
+    // When it's longer than a page, scrolling up/back will scroll. Scrolling down/forward does nothing (although Space
+    // and Enter will still close).
+    // Vim treats 'nomore' as disabling the pager. Since we're a GUI app, and because it's possible to scroll with e.g.,
+    // the mouse wheel, we'll disable the pager and automatically scroll to the end of the output. Trying to scroll
+    // down/forward will behave as normal, but scrolling up/back will re-enable the pager (assuming long content). In
+    // other words, we don't do anything special for 'nomore' other than scroll straight to the end.
+    // If 'messagesopt' is missing "hit-enter", then we should wait "wait" milliseconds and then close, instead of
+    // showing the hit-enter prompt. However, this is terrible UX - Vim makes you wait, and doesn't allow any scrolling.
+    // Like 'nomore', we want to take into consideration that we're a GUI application, so we treat missing "hit-enter"
+    // as removing the "hit-enter" prompt and  automatically close after "wait" milliseconds.
+    val contentHeight = textPane.preferredSize.height
+    val viewportHeight = scrollPane.viewport.height
+    val scrollDownMeansClose = contentHeight <= viewportHeight
+
+    when (key.keyChar) {
+      'g' -> scrollToStart()
+      'G' -> close(key) // Always closes
+      ' ' -> close()    // Always close
+      'f' -> if (scrollDownMeansClose) close(key)
+      'd' -> if (scrollDownMeansClose) close(key)
+      'j' -> if (scrollDownMeansClose) close(key)
+      'b' -> scrollPage(-1)
+      'u' -> scrollHalfPage(-1)
+      'k' -> scrollLine(-1)
+      'q' -> close()
+      KeyEvent.CHAR_UNDEFINED -> when (key.keyCode) {
+        KeyEvent.VK_ESCAPE -> close()
+        KeyEvent.VK_ENTER -> close()  // Always close
+        KeyEvent.VK_DOWN -> if (scrollDownMeansClose) close(key)
+        KeyEvent.VK_PAGE_DOWN -> if (scrollDownMeansClose) close(key)
+        KeyEvent.VK_F if (key.modifiers and KeyEvent.CTRL_DOWN_MASK != 0) -> if (scrollDownMeansClose) close(key)
+        KeyEvent.VK_BACK_SPACE -> scrollLine(-1)
+        KeyEvent.VK_UP -> scrollLine(-1)
+        KeyEvent.VK_H if (key.modifiers and KeyEvent.CTRL_DOWN_MASK != 0) -> scrollLine(-1)
+        KeyEvent.VK_PAGE_UP -> scrollPage(-1)
+        KeyEvent.VK_B if (key.modifiers and KeyEvent.CTRL_DOWN_MASK != 0) -> scrollPage(-1)
+        KeyEvent.VK_Y if (key.modifiers and KeyEvent.CTRL_DOWN_MASK != 0) -> copyModelessSelection()
+        KeyEvent.VK_C if (key.modifiers and KeyEvent.CTRL_DOWN_MASK != 0) -> close()
+        else -> close(key)
+      }
+
+      else -> close(key)
+    }
+  }
+
+  private fun handleMorePrompt(key: KeyStroke) = when (key.keyChar) {
+    'g' -> scrollToStart()
+    'G' -> scrollToEnd()
+    ' ' -> scrollPage()
+    'f' -> scrollPage()
+    'd' -> scrollHalfPage()
+    'j' -> scrollLine()
+    'b' -> scrollPage(-1)
+    'u' -> scrollHalfPage(-1)
+    'k' -> scrollLine(-1)
+    'q' -> close()
+    ':' -> close(key)
+    KeyEvent.CHAR_UNDEFINED -> when (key.keyCode) {
+      KeyEvent.VK_ESCAPE -> close()
+      KeyEvent.VK_ENTER -> scrollLine()
+      KeyEvent.VK_DOWN -> scrollLine()
+      KeyEvent.VK_PAGE_DOWN -> scrollPage()
+      KeyEvent.VK_F if (key.modifiers and KeyEvent.CTRL_DOWN_MASK != 0) -> scrollPage()
+      KeyEvent.VK_BACK_SPACE -> scrollLine(-1)
+      KeyEvent.VK_UP -> scrollLine(-1)
+      KeyEvent.VK_H if (key.modifiers and KeyEvent.CTRL_DOWN_MASK != 0) -> scrollLine(-1)
+      KeyEvent.VK_PAGE_UP -> scrollPage(-1)
+      KeyEvent.VK_B if (key.modifiers and KeyEvent.CTRL_DOWN_MASK != 0) -> scrollPage(-1)
+      KeyEvent.VK_Y if (key.modifiers and KeyEvent.CTRL_DOWN_MASK != 0) -> copyModelessSelection()
+      KeyEvent.VK_C if (key.modifiers and KeyEvent.CTRL_DOWN_MASK != 0) -> close()
+      else -> onBadKey()
+    }
+
+    else -> onBadKey()
+  }
+
+  /**
+   * Copy the modeless selection to the system clipboard
+   *
+   * When selecting text in the command line or at the hit-enter prompt, this does does not affect the current mode, and
+   * is known as modeless selection. Pressing `<C-Y>` will copy this selection to the system clipboard.
+   *
+   * See `:help modeless-selection` and `:help c_CTRL-Y`.
+   */
+  private fun copyModelessSelection() {
+    val selection = textPane.selectedText ?: return
+    injector.registerGroup.storeText(
+      editor.vim,
+      injector.executionContextManager.getEditorExecutionContext(editor.vim),
+      RegisterConstants.CLIPBOARD_REGISTER,
+      selection
+    )
+  }
+
+  @get:VisibleForTesting
   val isAtEnd: Boolean
     get() {
       if (isSingleLine) return true
       val contentHeight = textPane.preferredSize.height
       val viewportHeight = scrollPane.viewport.height
       if (contentHeight <= viewportHeight) return true
-      val scrollBar = scrollPane.getVerticalScrollBar()
+      val scrollBar = scrollPane.verticalScrollBar
       return scrollBar.value >= scrollBar.maximum - scrollBar.visibleAmount
     }
 
+  @get:TestOnly
+  val promptText: String
+    get() = promptComponent.text
+
+  @get:TestOnly
+  val pageSize: Int
+    get() = scrollPane.verticalScrollBar.visibleAmount / cachedLineHeight
+
+  @get:TestOnly
+  val topLine: Int
+    get() = scrollPane.verticalScrollBar.value / cachedLineHeight
+
+  @TestOnly
+  fun scrollToHitEnterPrompt() {
+    scrollToEnd()
+  }
+
+  @TestOnly
+  fun setModelessSelection(start: Int, end: Int) {
+    textPane.select(start, end)
+  }
+
   private inner class OutputPanelKeyListener : KeyAdapter() {
     override fun keyTyped(e: KeyEvent) {
-      val currentPanel: VimOutputPanel = injector.outputPanel.getCurrentOutputPanel() ?: return
-
-      val keyChar = e.keyChar
-      val modifiers = e.modifiersEx
-      val keyStroke = KeyStroke.getKeyStroke(keyChar, modifiers)
-      currentPanel.handleKey(keyStroke)
-    }
-
-    override fun keyPressed(e: KeyEvent) {
-      if (!e.isActionKey && e.keyCode != KeyEvent.VK_ENTER) return
-      val currentPanel = injector.outputPanel.getCurrentOutputPanel() as? OutputPanel ?: return
-
-      val keyCode = e.keyCode
-      val modifiers = e.modifiersEx
-      val keyStroke = KeyStroke.getKeyStroke(keyCode, modifiers)
-
-      if (isSingleLine) {
-        currentPanel.close(keyStroke)
-        e.consume()
+      // Do not try to handle KEY_TYPED versions of Enter, Escape or Delete. We've already handled them as KEY_PRESSED.
+      // We want to handle them as KEY_PRESSED keystrokes (i.e., virtual key codes, not key chars) because that's what
+      // the mapping system uses, and we need to pass these keystrokes on when the panel closes.
+      // Note that it is usually illegal to compare Unicode codepoints and virtual key codes. However, these particular
+      // values are specifically chosen to match ASCII values.
+      if (e.keyChar.code == KeyEvent.VK_ENTER
+        || e.keyChar.code == KeyEvent.VK_ESCAPE
+        || e.keyChar.code == KeyEvent.VK_BACK_SPACE
+      ) {
         return
       }
 
-      // Multi-line mode: arrow keys scroll, down/right at end closes
-      when (keyCode) {
-        KeyEvent.VK_ENTER -> {
-          if (currentPanel.isAtEnd) currentPanel.close() else currentPanel.scrollLine()
-          e.consume()
-        }
+      // Don't use the modifiers for key typed events. We won't get ctrl or alt for typed keys, and any character typed
+      // with shift will give us the actual key char (e.g, typing `Shift+;` will give us a key event with `Shift+:` and
+      // all we're interested in is the `:`). This is important for passing the keystroke to the editor. The command
+      // key consumer won't match `Shift+:` as `:`, so we won't be able to start a new command line.
+      // The exception is Space. There is no shifted key associated with Space so Shift+Space is treated as a separate
+      // keystroke
+      if (e.modifiersEx and KeyEvent.SHIFT_DOWN_MASK == KeyEvent.SHIFT_DOWN_MASK && e.keyChar == ' ') {
+        handleKey(KeyStroke.getKeyStrokeForEvent(e))
+      } else {
+        handleKey(KeyStroke.getKeyStroke(e.keyChar))
+      }
+    }
 
-        KeyEvent.VK_DOWN -> if (currentPanel.isAtEnd) currentPanel.close(keyStroke) else currentPanel.scrollLine()
-        KeyEvent.VK_RIGHT -> if (currentPanel.isAtEnd) currentPanel.close(keyStroke) else currentPanel.scrollLine()
-        KeyEvent.VK_UP -> currentPanel.scrollOffset(-cachedLineHeight)
-        KeyEvent.VK_LEFT -> currentPanel.scrollOffset(-cachedLineHeight)
-        KeyEvent.VK_PAGE_DOWN -> if (currentPanel.isAtEnd) currentPanel.close(keyStroke) else currentPanel.scrollPage()
-        KeyEvent.VK_PAGE_UP -> currentPanel.scrollOffset(-scrollPane.verticalScrollBar.visibleAmount)
+    override fun keyPressed(e: KeyEvent) {
+      // Match IdeaVim's handling of keystrokes for commands and mappings, where we prefer virtual keycode based
+      // (i.e., KEY_PRESSED) keystrokes for the equivalent of Vim's special keys (actions like `<Up>`, control
+      // characters like `<C-F>` and special keys like `<Enter>`). Remember that after a KEY_PRESSED event, we'll
+      // typically get a KEY_TYPED event. Don't handle them twice!
+      if (e.isActionKey
+        || e.keyCode == KeyEvent.VK_ENTER
+        || e.keyCode == KeyEvent.VK_ESCAPE
+        || e.keyCode == KeyEvent.VK_BACK_SPACE
+        || (e.keyCode >= KeyEvent.VK_A && e.keyCode <= KeyEvent.VK_Z && e.modifiersEx and KeyEvent.CTRL_DOWN_MASK != 0)
+      ) {
+        handleKey(KeyStroke.getKeyStrokeForEvent(e))
       }
     }
   }
@@ -493,31 +877,105 @@ class OutputPanel private constructor(
 
       for (vimEditor in injector.editorGroup.getEditors()) {
         val editor = (vimEditor as IjVimEditor).editor
-        if (!isPanelActive(editor)) continue
-        IJSwingUtilities.updateComponentTreeUI(getInstance(editor))
+        val panel = tryGetInstance(editor) ?: continue
+        IJSwingUtilities.updateComponentTreeUI(panel)
+      }
+    }
+  }
+
+  /**
+   * Refresh the text colour when the editor colour scheme changes.
+   *
+   * The panel takes its text colour from the editor colour scheme (see [setStyledText]), which changes both when the
+   * scheme is switched directly and when an IDE theme switch swaps in a different bundled scheme. Unlike [LafListener]'s
+   * `updateComponentTreeUI`, this re-applies the foreground baked into the displayed text.
+   */
+  class ColorSchemeListener : EditorColorsListener {
+    override fun globalSchemeChange(scheme: EditorColorsScheme?) {
+      if (VimPlugin.isNotEnabled()) return
+
+      for (vimEditor in injector.editorGroup.getEditors()) {
+        val editor = (vimEditor as IjVimEditor).editor
+        tryGetInstance(editor)?.refreshColors()
       }
     }
   }
 
   companion object {
-    fun getNullablePanel(editor: Editor): OutputPanel? {
-      return editor.vimMorePanel
+    fun tryGetInstance(editor: Editor): OutputPanel? {
+      return editor.vimMorePanel as OutputPanel?
     }
 
-    fun isPanelActive(editor: Editor): Boolean {
-      return getNullablePanel(editor) != null
-    }
-
-    fun getInstance(editor: Editor): OutputPanel {
-      var panel: OutputPanel? = getNullablePanel(editor)
+    fun createInstance(editor: Editor): OutputPanel {
+      // This should be null, but let's check anyway
+      var panel: OutputPanel? = tryGetInstance(editor)
       if (panel == null) {
         panel = OutputPanel(editor)
         editor.vimMorePanel = panel
       }
       return panel
     }
+
+    /**
+     * Allow showing the output panel for empty text
+     *
+     * Normally, the output panel is not shown for single line, empty text. This is sensible UX - no intrusive popup panel
+     * showing nothing. However, it makes it very difficult for testing to verify that a command has correctly tried to
+     * output an empty string, or to verify that a command correctly does not output anything. A missing output instead of
+     * an empty output could be due to a bug or exception. This flag allows tests to ensure the behaviour is consistent.
+     */
+    @TestOnly
+    internal var allowHideEmptyText = true
   }
 }
 
 
-data class TextLine(val text: String, val color: Color?)
+private data class TextLine(val text: String, val color: Color?)
+
+/**
+ * A [LabelView] that breaks at character boundaries rather than word boundaries.
+ *
+ * [getMinimumSpan] returns the width of a single character so the row layout always attempts a
+ * break, even when the text contains no spaces.
+ * [getBreakWeight] signals that any character position on the X axis is a valid break point.
+ * [breakView] finds the last character that completely fits within the available width using the
+ * view's own glyph painter, so measurement is consistent with how the view renders itself.
+ * [getPreferredSpan] is intentionally not overridden: the view reports its natural preferred width
+ * and relies solely on the break machinery to constrain it to the space given by the parent row.
+ */
+private class CharacterBreakView(elem: javax.swing.text.Element) : LabelView(elem) {
+
+  override fun getMinimumSpan(axis: Int): Float {
+    if (axis != X_AXIS) return super.getMinimumSpan(axis)
+    val p0 = startOffset
+    val p1 = endOffset
+    if (p0 >= p1) return 0f
+    checkPainter()
+    return glyphPainter.getSpan(this, p0, p0 + 1, null, 0f)
+  }
+
+  override fun getBreakWeight(axis: Int, pos: Float, len: Float): Int =
+    if (axis == X_AXIS) GoodBreakWeight else BadBreakWeight
+
+  override fun breakView(axis: Int, p0: Int, pos: Float, len: Float): View {
+    if (axis != X_AXIS) return this
+    val p1 = endOffset
+    if (p0 >= p1) return this
+
+    checkPainter()
+    val painter = glyphPainter
+
+    // If everything fits there is nothing to break
+    if (painter.getSpan(this, p0, p1, null, pos) <= len) return this
+
+    // Binary search for the rightmost character offset whose span still fits
+    var lo = p0
+    var hi = p1
+    while (lo < hi - 1) {
+      val mid = (lo + hi) / 2
+      if (painter.getSpan(this, p0, mid, null, pos) <= len) lo = mid else hi = mid
+    }
+
+    return if (lo > p0) createFragment(p0, lo) else this
+  }
+}

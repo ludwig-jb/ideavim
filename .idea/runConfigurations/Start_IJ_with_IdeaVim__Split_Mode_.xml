@@ -1,5 +1,5 @@
 <component name="ProjectRunConfigurationManager">
-  <configuration default="false" name="Start IJ with IdeaVim (Split Mode)" type="GradleRunConfiguration" factoryName="Gradle">
+  <configuration default="false" name="Start IJ with IdeaVim (Split Mode)" type="GradleRunConfiguration" factoryName="Gradle" folderName="Split Mode">
     <log_file alias="idea.log" path="$PROJECT_DIR$/build/idea-sandbox/system/log/idea.log" />
     <ExternalSystemSettings>
       <option name="executionName" />

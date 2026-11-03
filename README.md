@@ -182,6 +182,10 @@ locum afficere in quo IdeaVim fasciculum tuum `.ideavimrc` quaerit. Exempli grat
 Vel mandata initializationis secundum normam [XDG](https://specifications.freedesktop.org/basedir-spec/basedir-spec-latest.html) constituere potes.
 Optiones tuas in fasciculo `$XDG_CONFIG_HOME/ideavim/ideavimrc` pone.
 
+You can also set a custom path for your `.ideavimrc` file using the
+`IDEA_VIM_CUSTOM_VIMRC` environment variable. If set, IdeaVim will use this path
+instead of the default locations.
+
 
 Additamenta IdeaVim
 --------------------
@@ -240,6 +244,24 @@ mandata Ex vel per assignationes mandati `:map`:
 ShowHoverInfo - Documentatio celeris et descriptio erroris
 QuickImplementations - Definitio celeris
 ```
+
+Autocmd
+----------
+
+IdeaVim supports Vim’s `:autocmd` for running commands on editor events, including
+`InsertEnter`/`InsertLeave`, buffer events (`BufEnter`, `BufLeave`, `BufRead`,
+`BufNewFile`, `BufWritePre`, `BufWritePost`), window events (`WinEnter`, `WinLeave`),
+focus events (`FocusGained`, `FocusLost`), and `FileType`. Full glob patterns
+(`*`, `**`, `?`, `[abc]`, `{a,b}`) and augroups are supported.
+
+```vim
+autocmd BufWritePre *.py echo "saving python"
+autocmd FileType python setlocal shiftwidth=4
+```
+
+See [doc/autocmd.md](doc/autocmd.md) for the full event reference, firing order, and notes on IntelliJ-specific
+differences.
+
 
 Vim Script
 ------------
