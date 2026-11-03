@@ -1,115 +1,115 @@
-<img src="src/main/resources/META-INF/pluginIcon.svg" width="80" height="80" alt="icon" align="left"/>
+<img src="src/main/resources/META-INF/pluginIcon.svg" width="80" height="80" alt="imago" align="left"/>
 
 IdeaVim
 ===
 
-[![Official JetBrains Project][jb-official-svg]][jb-official]
-[![Contributions welcome][contributions-welcome-svg]][contributions-welcome]
-[![Downloads][plugin-downloads-svg]][plugin-repo]
-[![Rating][plugin-rating-svg]][plugin-repo]
-[![Version][plugin-version-svg]][plugin-repo]
+[![Opus officiale JetBrains][jb-official-svg]][jb-official]
+[![Collationes gratae sunt][contributions-welcome-svg]][contributions-welcome]
+[![Recepta][plugin-downloads-svg]][plugin-repo]
+[![Aestimatio][plugin-rating-svg]][plugin-repo]
+[![Versio][plugin-version-svg]][plugin-repo]
 [![Gitter][gitter-svg]][gitter]
 [![codecov](https://codecov.io/gh/JetBrains/ideavim/branch/master/graph/badge.svg)](https://codecov.io/gh/JetBrains/ideavim)
 [![Twitter][twitter-svg]][twitter]
 
-IdeaVim is a Vim engine for JetBrains IDEs.
+IdeaVim est machina Vim pro ambitibus evolutionis integratis (IDE) JetBrains.
 
-##### Contact maintainers:
-* [Bug tracker](https://youtrack.jetbrains.com/issues/VIM)
-* [@IdeaVim](https://twitter.com/ideavim) on Twitter
-* [Chat on gitter](https://gitter.im/JetBrains/ideavim)
-* [IdeaVim Channel](https://jb.gg/bi6zp7) on [JetBrains Server](https://discord.gg/jetbrains)
+##### Curatores adire:
+* [Index vitiorum](https://youtrack.jetbrains.com/issues/VIM)
+* [@IdeaVim](https://twitter.com/ideavim) in Twitter
+* [Colloquium in Gitter](https://gitter.im/JetBrains/ideavim)
+* [Canalis IdeaVim](https://jb.gg/bi6zp7) in [ministratore JetBrains](https://discord.gg/jetbrains)
 
-##### Resources:
+##### Opes:
 
-* [Plugin homepage](https://lp.jetbrains.com/ideavim/)
-* [Plugin on Marketplace](https://plugins.jetbrains.com/plugin/164-ideavim)
-* [Changelog](CHANGES.md)
-* [Continuous integration builds](https://ideavim.teamcity.com/)
+* [Pagina principalis additamenti](https://lp.jetbrains.com/ideavim/)
+* [Additamentum in Marketplace](https://plugins.jetbrains.com/plugin/164-ideavim)
+* [Index mutationum](CHANGES.md)
+* [Versiones integratione continua constructae](https://ideavim.teamcity.com/)
 
-#### Compatibility
+#### Convenientia
 
 IntelliJ IDEA, PyCharm, GoLand, CLion, PhpStorm, WebStorm, RubyMine, DataGrip, DataSpell, Rider, Cursive,
-Android Studio, and other [JetBrains IDEs](https://www.jetbrains.com/ides/).
+Android Studio aliique [ambitus IDE JetBrains](https://www.jetbrains.com/ides/).
 
-Setup
+Institutio
 ------------
 
-- IdeaVim can be installed via `Settings | Plugins`.
-See the [detailed instructions](https://www.jetbrains.com/help/idea/managing-plugins.html#).
+- IdeaVim per `Settings | Plugins` institui potest.
+Vide [praecepta accurata](https://www.jetbrains.com/help/idea/managing-plugins.html#).
 
-- Use `Tools | Vim` in the menu to enable or disable vim.
+- Utere `Tools | Vim` in indice optionum ad Vim activandum vel deactivandum.
 
-- Use the `~/.ideavimrc` file as an analog of `~/.vimrc` ([learn more](#Files)). The XDG standard is supported, as well.
+- Utere fasciculo `~/.ideavimrc` ad similitudinem `~/.vimrc` ([plura disce](#fasciculi)). Norma XDG quoque sustinetur.
 
-- Shortcut conflicts can be resolved by using:
-     - On Linux & Windows: `File | Settings | Editor | Vim` & `File | Settings | Keymap`,
-     - On macOS: `Preferences | Editor | Vim` & `Preferences | Keymap`,
-     - Regular Vim mappings in the  `~/.ideavimrc` file.
+- Conflictus inter clavium compendia componi possunt his modis:
+     - In Linux et Windows: `File | Settings | Editor | Vim` et `File | Settings | Keymap`,
+     - In macOS: `Preferences | Editor | Vim` et `Preferences | Keymap`,
+     - Usitatis clavium assignationibus Vim in fasciculo `~/.ideavimrc`.
 
-Get Early Access
+Accessus praematurus
 -------------------
 
-Would you like to try new features and fixes? Join the Early Access Program and
-receive EAP builds as updates!  
+Visne novas facultates et emendationes experiri? Programma Accessus Praematuri (EAP) ingredere et
+versiones EAP tamquam renovationes accipe!\
 
-1. Click the  IdeaVim icon <img src="src/main/resources/META-INF/pluginIcon_noBorders.svg" width="16" height="16" alt="icon"/>
-in the status bar  | `Early Access Program` | `Subscribe to EAP`
+1. Preme imaginem IdeaVim <img src="src/main/resources/META-INF/pluginIcon_noBorders.svg" width="16" height="16" alt="imago"/>
+in vecte status | `Early Access Program` | `Subscribe to EAP`
 
 
-Or subscribe to EAP updates manually:
+Vel renovationibus EAP manu subscribe:
 
-1. Open `Settings | Plugins`
-2. Click the gear icon :gear:, select `Manage Plugin Repositories`, and add the following url:
+1. Aperi `Settings | Plugins`
+2. Preme imaginem rotae dentatae :gear:, elige `Manage Plugin Repositories`, et hanc inscriptionem URL adde:
 ```
 https://plugins.jetbrains.com/plugins/eap/ideavim
 ```
 
-See [the changelog](CHANGES.md) for the list of unreleased features.
+Vide [indicem mutationum](CHANGES.md) pro indice facultatum nondum editarum.
 
-It is important to distinguish EAP builds from traditional pre-release software.
-Please note that the quality of EAP versions may at times be way below even
-usual beta standards.
+Interest versiones EAP a programmatibus usitatis ante editionem publicam distinguere.
+Memento qualitatem versionum EAP interdum multo inferiorem esse posse quam
+quae etiam a versionibus beta usitatis exspectetur.
 
-You can always leave your feedback with:
+Sententiam tuam semper his viis communicare potes:
 * [@IdeaVim](https://twitter.com/ideavim) in Twitter
-* [Bug tracker](https://youtrack.jetbrains.com/issues/VIM)
+* [Index vitiorum](https://youtrack.jetbrains.com/issues/VIM)
 
 
-Summary of Supported Vim Features
+Conspectus facultatum Vim sustentatarum
 ---------------------------------
 
-Here are some examples of supported vim features and commands:
+Haec sunt exempla nonnullarum facultatum et mandatorum Vim quae sustinentur:
 
-* Normal / insert / visual / select / etc. modes
-* Motion / deletion / change / window / etc. commands
-* Key mappings
-* Marks / Macros / Digraphs / Registers
-* Some [set commands](https://github.com/JetBrains/ideavim/wiki/set-commands)
-* Full Vim regexps for search and search/replace
-* Vim web help
-* `~/.ideavimrc` configuration file
-* Vim script, including some [builtin functions](vimscript-info/FUNCTIONS_INFO.MD)
-* IdeaVim plugins
+* Modi ordinarius / inserendi / visualis / eligendi / ceteri
+* Mandata motus / deletionis / mutationis / fenestrarum / cetera
+* Clavium assignationes
+* Notae / Macroinstructiones / Digrammata / Registra
+* Quaedam [mandata set](https://github.com/JetBrains/ideavim/wiki/set-commands)
+* Plenae expressiones regulares Vim ad quaerendum et ad quaerendum/substituendum
+* Auxilium Vim in interrete
+* Fasciculus configurationis `~/.ideavimrc`
+* Vim script, quibusdam [functionibus internis](vimscript-info/FUNCTIONS_INFO.MD) inclusis
+* Additamenta IdeaVim
 
-See also:
+Vide etiam:
 
-* [Top feature requests and bugs](https://youtrack.jetbrains.com/issues/VIM?q=%23Unresolved+sort+by%3A+votes)
+* [Petitiones facultatum et vitia plurimis suffragiis accepta](https://youtrack.jetbrains.com/issues/VIM?q=%23Unresolved+sort+by%3A+votes)
 
-Files
+Fasciculi
 -----
 
 * `~/.ideavimrc`
-    * Your IdeaVim-specific Vim initialization commands
-    
+    * Mandata tua initializationis Vim propria IdeaVim
+
 <details>
-<summary><strong>Example</strong> (click to see)</summary>
+<summary><strong>Exemplum</strong> (preme ut videas)</summary>
 
 ```vim
-""" Map leader to space ---------------------
+""" Clavem principalem spatio assigna -------
 let mapleader=" "
 
-""" Plugins  --------------------------------
+""" Additamenta -----------------------------
 set surround
 set multiple-cursors
 set commentary
@@ -118,21 +118,21 @@ set easymotion
 set textobj-entire
 set ReplaceWithRegister
 
-""" Plugin settings -------------------------
+""" Optiones additamentorum ------------------
 let g:argtextobj_pairs="[:],(:),<:>"
 
-""" Common settings -------------------------
+""" Optiones communes -----------------------
 set showmode
 set so=5
 set incsearch
 set nu
 
-""" Idea specific settings ------------------
+""" Optiones propriae IDEA -------------------
 set ideajoin
 set ideastatusicon=gray
 set idearefactormode=keep
 
-""" Mappings --------------------------------
+""" Clavium assignationes --------------------
 map <leader>f <Plug>(easymotion-s)
 map <leader>e <Plug>(easymotion-f)
 
@@ -152,227 +152,227 @@ map <leader>o <Action>(FileStructurePopup)
 </details>
 
 <details>
-<summary><strong>Suggested options</strong> (click to see)</summary>
+<summary><strong>Optiones commendatae</strong> (preme ut videas)</summary>
 
-Here is also a list of the suggested options from [defaults.vim](https://github.com/vim/vim/blob/master/runtime/defaults.vim)
+Hic quoque est index optionum commendatarum ex [defaults.vim](https://github.com/vim/vim/blob/master/runtime/defaults.vim)
 
 ```vim
-" Show a few lines of context around the cursor. Note that this makes the
-" text scroll if you mouse-click near the start or end of the window.
+" Aliquot lineas circa cursorem ostende. Hoc textum volvi facit,
+" si mure prope initium vel finem fenestrae premis.
 set scrolloff=5
 
-" Do incremental searching.
+" Quaere dum scribis.
 set incsearch
 
-" Don't use Ex mode, use Q for formatting.
+" Modo Ex ne utaris; utere Q ad textum formandum.
 map Q gq
 ```
 </details>
 
 
-You can read your `~/.vimrc` file from `~/.ideavimrc` with this command:
+Fasciculum tuum `~/.vimrc` ex `~/.ideavimrc` hoc mandato legere potes:
 
     source ~/.vimrc
 
-Also note that if you have overridden the `user.home` JVM option, this
-will affect where IdeaVim looks for your `.ideavimrc` file. For example, if you
-have `-Duser.home=/my/alternate/home` then IdeaVim will source
-`/my/alternate/home/.ideavimrc` instead of `~/.ideavimrc`.
+Memento etiam, si optionem JVM `user.home` mutaveris, hoc
+locum afficere in quo IdeaVim fasciculum tuum `.ideavimrc` quaerit. Exempli gratia, si
+`-Duser.home=/my/alternate/home` posueris, IdeaVim
+`/my/alternate/home/.ideavimrc` loco `~/.ideavimrc` leget et exsequetur.
 
-Alternatively, you can set up initialization commands using [XDG](https://specifications.freedesktop.org/basedir-spec/basedir-spec-latest.html) standard.
-Put your settings to `$XDG_CONFIG_HOME/ideavim/ideavimrc` file.
+Vel mandata initializationis secundum normam [XDG](https://specifications.freedesktop.org/basedir-spec/basedir-spec-latest.html) constituere potes.
+Optiones tuas in fasciculo `$XDG_CONFIG_HOME/ideavim/ideavimrc` pone.
 
 
-IdeaVim Plugins
+Additamenta IdeaVim
 --------------------
 
-See [doc/IdeaVim Plugins.md](https://github.com/JetBrains/ideavim/wiki/IdeaVim-Plugins)
+Vide [doc/IdeaVim Plugins.md](https://github.com/JetBrains/ideavim/wiki/IdeaVim-Plugins)
 
-Executing IDE Actions
+Actiones IDE exsequi
 ---------------------
 
-IdeaVim adds various commands for listing and executing arbitrary IDE actions as
-Ex commands or via `:map` command mappings:
+IdeaVim varia mandata addit ad quaslibet actiones IDE enumerandas et exsequendas tamquam
+mandata Ex vel per assignationes mandati `:map`:
 
-### Executing actions:
+### Actiones exsequi:
 * `<Action>({action_id})`
-    * For the mappings you can use a special `<Action>` keyword. Don't forget the parentheses.
-    * E.g. `map gh <Action>(ShowErrorDescription)`  <- execute hover on `gh`.
-    * :warning: Mappings to `<Action>` don't work with `noremap`. 
-      If you know the case when it's needed, please [let us know](https://github.com/JetBrains/ideavim#contact-maintainers).
+    * In assignationibus verbo speciali `<Action>` uti potes. Parentheses ne omiseris.
+    * Exempli gratia, `map gh <Action>(ShowErrorDescription)` <- indicium superpositum per `gh` ostende.
+    * :warning: Assignationes ad `<Action>` cum `noremap` non operantur.
+      Si casum nosti in quo hoc opus sit, [nobis indica](https://github.com/JetBrains/ideavim#contact-maintainers).
 * `:action {action_id}`
-    * Execute an action by `{action_id}`. Works from Ex command line.
-    * Please don't use `:action` in mappings. Use `<Action>` instead.
+    * Actionem per `{action_id}` exsequere. Ex linea mandatorum Ex operatur.
+    * Noli `:action` in assignationibus uti. Utere `<Action>`.
 
-### Finding action IDs:
+### Identificatores actionum invenire:
 
-* IJ provides `IdeaVim: track action IDs` command to show the id of the executed actions.
-  This command can be found in "Search everywhere" (double `shift`).
+* IJ mandatum `IdeaVim: track action IDs` praebet ad identificatores actionum exsecutarum ostendendos.
+  Hoc mandatum in "Search everywhere" (bis `shift`) inveniri potest.
 
     <details>
-        <summary><strong>"Track action IDs" Details</strong> (click to see)</summary>
+        <summary><strong>Singula de "Track action IDs"</strong> (preme ut videas)</summary>
         <picture>
             <source media="(prefers-color-scheme: dark)" srcset="assets/readme/track_action_dark.gif">
-            <img src="assets/readme/track_action_light.gif" alt="track action ids"/>
+            <img src="assets/readme/track_action_light.gif" alt="identificatores actionum persequi"/>
         </picture>
     </details>
 
 
 * `:actionlist [pattern]`
-    * Find IDE actions by id or keymap pattern (E.g. `:actionlist extract`, `:actionlist <C-D`)
+    * Actiones IDE per identificatorem vel exemplar assignationis clavium inveni (exempli gratia, `:actionlist extract`, `:actionlist <C-D`)
 
-##### Examples:
+##### Exempla:
 
 ```vim
-" Map \r to the Reformat Code action
+" Assigna \r actioni Reformat Code
 :map \r <Action>(ReformatCode)
 
-" Map <leader>d to start debug
+" Assigna <leader>d ad vitia investiganda
 :map <leader>d <Action>(Debug)
 
-" Map \b to toggle the breakpoint on the current line
+" Assigna \b ad punctum interruptionis in linea praesenti alternandum
 :map \b <Action>(ToggleLineBreakpoint)
 ```
 
-##### Some popular actions:
+##### Quaedam actiones frequentes:
 
 ```
-ShowHoverInfo - Quick Documentation and Error Description
-QuickImplementations - Quick Definition
+ShowHoverInfo - Documentatio celeris et descriptio erroris
+QuickImplementations - Definitio celeris
 ```
 
 Vim Script
 ------------
 
-IdeaVim can execute custom scripts that are written with Vim Script.
-At the moment we support all language features, but not all of the built-in functions and options are supported.
+IdeaVim scripta propria lingua Vim Script conscripta exsequi potest.
+Nunc omnes facultates linguae sustinemus, sed non omnes functiones internae et optiones sustinentur.
 
-Additionally, you may be interested in the
-[Vim Script Discussion](https://github.com/JetBrains/ideavim/discussions/357).
+Praeterea tibi fortasse placebit
+[disputatio de Vim Script](https://github.com/JetBrains/ideavim/discussions/357).
 
 
-### IDE specific options
+### Optiones propriae IDE
 
-You can evaluate the `has('ide')` function call and get `1` if it was called with IdeaVim or `0` if the function was called from Vim/NeoVim.  
-The option `&ide` contains the name and edition of your IDE, for example, "IntelliJ IDEA Ultimate Edition".  
-To see its value for the current IDE you are using, execute the `:echo &ide` command.  
-To write an IDE-specific configuration, use Vim's regexp match operators `=~?` (case-insensitive) / `=~#`  (case-sensitive)
+Vocationem functionis `has('ide')` aestimare potes et `1` accipies si per IdeaVim vocata est, vel `0` si ex Vim/NeoVim vocata est.\
+Optio `&ide` nomen et editionem ambitus tui IDE continet, exempli gratia, "IntelliJ IDEA Ultimate Edition".\
+Ut valorem eius pro ambitu IDE quo nunc uteris videas, mandatum `:echo &ide` exsequere.\
+Ad configurationem propriam ambitus IDE scribendam, utere operatoribus Vim ad expressiones regulares comparandas `=~?` (sine discrimine litterarum maiuscularum et minuscularum) / `=~#` (cum discrimine litterarum maiuscularum et minuscularum)
 
-**Example config:**
+**Exemplum configurationis:**
 
 ```vim
-" options and mappings that are supported by both Vim and IdeaVim
+" optiones et assignationes quae et a Vim et ab IdeaVim sustinentur
 set nu
 set relativenumber
 
 if has('ide')
-  " mappings and options that exist only in IdeaVim
+  " assignationes et optiones quae tantum in IdeaVim exstant
   map <leader>f <Action>(GotoFile)
   map <leader>g <Action>(FindInPath)
   map <leader>b <Action>(Switcher)
 
   if &ide =~? 'intellij idea'
     if &ide =~? 'community'
-      " some mappings and options for IntelliJ IDEA Community Edition
+      " quaedam assignationes et optiones pro IntelliJ IDEA Community Edition
     elseif &ide =~? 'ultimate'
-      " some mappings and options for IntelliJ IDEA Ultimate Edition
+      " quaedam assignationes et optiones pro IntelliJ IDEA Ultimate Edition
     endif
   elseif &ide =~? 'pycharm'
-    " PyCharm specific mappings and options
+    " assignationes et optiones propriae PyCharm
   endif
 else
-  " some mappings for Vim/Neovim
+  " quaedam assignationes pro Vim/Neovim
   nnoremap <leader>f <cmd>Telescope find_files<cr>
 endif
 ```
 
-:gem: Contributing
+:gem: Conferre
 ------------
 
-The power of contributing drives IdeaVim :muscle:. Even small contributions matter!
+Vis collationum IdeaVim promovet :muscle:. Etiam parvae collationes valent!
 
-See the contribution guide in [CONTRIBUTING.md](CONTRIBUTING.md) to start bringing your value to the project.
+Vide ducem ad conferendum in [CONTRIBUTING.md](CONTRIBUTING.md), ut operi prodesse incipias.
 
-😎 In 2025, we launched a rewards program. See the guide for details.
+😎 Anno 2025, programma praemiorum instituimus. Singula in duce vide.
 
-Authors
+Auctores
 -------
 
-See [AUTHORS.md](AUTHORS.md)
-for a list of authors and contributors.
+Vide [AUTHORS.md](AUTHORS.md)
+pro indice auctorum et collatorum.
 
-IdeaVim tips and tricks
+Consilia et artificia IdeaVim
 -------
 
-- Use the power of IJ and Vim:
-    - `set ideajoin` to enable join via the IDE. See the [examples](https://jb.gg/f9zji9).
-    - Make sure `ideaput` is enabled for `clipboard` to enable native IJ insertion in Vim.
-    - Sync IJ bookmarks and IdeaVim global marks: `set ideamarks` (works for marks with capital letters only)
-    - Check out more [ex commands](https://github.com/JetBrains/ideavim/wiki/set-commands).
+- Utere facultatibus IJ et Vim:
+    - `set ideajoin` ad lineas per IDE iungendas. Vide [exempla](https://jb.gg/f9zji9).
+    - Cura ut `ideaput` pro `clipboard` activum sit, ut Vim insertione nativa IJ uti possit.
+    - Notas librarias IJ et notas globales IdeaVim inter se congruere fac: `set ideamarks` (tantum pro notis litteris maiusculis signatis operatur)
+    - Plura [mandata ex](https://github.com/JetBrains/ideavim/wiki/set-commands) inspice.
 
-- Use your vim settings with IdeaVim. Put `source ~/.vimrc` in `~/.ideavimrc`.
-- Control the status bar icon via the [`ideastatusicon` option](https://github.com/JetBrains/ideavim/wiki/set-commands).
-- Not familiar with the default behaviour during a refactoring? See the [`idearefactormode` option](https://github.com/JetBrains/ideavim/wiki/set-commands).
+- Utere optionibus tuis Vim cum IdeaVim. Pone `source ~/.vimrc` in `~/.ideavimrc`.
+- Imaginem vectis status rege per [optionem `ideastatusicon`](https://github.com/JetBrains/ideavim/wiki/set-commands).
+- Mores ordinarios inter codicem restructurandum ignoras? Vide [optionem `idearefactormode`](https://github.com/JetBrains/ideavim/wiki/set-commands).
 
-Some facts about Vim
+Quaedam de Vim
 -------
 
-Let’s relax and have some fun now! Here are a few things we've found interesting during development
-and would like to share with you.
+Nunc paulisper requiescamus et oblectemur! Haec sunt nonnulla quae inter evolutionem iucunda invenimus
+et tecum communicare volumus.
 
-- There are no such commands as `dd`, `yy`, or `cc`. For example, `dd` is not a separate command for deleting the line,
-but a `d` command with a `d` motion.  
-Wait, but there isn't a `d` motion in Vim! That’s right, and that’s why Vim has a dedicated set of commands
-for which it checks whether the 
-[command equals to motion](https://github.com/vim/vim/blob/759d81549c1340185f0d92524c563bb37697ea88/src/normal.c#L6468)
-and if so, it executes `_` motion instead.  
-`_` is an interesting motion that isn't even documented in vi, and it refers to the current line.
-So, commands like `dd`, `yy`, and similar ones are simply translated to `d_`, `y_`, etc.
-[Here](https://github.com/vim/vim/blob/759d81549c1340185f0d92524c563bb37697ea88/src/normal.c#L6502)
-is the source of this knowledge.
+- Mandata qualia `dd`, `yy`, vel `cc` non exstant. Exempli gratia, `dd` non est mandatum separatum ad lineam delendam,
+sed mandatum `d` cum motu `d`.\
+At motus `d` in Vim non exstat! Recte; ideo Vim habet peculiarem seriem mandatorum
+pro quibus examinat num
+[mandatum motui aequale sit](https://github.com/vim/vim/blob/759d81549c1340185f0d92524c563bb37697ea88/src/normal.c#L6468)
+et, si ita est, motum `_` eius loco exsequitur.\
+`_` est motus singularis, qui ne in vi quidem documentatus est, et ad lineam praesentem pertinet.
+Ita mandata qualia `dd`, `yy`, et similia simpliciter in `d_`, `y_`, etc. convertuntur.
+[Hic](https://github.com/vim/vim/blob/759d81549c1340185f0d92524c563bb37697ea88/src/normal.c#L6502)
+fons huius scientiae est.
 
-- `x`, `D`, and `&` are not separate commands either. They are synonyms of `dl`, `d$`, and `:s\r`, respectively.
-[Here](https://github.com/vim/vim/blob/759d81549c1340185f0d92524c563bb37697ea88/src/normal.c#L5365)
-is the full list of synonyms.
+- Ne `x`, `D`, et `&` quidem mandata separata sunt. Sunt synonyma mandatorum `dl`, `d$`, et `:s\r`, respective.
+[Hic](https://github.com/vim/vim/blob/759d81549c1340185f0d92524c563bb37697ea88/src/normal.c#L5365)
+est plenus index synonymorum.
 
-- You can read a [post](https://github.com/JetBrains/ideavim/wiki/how-many-modes-does-vim-have) about how modes work in Vim and IdeaVim.
+- Legere potes [commentarium](https://github.com/JetBrains/ideavim/wiki/how-many-modes-does-vim-have) de modis in Vim et IdeaVim operantibus.
 
-- Have you ever used `U` after `dd`? [Don't even try](https://github.com/vim/vim/blob/759d81549c1340185f0d92524c563bb37697ea88/src/ops.c#L874).
+- Num umquam `U` post `dd` usus es? [Ne conatus quidem sis](https://github.com/vim/vim/blob/759d81549c1340185f0d92524c563bb37697ea88/src/ops.c#L874).
 
-- A lot of variables that refer to visual mode start with two uppercase letters, e.g. `VIsual_active`. [Some examples](https://github.com/vim/vim/blob/master/src/normal.c#L17).
-  As mentioned [here](https://vi.stackexchange.com/a/42885/12441), this was done this way to avoid the clash with X11.
+- Multae variabiles quae ad modum visualem pertinent duabus litteris maiusculis incipiunt, exempli gratia, `VIsual_active`. [Quaedam exempla](https://github.com/vim/vim/blob/master/src/normal.c#L17).
+  Ut [hic](https://vi.stackexchange.com/a/42885/12441) memoratur, hoc factum est ad conflictum cum X11 vitandum.
 
-- Other [strange things](https://github.com/vim/vim/blob/759d81549c1340185f0d92524c563bb37697ea88/src/ex_docmd.c#L1845) from vi:
-    * ":3"       jumps to line 3
-    * ":3|..."   prints line 3
-    * ":|"       prints current line
+- Alia [mira](https://github.com/vim/vim/blob/759d81549c1340185f0d92524c563bb37697ea88/src/ex_docmd.c#L1845) ex vi:
+    * ":3"       ad lineam 3 transit
+    * ":3|..."   lineam 3 imprimit
+    * ":|"       lineam praesentem imprimit
 
-- Vim script doesn't skip white space before comma. `F(a ,b)` => E475.
+- Vim script spatia ante comma non praeterit. `F(a ,b)` => E475.
 
-- Fancy constants for [undolevels](https://vimhelp.org/options.txt.html#%27undolevels%27):
-  > The local value is set to -123456 when the global value is to be used.
+- Constantes singulares pro [undolevels](https://vimhelp.org/options.txt.html#%27undolevels%27):
+  > Valor localis ad -123456 constituitur cum valor globalis adhibendus est.
 
-- Vi (not Vim) is a POSIX standard, and [has a spec](https://pubs.opengroup.org/onlinepubs/9699919799/utilities/vi.html)! Vim is mostly POSIX compliant when Vi compatibility is selected with the `'compatible'` option, but there are still some differences that can be changed with `'copoptions'`. The spec is interesting because it documents the behaviour of different commands in a stricter style than the user documentation, describing the current line and column after the command, for example. [More details can be found by reading `:help posix`](https://vimhelp.org/vi_diff.txt.html#posix).
+- Vi (non Vim) norma POSIX est et [specificationem habet](https://pubs.opengroup.org/onlinepubs/9699919799/utilities/vi.html)! Vim plerumque normae POSIX congruit cum convenientia cum Vi per optionem `'compatible'` eligitur, sed quaedam differentiae manent quae per `'copoptions'` mutari possunt. Specificatio iucunda est quia mores diversorum mandatorum accuratius quam documentatio usorum describit, exempli gratia lineam et columnam praesentes post mandatum indicans. [Plura legendo `:help posix` inveniri possunt](https://vimhelp.org/vi_diff.txt.html#posix).
 
-- The Vim documentation contains many easter eggs. We encounter them occasionally, but GitHub user mikesmithgh has compiled a substantial collection [here](https://github.com/mikesmithgh/vimpromptu).
-  - In addition to `:call err_teapot()`, which returns `E418: I'm a teapot`, there is also `:call err_teapot(1)`, which returns `E503: Coffee is currently not available`. Naturally, this is also supported in IdeaVim.
+- Documentatio Vim multas iocosas res occultas continet. Eas interdum invenimus, sed usor GitHub mikesmithgh amplam collectionem [hic](https://github.com/mikesmithgh/vimpromptu) composuit.
+  - Praeter `:call err_teapot()`, quod `E418: I'm a teapot` reddit, est etiam `:call err_teapot(1)`, quod `E503: Coffee is currently not available` reddit. Scilicet hoc quoque in IdeaVim sustinetur.
 
-- Insert mode has all `Ctrl` keys mapped, except `Ctrl-B`. In the documentation, it is marked as **"CTRL-B in Insert
-  mode gone"**. Call `:h i_CTRL-B-gone` in Vim to read why `Ctrl-B` was removed.
+- In modo inserendi omnes claves `Ctrl` assignatae sunt praeter `Ctrl-B`. In documentatione hoc notatur verbis **"CTRL-B in Insert
+  mode gone"**. Voca `:h i_CTRL-B-gone` in Vim ut legas cur `Ctrl-B` remotum sit.
 
-License
+Licentia
 -------
 
-IdeaVim is licensed under the MIT license.
+IdeaVim sub licentia MIT distribuitur.
 
-Third-party components and licenses are listed in [ThirdPartyLicenses.md](ThirdPartyLicenses.md).
+Partes ab aliis auctoribus confectae earumque licentiae in [ThirdPartyLicenses.md](ThirdPartyLicenses.md) enumerantur.
 
-All releases before 2.0.0 were licensed under terms of GPL-2.0 or later.
-The last commit before switch to MIT is 05852b07c6090ad40fde7d3cafe0b074604f7ac5.
-You can read more about the license change here: https://github.com/JetBrains/ideavim/discussions/543
+Omnes versiones ante 2.0.0 sub condicionibus GPL-2.0 vel posterioris distributae sunt.
+Ultima consignatio ante transitum ad MIT est 05852b07c6090ad40fde7d3cafe0b074604f7ac5.
+Plura de mutatione licentiae hic legere potes: https://github.com/JetBrains/ideavim/discussions/543
 
 
-<!-- Badges -->
+<!-- Insignia -->
 [jb-official]: https://confluence.jetbrains.com/display/ALL/JetBrains+on+GitHub
 [jb-official-svg]: https://jb.gg/badges/official.svg
 
